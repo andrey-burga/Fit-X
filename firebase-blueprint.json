@@ -1,0 +1,596 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "User Profile",
+      "description": "User profile with role, preferences and telemetry synchronization metadata.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 100,
+          "description": "Full name of the user"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "maxLength": 120,
+          "description": "Email address of the user"
+        },
+        "role": {
+          "type": "string",
+          "enum": ["Atleta Pro", "Coach", "Nutricionista"],
+          "description": "Functional domain role in Vigor Core"
+        },
+        "location": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "User timezone and location"
+        },
+        "avatarUrl": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "Public URL for the avatar"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "ISO timestamp of registration"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "ISO timestamp of last update"
+        }
+      },
+      "required": ["name", "email", "role"]
+    },
+    "BiometricConfig": {
+      "title": "Biometric Configuration",
+      "description": "Anthropometric and metabolic calculation inputs and derived targets.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "Owner user UID"
+        },
+        "weightKg": {
+          "type": "number",
+          "description": "Bodyweight in kilograms"
+        },
+        "heightCm": {
+          "type": "number",
+          "description": "Height in centimeters"
+        },
+        "bodyFatPct": {
+          "type": "number",
+          "description": "Body fat percentage"
+        },
+        "age": {
+          "type": "number",
+          "description": "Age in years"
+        },
+        "palFactor": {
+          "type": "number",
+          "description": "Physical activity level factor (e.g. 1.2 to 1.9)"
+        },
+        "targetDeltaKcal": {
+          "type": "number",
+          "description": "Caloric delta target (deficit or surplus)"
+        },
+        "proteinPerKg": {
+          "type": "number",
+          "description": "Protein intake multiplier in g/kg"
+        },
+        "fatPerKg": {
+          "type": "number",
+          "description": "Fat intake multiplier in g/kg"
+        },
+        "bmr": {
+          "type": "number",
+          "description": "Calculated basal metabolic rate (Mifflin-St Jeor)"
+        },
+        "tdee": {
+          "type": "number",
+          "description": "Total daily energy expenditure"
+        },
+        "targetCalories": {
+          "type": "number",
+          "description": "Final target daily calories"
+        },
+        "targetProteinG": {
+          "type": "number",
+          "description": "Target daily protein in grams"
+        },
+        "targetFatG": {
+          "type": "number",
+          "description": "Target daily fats in grams"
+        },
+        "targetCarbsG": {
+          "type": "number",
+          "description": "Target daily carbs in grams"
+        },
+        "desayunoPct": {
+          "type": "number",
+          "description": "Caloric percentage allocated to breakfast"
+        },
+        "almuerzoPct": {
+          "type": "number",
+          "description": "Caloric percentage allocated to lunch"
+        },
+        "meriendaPct": {
+          "type": "number",
+          "description": "Caloric percentage allocated to afternoon snack"
+        },
+        "cenaPct": {
+          "type": "number",
+          "description": "Caloric percentage allocated to dinner"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "ISO timestamp of last update"
+        }
+      },
+      "required": ["userId", "weightKg", "heightCm", "targetCalories"]
+    },
+    "MealLog": {
+      "title": "Meal Log",
+      "description": "Granular food intake records per meal moment.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "Owner user UID"
+        },
+        "dateTime": {
+          "type": "string",
+          "description": "ISO timestamp or formatted date of intake"
+        },
+        "moment": {
+          "type": "string",
+          "enum": ["desayuno", "almuerzo", "merienda", "cena", "snack"],
+          "description": "Meal timing category"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 150,
+          "description": "Name or title of food/recipe"
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "Detailed notes or ingredients"
+        },
+        "portion": {
+          "type": "string",
+          "maxLength": 50,
+          "description": "Portion size string (e.g. 150 g)"
+        },
+        "calories": {
+          "type": "number",
+          "description": "Energy in kcal"
+        },
+        "protein": {
+          "type": "number",
+          "description": "Protein in grams"
+        },
+        "carbs": {
+          "type": "number",
+          "description": "Carbohydrates in grams"
+        },
+        "fats": {
+          "type": "number",
+          "description": "Fats in grams"
+        },
+        "source": {
+          "type": "string",
+          "enum": ["Manual", "Plantilla", "Receta"],
+          "description": "Origin of entry"
+        },
+        "verified": {
+          "type": "boolean",
+          "description": "Whether nutritional values are verified"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Creation timestamp"
+        }
+      },
+      "required": ["userId", "dateTime", "moment", "title", "calories"]
+    },
+    "GroceryItem": {
+      "title": "Grocery Item",
+      "description": "Item in the weekly grocery shopping list.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "Owner user UID"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 150,
+          "description": "Item name"
+        },
+        "quantity": {
+          "type": "number",
+          "description": "Numeric quantity needed"
+        },
+        "unit": {
+          "type": "string",
+          "maxLength": 30,
+          "description": "Measurement unit (g, kg, uds, ml, etc.)"
+        },
+        "department": {
+          "type": "string",
+          "enum": ["carnes", "huevos", "verduras", "carbohidratos", "grasas"],
+          "description": "Shopping aisle department"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "completed"],
+          "description": "Acquisition status"
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 300,
+          "description": "Additional remarks"
+        },
+        "recipeSource": {
+          "type": "string",
+          "maxLength": 150,
+          "description": "Associated recipe origin"
+        },
+        "nutritionInfo": {
+          "type": "string",
+          "maxLength": 150,
+          "description": "Macronutrient highlights"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Creation timestamp"
+        }
+      },
+      "required": ["userId", "name", "quantity", "unit", "department", "status"]
+    },
+    "WorkoutSession": {
+      "title": "Workout Set Log",
+      "description": "Logged set execution with load, repetitions, and estimated 1RM.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "Owner user UID"
+        },
+        "exerciseId": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "Unique identifier of exercise"
+        },
+        "exerciseName": {
+          "type": "string",
+          "maxLength": 150,
+          "description": "Display name of exercise"
+        },
+        "date": {
+          "type": "string",
+          "description": "Date of workout session"
+        },
+        "setNumber": {
+          "type": "number",
+          "description": "Set sequential number"
+        },
+        "setType": {
+          "type": "string",
+          "maxLength": 50,
+          "description": "Category (Aprox, Efectiva 1, etc.)"
+        },
+        "weightKg": {
+          "type": "number",
+          "description": "Load lifted in kilograms"
+        },
+        "reps": {
+          "type": "number",
+          "description": "Completed repetitions"
+        },
+        "rir": {
+          "type": "number",
+          "description": "Reps in reserve"
+        },
+        "estimated1RM": {
+          "type": "number",
+          "description": "Calculated 1RM peak"
+        },
+        "completed": {
+          "type": "boolean",
+          "description": "Set completed status"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Creation timestamp"
+        }
+      },
+      "required": ["userId", "exerciseId", "exerciseName", "weightKg", "reps", "completed"]
+    },
+    "CardioSession": {
+      "title": "Cardio Session",
+      "description": "Endurance and HIIT telemetry session record.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "Owner user UID"
+        },
+        "date": {
+          "type": "string",
+          "description": "Date of cardio session"
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 150,
+          "description": "Session title"
+        },
+        "details": {
+          "type": "string",
+          "maxLength": 300,
+          "description": "Heart rate and modality details"
+        },
+        "durationMinutes": {
+          "type": "number",
+          "description": "Session duration in minutes"
+        },
+        "avgHr": {
+          "type": "number",
+          "description": "Average heart rate in bpm"
+        },
+        "maxHr": {
+          "type": "number",
+          "description": "Peak heart rate in bpm"
+        },
+        "zone2Minutes": {
+          "type": "number",
+          "description": "Time spent in Zone 2"
+        },
+        "zone2Percentage": {
+          "type": "number",
+          "description": "Percentage of session in Zone 2"
+        },
+        "caloriesBurned": {
+          "type": "number",
+          "description": "Estimated calories burned"
+        },
+        "device": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "Heart rate monitor device"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Creation timestamp"
+        }
+      },
+      "required": ["userId", "date", "title", "durationMinutes", "caloriesBurned"]
+    },
+    "AppNotification": {
+      "title": "App Notification",
+      "description": "Notification message and telemetry alert.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "Target user UID"
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 150,
+          "description": "Alert title"
+        },
+        "message": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "Alert body text"
+        },
+        "timestamp": {
+          "type": "string",
+          "description": "Human-readable or formatted time"
+        },
+        "category": {
+          "type": "string",
+          "enum": ["nutricion", "entrenamiento", "compras", "sistema"],
+          "description": "Category tag"
+        },
+        "read": {
+          "type": "boolean",
+          "description": "Whether the user read the notification"
+        },
+        "severity": {
+          "type": "string",
+          "enum": ["info", "success", "warning"],
+          "description": "Visual severity"
+        },
+        "actionPath": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "App navigation path to navigate upon click"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Creation timestamp"
+        }
+      },
+      "required": ["userId", "title", "message", "category", "read"]
+    },
+    "WorkoutRoutine": {
+      "title": "Workout Routine",
+      "description": "Customizable periodized workout routine template for user training.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "Owner UID"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 150,
+          "description": "Routine title"
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "Goal and scope description"
+        },
+        "goal": {
+          "type": "string",
+          "enum": ["hipertrofia", "fuerza", "recomposicion", "resistencia"],
+          "description": "Target training goal"
+        },
+        "frequencyDays": {
+          "type": "number",
+          "description": "Days per microcycle (1-7)"
+        },
+        "days": {
+          "type": "array",
+          "description": "Structured list of days and assigned exercises"
+        },
+        "isDefault": {
+          "type": "boolean",
+          "description": "Whether this routine is actively selected"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "ISO timestamp"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "ISO timestamp"
+        }
+      },
+      "required": ["userId", "name", "goal", "frequencyDays"]
+    },
+    "ExecutedWorkout": {
+      "title": "Executed Workout Session Header",
+      "description": "Session header and aggregate telemetry for an executed workout session.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "Owner UID"
+        },
+        "routineId": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "Origin routine ID"
+        },
+        "routineName": {
+          "type": "string",
+          "maxLength": 150,
+          "description": "Origin routine name"
+        },
+        "routineDayId": {
+          "type": "string",
+          "maxLength": 50,
+          "description": "Routine day identifier (e.g. d1)"
+        },
+        "routineDayName": {
+          "type": "string",
+          "maxLength": 150,
+          "description": "Routine day name"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["in_progress", "completed", "abandoned"],
+          "description": "Workout execution lifecycle status"
+        },
+        "startedAt": {
+          "type": "string",
+          "description": "ISO timestamp of session start"
+        },
+        "completedAt": {
+          "type": "string",
+          "description": "ISO timestamp of session conclusion"
+        },
+        "durationSeconds": {
+          "type": "number",
+          "description": "Elapsed session duration in seconds"
+        },
+        "totalTonnageKg": {
+          "type": "number",
+          "description": "Accumulated volume tonnage (excluding warmups)"
+        },
+        "totalCompletedSets": {
+          "type": "number",
+          "description": "Total count of logged completed sets"
+        },
+        "totalReps": {
+          "type": "number",
+          "description": "Total repetitions logged across sets"
+        },
+        "averageRir": {
+          "type": "number",
+          "description": "Average RIR of effective sets"
+        },
+        "sessionRpe": {
+          "type": "number",
+          "description": "Subjective session RPE (1-10)"
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 1000,
+          "description": "Post-session athlete notes"
+        },
+        "exercisesSnapshot": {
+          "type": "array",
+          "description": "Snapshot of exercises and planned structure"
+        }
+      },
+      "required": ["userId", "routineName", "status", "startedAt", "durationSeconds", "totalTonnageKg", "totalCompletedSets"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "User profile and domain role definition"
+    },
+    "/users/{userId}/biometrics/current": {
+      "schema": "BiometricConfig",
+      "description": "Current active biometric and metabolic equation inputs"
+    },
+    "/users/{userId}/mealLogs/{mealLogId}": {
+      "schema": "MealLog",
+      "description": "Individual food entries for the user"
+    },
+    "/users/{userId}/groceries/{groceryId}": {
+      "schema": "GroceryItem",
+      "description": "User specific grocery pantry items"
+    },
+    "/users/{userId}/workoutSessions/{sessionId}": {
+      "schema": "WorkoutSession",
+      "description": "Gym training set records"
+    },
+    "/users/{userId}/cardioSessions/{cardioId}": {
+      "schema": "CardioSession",
+      "description": "Cardio telemetry and endurance sessions"
+    },
+    "/users/{userId}/notifications/{notificationId}": {
+      "schema": "AppNotification",
+      "description": "User notifications"
+    },
+    "/users/{userId}/workoutRoutines/{routineId}": {
+      "schema": "WorkoutRoutine",
+      "description": "Personalized user workout routines"
+    },
+    "/users/{userId}/executedWorkouts/{workoutId}": {
+      "schema": "ExecutedWorkout",
+      "description": "Executed gym workout sessions and aggregate volume summary"
+    }
+  }
+}

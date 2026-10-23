@@ -1,0 +1,147 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 1. Global Default-Deny Catch-All
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Global Security Primitives
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Validation helpers
+    function isValidUserProfile(data) {
+      return data.name is string && data.name.size() >= 2 && data.name.size() <= 100 &&
+             data.email is string && data.email.size() <= 120 &&
+             data.role in ['Atleta Pro', 'Coach', 'Nutricionista'];
+    }
+
+    function isValidBiometrics(data, userId) {
+      return data.userId == userId &&
+             data.weightKg is number && data.weightKg > 0 && data.weightKg < 500 &&
+             data.heightCm is number && data.heightCm > 50 && data.heightCm < 300 &&
+             data.targetCalories is number && data.targetCalories >= 500 && data.targetCalories <= 10000;
+    }
+
+    function isValidMealLog(data, userId) {
+      return data.userId == userId &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 150 &&
+             data.moment in ['desayuno', 'almuerzo', 'merienda', 'cena', 'snack'] &&
+             data.calories is number && data.calories >= 0 && data.calories <= 5000;
+    }
+
+    function isValidGrocery(data, userId) {
+      return data.userId == userId &&
+             data.name is string && data.name.size() >= 1 && data.name.size() <= 150 &&
+             data.quantity is number && data.quantity >= 0 &&
+             data.unit is string && data.unit.size() <= 30 &&
+             data.department in ['carnes', 'huevos', 'verduras', 'carbohidratos', 'grasas'] &&
+             data.status in ['pending', 'completed'];
+    }
+
+    function isValidWorkoutSession(data, userId) {
+      return data.userId == userId &&
+             data.exerciseId is string && data.exerciseId.size() <= 100 &&
+             data.exerciseName is string && data.exerciseName.size() <= 150 &&
+             data.weightKg is number && data.weightKg >= 0 &&
+             data.reps is number && data.reps >= 0 &&
+             data.completed is bool;
+    }
+
+    function isValidCardioSession(data, userId) {
+      return data.userId == userId &&
+             data.title is string && data.title.size() <= 150 &&
+             data.durationMinutes is number && data.durationMinutes >= 0 &&
+             data.caloriesBurned is number && data.caloriesBurned >= 0;
+    }
+
+    function isValidNotification(data, userId) {
+      return data.userId == userId &&
+             data.title is string && data.title.size() <= 150 &&
+             data.message is string && data.message.size() <= 500 &&
+             data.category in ['nutricion', 'entrenamiento', 'compras', 'sistema'] &&
+             data.read is bool;
+    }
+
+    // Fortress Match Blocks for User and Subcollections
+    match /users/{userId} {
+      allow get: if isOwner(userId) && isValidId(userId);
+      allow list: if false; // Blanket user listing forbidden
+      allow create: if isOwner(userId) && isValidId(userId) && isValidUserProfile(incoming());
+      allow update: if isOwner(userId) && isValidId(userId) && isValidUserProfile(incoming());
+      allow delete: if false;
+
+      // User Biometric Profile
+      match /biometrics/{docId} {
+        allow get: if isOwner(userId) && isValidId(userId) && isValidId(docId);
+        allow list: if isOwner(userId) && isValidId(userId);
+        allow create: if isOwner(userId) && isValidId(userId) && isValidId(docId) && isValidBiometrics(incoming(), userId);
+        allow update: if isOwner(userId) && isValidId(userId) && isValidId(docId) && isValidBiometrics(incoming(), userId);
+        allow delete: if isOwner(userId) && isValidId(userId) && isValidId(docId);
+      }
+
+      // Meal Logs
+      match /mealLogs/{mealLogId} {
+        allow get: if isOwner(userId) && isValidId(userId) && isValidId(mealLogId);
+        allow list: if isOwner(userId) && isValidId(userId);
+        allow create: if isOwner(userId) && isValidId(userId) && isValidId(mealLogId) && isValidMealLog(incoming(), userId);
+        allow update: if isOwner(userId) && isValidId(userId) && isValidId(mealLogId) && isValidMealLog(incoming(), userId);
+        allow delete: if isOwner(userId) && isValidId(userId) && isValidId(mealLogId);
+      }
+
+      // Grocery Pantry Items
+      match /groceries/{groceryId} {
+        allow get: if isOwner(userId) && isValidId(userId) && isValidId(groceryId);
+        allow list: if isOwner(userId) && isValidId(userId);
+        allow create: if isOwner(userId) && isValidId(userId) && isValidId(groceryId) && isValidGrocery(incoming(), userId);
+        allow update: if isOwner(userId) && isValidId(userId) && isValidId(groceryId) && isValidGrocery(incoming(), userId);
+        allow delete: if isOwner(userId) && isValidId(userId) && isValidId(groceryId);
+      }
+
+      // Workout Gym Sets
+      match /workoutSessions/{sessionId} {
+        allow get: if isOwner(userId) && isValidId(userId) && isValidId(sessionId);
+        allow list: if isOwner(userId) && isValidId(userId);
+        allow create: if isOwner(userId) && isValidId(userId) && isValidId(sessionId) && isValidWorkoutSession(incoming(), userId);
+        allow update: if isOwner(userId) && isValidId(userId) && isValidId(sessionId) && isValidWorkoutSession(incoming(), userId);
+        allow delete: if isOwner(userId) && isValidId(userId) && isValidId(sessionId);
+      }
+
+      // Cardio Telemetry
+      match /cardioSessions/{cardioId} {
+        allow get: if isOwner(userId) && isValidId(userId) && isValidId(cardioId);
+        allow list: if isOwner(userId) && isValidId(userId);
+        allow create: if isOwner(userId) && isValidId(userId) && isValidId(cardioId) && isValidCardioSession(incoming(), userId);
+        allow update: if isOwner(userId) && isValidId(userId) && isValidId(cardioId) && isValidCardioSession(incoming(), userId);
+        allow delete: if isOwner(userId) && isValidId(userId) && isValidId(cardioId);
+      }
+
+      // User Notifications
+      match /notifications/{notificationId} {
+        allow get: if isOwner(userId) && isValidId(userId) && isValidId(notificationId);
+        allow list: if isOwner(userId) && isValidId(userId);
+        allow create: if isOwner(userId) && isValidId(userId) && isValidId(notificationId) && isValidNotification(incoming(), userId);
+        allow update: if isOwner(userId) && isValidId(userId) && isValidId(notificationId) && isValidNotification(incoming(), userId);
+        allow delete: if isOwner(userId) && isValidId(userId) && isValidId(notificationId);
+      }
+    }
+  }
+}

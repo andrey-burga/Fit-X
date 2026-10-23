@@ -1,0 +1,279 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 1. Global Default-Deny Catch-All
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Ping probe for client connectivity verification
+    match /test/connection {
+      allow get: if true;
+    }
+
+    // Global Security Primitives
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Validation helpers
+    function isValidUserProfile(data) {
+      return data.name is string && data.name.size() >= 2 && data.name.size() <= 100 &&
+             data.email is string && data.email.size() <= 120 &&
+             data.role in ['Atleta Pro', 'Coach', 'Nutricionista'];
+    }
+
+    function isValidBiometrics(data, userId) {
+      return data.userId == userId &&
+             data.weightKg is number && data.weightKg > 0 && data.weightKg < 500 &&
+             data.heightCm is number && data.heightCm > 50 && data.heightCm < 300 &&
+             data.targetCalories is number && data.targetCalories >= 500 && data.targetCalories <= 10000;
+    }
+
+    function isValidMealLog(data, userId) {
+      return data.userId == userId &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 150 &&
+             data.moment in ['desayuno', 'almuerzo', 'merienda', 'cena', 'snack'] &&
+             data.calories is number && data.calories >= 0 && data.calories <= 5000;
+    }
+
+    function isValidGrocery(data, userId) {
+      return data.userId == userId &&
+             data.name is string && data.name.size() >= 1 && data.name.size() <= 150 &&
+             data.quantity is number && data.quantity >= 0 &&
+             data.unit is string && data.unit.size() <= 30 &&
+             data.department in ['carnes', 'huevos', 'verduras', 'carbohidratos', 'grasas'] &&
+             data.status in ['pending', 'completed'];
+    }
+
+    function isValidWorkoutSession(data, userId) {
+      return data.userId == userId &&
+             data.exerciseId is string && data.exerciseId.size() <= 100 &&
+             data.exerciseName is string && data.exerciseName.size() <= 150 &&
+             data.weightKg is number && data.weightKg >= 0 &&
+             data.reps is number && data.reps >= 0 &&
+             data.completed is bool;
+    }
+
+    function isValidCardioSession(data, userId) {
+      return data.userId == userId &&
+             data.title is string && data.title.size() <= 150 &&
+             data.durationMinutes is number && data.durationMinutes >= 0 &&
+             data.caloriesBurned is number && data.caloriesBurned >= 0;
+    }
+
+    function isValidNotification(data, userId) {
+      return data.userId == userId &&
+             data.title is string && data.title.size() <= 150 &&
+             data.message is string && data.message.size() <= 500 &&
+             data.category in ['nutricion', 'entrenamiento', 'compras', 'sistema'] &&
+             data.read is bool;
+    }
+
+    function isValidRecipe(data, userId) {
+      return data.userId == userId &&
+             data.name is string && data.name.size() >= 2 && data.name.size() <= 150 &&
+             data.suggestedMoment in ['desayuno', 'almuerzo', 'merienda', 'cena', 'snack'] &&
+             data.servings is number && data.servings >= 1 &&
+             data.totalNutrients.calories is number && data.totalNutrients.calories >= 0;
+    }
+
+    function isValidMealPlan(data, userId) {
+      return data.userId == userId &&
+             data.weekStart is string && data.weekStart.size() == 10 &&
+             data.weekEnd is string && data.weekEnd.size() == 10;
+    }
+
+    function isValidWorkoutRoutine(data, userId) {
+      return data.userId == userId &&
+             data.name is string && data.name.size() >= 2 && data.name.size() <= 150 &&
+             data.goal in ['hipertrofia', 'fuerza', 'recomposicion', 'resistencia'] &&
+             data.frequencyDays is number && data.frequencyDays >= 1 && data.frequencyDays <= 7 &&
+             data.days is list && data.days.size() <= 14;
+    }
+
+    function isValidExecutedWorkout(data, userId) {
+      return data.userId == userId &&
+             data.routineName is string && data.routineName.size() <= 150 &&
+             data.status in ['in_progress', 'completed', 'abandoned'] &&
+             data.startedAt is string &&
+             data.durationSeconds is number && data.durationSeconds >= 0 &&
+             data.totalTonnageKg is number && data.totalTonnageKg >= 0 &&
+             data.totalCompletedSets is number && data.totalCompletedSets >= 0;
+    }
+
+    function isLinkedWorkoutActive(workoutId, userId) {
+      return workoutId is string &&
+             isValidId(workoutId) &&
+             exists(/databases/$(database)/documents/users/$(userId)/executedWorkouts/$(workoutId)) &&
+             get(/databases/$(database)/documents/users/$(userId)/executedWorkouts/$(workoutId)).data.status == 'in_progress';
+    }
+
+    function canModifyExistingSet(data, userId) {
+      return !('executedWorkoutId' in data) ||
+             data.executedWorkoutId == null ||
+             data.executedWorkoutId == '' ||
+             !(data.executedWorkoutId is string) ||
+             (exists(/databases/$(database)/documents/users/$(userId)/executedWorkouts/$(data.executedWorkoutId)) &&
+              get(/databases/$(database)/documents/users/$(userId)/executedWorkouts/$(data.executedWorkoutId)).data.status == 'in_progress');
+    }
+
+    // Fortress Match Blocks for User and Subcollections
+    match /users/{userId} {
+      allow get: if isOwner(userId) && isValidId(userId);
+      allow list: if false; // Blanket user listing forbidden
+      allow create: if isOwner(userId) && isValidId(userId) && isValidUserProfile(incoming()) &&
+                    incoming().role == 'Atleta Pro' &&
+                    request.auth.token.email != null &&
+                    request.auth.token.email_verified == true &&
+                    incoming().email == request.auth.token.email;
+      // Role and email are strictly immutable on update to prevent self-privilege escalation
+      allow update: if isOwner(userId) && isValidId(userId) && isValidUserProfile(incoming()) &&
+                    incoming().role == existing().role &&
+                    incoming().email == existing().email;
+      allow delete: if false;
+
+      // User Preferences (isolated settings like notifications & meal partitions)
+      match /preferences/{prefId} {
+        allow get, list: if isOwner(userId) && isValidId(userId);
+        allow create, update: if isOwner(userId) && isValidId(userId) && isValidId(prefId) &&
+                              incoming().userId == userId;
+        allow delete: if isOwner(userId) && isValidId(userId) && isValidId(prefId);
+      }
+
+      // User Biometric Profile
+      match /biometrics/{docId} {
+        allow get: if isOwner(userId) && isValidId(userId) && isValidId(docId);
+        allow list: if isOwner(userId) && isValidId(userId);
+        allow create: if isOwner(userId) && isValidId(userId) && isValidId(docId) && isValidBiometrics(incoming(), userId);
+        allow update: if isOwner(userId) && isValidId(userId) && isValidId(docId) && isValidBiometrics(incoming(), userId) &&
+                      incoming().userId == existing().userId;
+        allow delete: if isOwner(userId) && isValidId(userId) && isValidId(docId);
+      }
+
+      // Meal Logs
+      match /mealLogs/{mealLogId} {
+        allow get: if isOwner(userId) && isValidId(userId) && isValidId(mealLogId);
+        allow list: if isOwner(userId) && isValidId(userId);
+        allow create: if isOwner(userId) && isValidId(userId) && isValidId(mealLogId) && isValidMealLog(incoming(), userId);
+        allow update: if isOwner(userId) && isValidId(userId) && isValidId(mealLogId) && isValidMealLog(incoming(), userId) &&
+                      incoming().userId == existing().userId;
+        allow delete: if isOwner(userId) && isValidId(userId) && isValidId(mealLogId);
+      }
+
+      // Grocery Pantry Items
+      match /groceries/{groceryId} {
+        allow get: if isOwner(userId) && isValidId(userId) && isValidId(groceryId);
+        allow list: if isOwner(userId) && isValidId(userId);
+        allow create: if isOwner(userId) && isValidId(userId) && isValidId(groceryId) && isValidGrocery(incoming(), userId);
+        allow update: if isOwner(userId) && isValidId(userId) && isValidId(groceryId) && isValidGrocery(incoming(), userId) &&
+                      incoming().userId == existing().userId;
+        allow delete: if isOwner(userId) && isValidId(userId) && isValidId(groceryId);
+      }
+
+      // Workout Gym Sets
+      match /workoutSessions/{sessionId} {
+        allow get: if isOwner(userId) && isValidId(userId) && isValidId(sessionId);
+        allow list: if isOwner(userId) && isValidId(userId);
+
+        // Creación obligatoria: toda nueva serie debe vincularse a una sesión existente en curso
+        allow create: if isOwner(userId) && isValidId(userId) && isValidId(sessionId) &&
+                      isValidWorkoutSession(incoming(), userId) &&
+                      ('executedWorkoutId' in incoming()) &&
+                      isLinkedWorkoutActive(incoming().executedWorkoutId, userId);
+
+        // Actualización: inmutabilidad de la referencia vinculada y bloqueo de sesiones terminales
+        allow update: if isOwner(userId) && isValidId(userId) && isValidId(sessionId) &&
+                      isValidWorkoutSession(incoming(), userId) &&
+                      incoming().userId == existing().userId &&
+                      canModifyExistingSet(existing(), userId) &&
+                      (('executedWorkoutId' in existing()) ?
+                        (('executedWorkoutId' in incoming()) && incoming().executedWorkoutId == existing().executedWorkoutId) :
+                        (!('executedWorkoutId' in incoming()) || incoming().executedWorkoutId == null || incoming().executedWorkoutId == ''));
+
+        // Eliminación: protegida si pertenece a sesión terminal completada o abandonada
+        allow delete: if isOwner(userId) && isValidId(userId) && isValidId(sessionId) &&
+                      canModifyExistingSet(existing(), userId);
+      }
+
+      // Cardio Telemetry
+      match /cardioSessions/{cardioId} {
+        allow get: if isOwner(userId) && isValidId(userId) && isValidId(cardioId);
+        allow list: if isOwner(userId) && isValidId(userId);
+        allow create: if isOwner(userId) && isValidId(userId) && isValidId(cardioId) && isValidCardioSession(incoming(), userId);
+        allow update: if isOwner(userId) && isValidId(userId) && isValidId(cardioId) && isValidCardioSession(incoming(), userId) &&
+                      incoming().userId == existing().userId;
+        allow delete: if isOwner(userId) && isValidId(userId) && isValidId(cardioId);
+      }
+
+      // User Notifications
+      match /notifications/{notificationId} {
+        allow get: if isOwner(userId) && isValidId(userId) && isValidId(notificationId);
+        allow list: if isOwner(userId) && isValidId(userId);
+        allow create: if isOwner(userId) && isValidId(userId) && isValidId(notificationId) && isValidNotification(incoming(), userId);
+        allow update: if isOwner(userId) && isValidId(userId) && isValidId(notificationId) && isValidNotification(incoming(), userId) &&
+                      incoming().userId == existing().userId;
+        allow delete: if isOwner(userId) && isValidId(userId) && isValidId(notificationId);
+      }
+
+      // Recipe Library (Increment 4)
+      match /recipes/{recipeId} {
+        allow get, list: if isOwner(userId) && isValidId(userId);
+        allow create: if isOwner(userId) && isValidId(userId) && isValidId(recipeId) && isValidRecipe(incoming(), userId);
+        allow update: if isOwner(userId) && isValidId(userId) && isValidId(recipeId) && isValidRecipe(incoming(), userId) &&
+                      incoming().userId == existing().userId;
+        allow delete: if isOwner(userId) && isValidId(userId) && isValidId(recipeId);
+      }
+
+      // Weekly Meal Plans (Increment 4)
+      match /mealPlans/{weekId} {
+        allow get, list: if isOwner(userId) && isValidId(userId);
+        allow create: if isOwner(userId) && isValidId(userId) && isValidId(weekId) && isValidMealPlan(incoming(), userId);
+        allow update: if isOwner(userId) && isValidId(userId) && isValidId(weekId) && isValidMealPlan(incoming(), userId) &&
+                      incoming().userId == existing().userId;
+        allow delete: if isOwner(userId) && isValidId(userId) && isValidId(weekId);
+      }
+
+      // Workout Routines (Increment 6B)
+      match /workoutRoutines/{routineId} {
+        allow get, list: if isOwner(userId) && isValidId(userId);
+        allow create: if isOwner(userId) && isValidId(userId) && isValidId(routineId) && isValidWorkoutRoutine(incoming(), userId);
+        allow update: if isOwner(userId) && isValidId(userId) && isValidId(routineId) && isValidWorkoutRoutine(incoming(), userId) &&
+                      incoming().userId == existing().userId;
+        allow delete: if isOwner(userId) && isValidId(userId) && isValidId(routineId);
+      }
+
+      // Executed Workouts & Session Headers (Increment 6C)
+      match /executedWorkouts/{workoutId} {
+        allow get, list: if isOwner(userId) && isValidId(userId);
+        // Toda sesión debe nacer obligatoriamente en estado 'in_progress'
+        allow create: if isOwner(userId) && isValidId(userId) && isValidId(workoutId) &&
+                      isValidExecutedWorkout(incoming(), userId) &&
+                      incoming().status == 'in_progress';
+        // Inmutabilidad terminal: solo sesiones en curso pueden modificarse o finalizarse
+        allow update: if isOwner(userId) && isValidId(userId) && isValidId(workoutId) &&
+                      isValidExecutedWorkout(incoming(), userId) &&
+                      incoming().userId == existing().userId &&
+                      existing().status == 'in_progress';
+        // Eliminación prohibida para evitar cabeceras huérfanas: cancelar exige transicionar a 'abandoned'
+        allow delete: if false;
+      }
+    }
+  }
+}

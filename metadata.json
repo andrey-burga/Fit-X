@@ -1,0 +1,6 @@
+{
+  "name": "Vigor Core",
+  "description": "Personal Health & Precision Nutrition SaaS. Planificación nutricional, registro de comidas, cálculo metabólico, rutinas de fuerza, monitoreo de fatiga y sustituciones alimentarias.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

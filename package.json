@@ -1,0 +1,48 @@
+{
+  "name": "react-example",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --port=3000 --host=0.0.0.0",
+    "build": "vite build",
+    "preview": "vite preview",
+    "clean": "rm -rf dist server.js",
+    "lint": "tsc --noEmit",
+    "test:nutrition": "tsx scripts/test_nutrition_math.ts",
+    "test:integration": "tsx scripts/test_register_meal_integration.ts",
+    "test:dashboard": "tsx scripts/test_dashboard_dynamic.ts",
+    "test:weekly": "tsx scripts/test_weekly_menu_recipes.ts",
+    "test:groceries": "tsx scripts/test_grocery_sync_idempotent.ts",
+    "test:cycle": "tsx scripts/test_nutritional_cycle_e2e.ts",
+    "test:routines": "tsx scripts/test_workout_routines.ts",
+    "test:verify": "tsx scripts/verify_implementation.ts",
+    "test:rules": "tsx scripts/test_firestore_rules.ts",
+    "test:emulator": "firebase emulators:exec --only firestore 'npm run test:rules'"
+  },
+  "dependencies": {
+    "@google/genai": "^2.4.0",
+    "@tailwindcss/vite": "^4.3.3",
+    "@vitejs/plugin-react": "^6.1.1",
+    "dotenv": "^17.2.3",
+    "express": "^4.21.2",
+    "firebase": "^13.0.0",
+    "lucide-react": "^0.546.0",
+    "motion": "^12.23.24",
+    "react": "^19.0.1",
+    "react-dom": "^19.0.1",
+    "vite": "^8.3.0"
+  },
+  "devDependencies": {
+    "@firebase/rules-unit-testing": "^6.0.0",
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.14.0",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "autoprefixer": "^10.4.21",
+    "esbuild": "^0.25.0",
+    "tailwindcss": "^4.3.3",
+    "tsx": "^4.21.0",
+    "typescript": "^7.0.2"
+  }
+}
