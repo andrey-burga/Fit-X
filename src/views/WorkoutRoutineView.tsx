@@ -5,7 +5,14 @@ import { PlannedExerciseConfig, RoutineDay } from '../types/workout';
 import { AddExerciseToRoutineModal } from '../components/modals/AddExerciseToRoutineModal';
 import { EditRoutineExerciseModal } from '../components/modals/EditRoutineExerciseModal';
 import { ManageRoutinesModal } from '../components/modals/ManageRoutinesModal';
+import { AutoregulationSuggestionModal } from '../components/modals/AutoregulationSuggestionModal';
+import { DeloadAssistantModal } from '../components/modals/DeloadAssistantModal';
 import { MASTER_WORKOUT_TEMPLATES } from '../data/workoutTemplates';
+import {
+  generateDayRecommendations,
+  ExerciseRecommendation,
+  DeloadProposal,
+} from '../services/workoutAutoregulationService';
 
 export const WorkoutRoutineView: React.FC = () => {
   const {
@@ -17,6 +24,7 @@ export const WorkoutRoutineView: React.FC = () => {
     setActiveRoutineId,
     routineSyncStatus,
     createRoutineFromTemplate,
+    createCustomRoutine,
     updateWorkoutRoutine,
     deleteWorkoutRoutine,
     addExerciseToRoutineDay,
@@ -26,6 +34,8 @@ export const WorkoutRoutineView: React.FC = () => {
     isDemoMode,
     currentUser,
     startLiveWorkout,
+    executedWorkoutsHistory,
+    workoutHistory,
   } = useApp();
 
   // Selected Day in Active Routine
@@ -36,6 +46,9 @@ export const WorkoutRoutineView: React.FC = () => {
   const [isManageModalOpen, setIsManageModalOpen] = useState(false);
   const [isAddExerciseModalOpen, setIsAddExerciseModalOpen] = useState(false);
   const [editingConfig, setEditingConfig] = useState<PlannedExerciseConfig | null>(null);
+  const [isDeloadModalOpen, setIsDeloadModalOpen] = useState(false);
+  const [selectedRecommendation, setSelectedRecommendation] = useState<ExerciseRecommendation | null>(null);
+  const [isSuggestionModalOpen, setIsSuggestionModalOpen] = useState(false);
 
   // Fallback to first day if current day is not in active routine
   const currentDay = useMemo<RoutineDay | null>(() => {
@@ -88,6 +101,54 @@ export const WorkoutRoutineView: React.FC = () => {
 
     return counts;
   }, [activeRoutine]);
+
+  // Autoregulation recommendations for current day
+  const dayRecommendationsMap = useMemo(() => {
+    if (!currentDay) return new Map<string, ExerciseRecommendation>();
+    const recs = generateDayRecommendations(currentDay, executedWorkoutsHistory, workoutHistory);
+    const map = new Map<string, ExerciseRecommendation>();
+    recs.forEach(r => map.set(r.configId, r));
+    return map;
+  }, [currentDay, executedWorkoutsHistory, workoutHistory]);
+
+  // Overall plateau count across the entire active routine
+  const plateauCountInActiveRoutine = useMemo(() => {
+    if (!activeRoutine) return 0;
+    let count = 0;
+    activeRoutine.days.forEach(d => {
+      const recs = generateDayRecommendations(d, executedWorkoutsHistory, workoutHistory);
+      count += recs.filter(r => r.plateauStatus === 'possible_plateau').length;
+    });
+    return count;
+  }, [activeRoutine, executedWorkoutsHistory, workoutHistory]);
+
+  const handleApplyRecommendation = async (updates: {
+    targetWeightKg?: number;
+    repsMin?: number;
+    repsMax?: number;
+    targetRir?: number;
+  }) => {
+    if (!activeRoutine || !currentDay || !selectedRecommendation) return;
+    await updateRoutineExerciseConfig(
+      activeRoutine.id,
+      currentDay.id,
+      selectedRecommendation.configId,
+      updates
+    );
+  };
+
+  const handleApplyDeload = async (proposal: DeloadProposal) => {
+    if (!activeRoutine) return;
+    const newId = await createCustomRoutine({
+      name: proposal.deloadRoutineName,
+      description: proposal.rationale,
+      goal: activeRoutine.goal,
+      frequencyDays: activeRoutine.frequencyDays,
+      days: proposal.days,
+      isDefault: true,
+    });
+    setActiveRoutineId(newId);
+  };
 
   // Export PDF or Markdown
   const handleExportSummary = () => {
@@ -199,6 +260,14 @@ export const WorkoutRoutineView: React.FC = () => {
 
         <div className="flex items-center gap-space-xs shrink-0 flex-wrap">
           <button
+            onClick={() => setIsDeloadModalOpen(true)}
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-surface-container-lowest hover:bg-surface-container text-on-surface font-label-md text-label-md shadow-xs transition-colors cursor-pointer border border-surface-container font-medium"
+            type="button"
+          >
+            <span className="material-symbols-outlined text-base text-primary">bedtime</span>
+            <span>Asistente de Descarga</span>
+          </button>
+          <button
             onClick={handleExportSummary}
             className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-surface-container-lowest hover:bg-surface-container text-on-surface font-label-md text-label-md shadow-xs transition-colors cursor-pointer border border-surface-container"
             type="button"
@@ -226,6 +295,25 @@ export const WorkoutRoutineView: React.FC = () => {
           )}
         </div>
       </div>
+
+      {/* Optional Plateau Awareness Banner */}
+      {plateauCountInActiveRoutine > 0 && (
+        <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-950 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs animate-in fade-in duration-150">
+          <div className="flex items-center gap-2.5">
+            <span className="material-symbols-outlined text-amber-800 text-lg shrink-0">warning</span>
+            <span>
+              <strong>{plateauCountInActiveRoutine} ejercicio(s)</strong> con posible estancamiento tras 3 o más sesiones consecutivas sin mejoras. Consulta las sugerencias por ejercicio o valora una semana de descarga.
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setIsDeloadModalOpen(true)}
+            className="px-3 py-1.5 rounded-lg bg-amber-200/90 hover:bg-amber-300 font-bold text-amber-950 transition-colors shrink-0 cursor-pointer"
+          >
+            Explorar Descarga (Deload)
+          </button>
+        </div>
+      )}
 
       {/* KPI Bento Strip */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-space-sm">
@@ -641,6 +729,52 @@ export const WorkoutRoutineView: React.FC = () => {
                         </div>
                       </div>
 
+                      {/* Autoregulation Suggestion Bar (Increment 6G) */}
+                      {(() => {
+                        const rec = dayRecommendationsMap.get(cfg.id);
+                        if (!rec) return null;
+                        return (
+                          <div className="bg-surface-container-low/70 p-2.5 rounded-xl border border-surface-container/60 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs animate-in fade-in duration-100">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md font-label-sm text-[11px] ${rec.actionBadge.colorClass}`}>
+                                <span className="material-symbols-outlined text-xs">{rec.actionBadge.icon}</span>
+                                {rec.actionBadge.label}
+                              </span>
+                              {rec.lastPerformance ? (
+                                <span className="text-on-surface-variant font-code-data text-[11px]">
+                                  Último: <strong className="text-on-surface">{rec.lastPerformance.weightKg} kg × {rec.lastPerformance.reps} reps</strong>
+                                  {rec.lastPerformance.rir !== null ? ` @ RIR ${rec.lastPerformance.rir}` : ''}
+                                </span>
+                              ) : (
+                                <span className="text-on-surface-variant text-[11px] italic">Sin historial previo</span>
+                              )}
+                              <span className="text-on-surface-variant hidden md:inline">•</span>
+                              <span className="text-primary font-bold font-code-data text-[11px]">
+                                Sugerido: {rec.suggestedWeightKg} kg × {rec.suggestedRepsMin}-{rec.suggestedRepsMax} reps
+                              </span>
+                              {rec.plateauStatus === 'possible_plateau' && (
+                                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-100 text-amber-900 font-bold text-[10px]">
+                                  <span className="material-symbols-outlined text-[11px]">warning</span>
+                                  Estancamiento
+                                </span>
+                              )}
+                            </div>
+
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSelectedRecommendation(rec);
+                                setIsSuggestionModalOpen(true);
+                              }}
+                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-surface-container-lowest hover:bg-surface-container text-primary font-semibold text-xs border border-surface-container/80 transition-colors shrink-0 cursor-pointer"
+                            >
+                              <span className="material-symbols-outlined text-sm">psychology</span>
+                              <span>Revisar Sugerencia</span>
+                            </button>
+                          </div>
+                        );
+                      })()}
+
                       {/* Technical Cues / Notes */}
                       <div className="flex flex-col md:flex-row md:items-center justify-between gap-space-sm pt-space-xs text-on-surface-variant font-label-md text-label-md border-t border-surface-container/30">
                         <div className="flex items-center gap-2">
@@ -828,6 +962,29 @@ export const WorkoutRoutineView: React.FC = () => {
         onCreateFromTemplate={(tplId, name) => createRoutineFromTemplate(tplId, name)}
         onRenameRoutine={(id, newName) => updateWorkoutRoutine(id, { name: newName })}
         onDeleteRoutine={id => deleteWorkoutRoutine(id)}
+      />
+
+      {/* Autoregulation Suggestion Modal (Increment 6G) */}
+      <AutoregulationSuggestionModal
+        isOpen={isSuggestionModalOpen}
+        onClose={() => {
+          setIsSuggestionModalOpen(false);
+          setSelectedRecommendation(null);
+        }}
+        recommendation={selectedRecommendation}
+        routineId={activeRoutine.id}
+        dayId={currentDay?.id || ''}
+        onApply={handleApplyRecommendation}
+        onShowToast={showToast}
+      />
+
+      {/* Deload Assistant Modal (Increment 6G) */}
+      <DeloadAssistantModal
+        isOpen={isDeloadModalOpen}
+        onClose={() => setIsDeloadModalOpen(false)}
+        activeRoutine={activeRoutine}
+        onApplyDeload={handleApplyDeload}
+        onShowToast={showToast}
       />
     </div>
   );

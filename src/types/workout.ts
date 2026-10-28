@@ -52,6 +52,7 @@ export interface PlannedExerciseConfig {
   repsMin: number;                    // Rango inferior de repeticiones (ej: 6)
   repsMax: number;                    // Rango superior de repeticiones (ej: 8)
   targetRir?: number;                 // RIR objetivo (ej: 1 o 2)
+  targetWeightKg?: number;            // Carga objetivo prescrita / recomendada (ej: 85.0 kg)
   restSeconds: number;                // Descanso entre series en segundos (ej: 120)
   tempo?: string;                     // Cadencia opcional (ej: '3-1-X-0')
   notes?: string;                     // Pautas específicas de técnica o progresión
@@ -101,7 +102,7 @@ export interface LiveWorkoutSet {
   targetRir?: number;
   weightKg: number;
   reps: number;
-  rir: number;
+  rir?: number | null;
   completed: boolean;
   estimated1RM: number;
   completedAt?: string;
@@ -136,7 +137,7 @@ export interface ExecutedWorkout {
   totalTonnageKg: number;
   totalCompletedSets: number;
   totalReps: number;
-  averageRir: number;
+  averageRir?: number | null;
   sessionRpe?: number;
   notes?: string;
   exercisesSnapshot: LiveExerciseSession[];

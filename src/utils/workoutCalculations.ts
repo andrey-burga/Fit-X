@@ -89,10 +89,10 @@ export function calculateSessionTonnage(
  * Calculates average RIR for completed effective sets.
  */
 export function calculateAverageRir(
-  sets: { rir: number; type: WorkoutSetType | string; completed: boolean }[]
+  sets: { rir?: number | null; type: WorkoutSetType | string; completed: boolean }[]
 ): number {
-  const effectiveSets = sets.filter(s => s.completed && s.type !== 'warmup');
+  const effectiveSets = sets.filter(s => s.completed && s.type !== 'warmup' && s.rir !== null && s.rir !== undefined);
   if (effectiveSets.length === 0) return 0;
-  const totalRir = effectiveSets.reduce((sum, s) => sum + s.rir, 0);
+  const totalRir = effectiveSets.reduce((sum, s) => sum + (s.rir ?? 0), 0);
   return Math.round((totalRir / effectiveSets.length) * 10) / 10;
 }

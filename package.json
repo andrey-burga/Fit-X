@@ -16,6 +16,9 @@
     "test:groceries": "tsx scripts/test_grocery_sync_idempotent.ts",
     "test:cycle": "tsx scripts/test_nutritional_cycle_e2e.ts",
     "test:routines": "tsx scripts/test_workout_routines.ts",
+    "test:export": "tsx scripts/test_workout_export_e2e.ts",
+    "test:analytics": "tsx scripts/test_workout_analytics_e2e.ts",
+    "test:autoregulation": "tsx scripts/test_workout_autoregulation_e2e.ts",
     "test:verify": "tsx scripts/verify_implementation.ts",
     "test:rules": "tsx scripts/test_firestore_rules.ts",
     "test:emulator": "firebase emulators:exec --only firestore 'npm run test:rules'"
@@ -40,7 +43,7 @@
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "autoprefixer": "^10.4.21",
-    "esbuild": "^0.25.0",
+    "esbuild": "^0.28.0",
     "tailwindcss": "^4.3.3",
     "tsx": "^4.21.0",
     "typescript": "^7.0.2"

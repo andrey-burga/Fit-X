@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
-import { WorkoutSetType, LiveExerciseSession } from '../types/workout';
+import { WorkoutSetType, LiveExerciseSession, ExecutedWorkout } from '../types/workout';
 import { calculateEpley1RM } from '../utils/workoutCalculations';
 
 export const WorkoutLogView: React.FC = () => {
@@ -8,6 +8,7 @@ export const WorkoutLogView: React.FC = () => {
     showToast,
     navigate,
     activeLiveWorkout,
+    executedWorkoutsHistory,
     commitLiveSet,
     addExtraLiveSet,
     finishLiveWorkout,
@@ -47,6 +48,10 @@ export const WorkoutLogView: React.FC = () => {
   const [isAbandonModalOpen, setIsAbandonModalOpen] = useState(false);
   const [postWorkoutNotes, setPostWorkoutNotes] = useState('');
   const [postWorkoutRpe, setPostWorkoutRpe] = useState(8.5);
+
+  // History inspection & filter
+  const [selectedHistoricalWorkout, setSelectedHistoricalWorkout] = useState<ExecutedWorkout | null>(null);
+  const [historyFilter, setHistoryFilter] = useState<'all' | 'completed' | 'abandoned'>('all');
 
   // Quick 1RM Calculator State
   const [calcWeight, setCalcWeight] = useState(75);
@@ -290,6 +295,321 @@ export const WorkoutLogView: React.FC = () => {
             </button>
           </div>
         </div>
+
+        {/* HISTORIAL DE SESIONES REGISTRADAS */}
+        <section className="flex flex-col gap-space-md mt-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-space-sm pb-2 border-b border-surface-container/60">
+            <div className="flex flex-col gap-0.5">
+              <div className="flex items-center gap-2">
+                <span className="material-symbols-outlined text-primary text-xl">history</span>
+                <h2 className="font-headline-md text-headline-md font-bold text-on-surface">
+                  Historial de Sesiones Registradas
+                </h2>
+                <span className="px-2.5 py-0.5 rounded-full bg-surface-container text-on-surface-variant font-code-data text-xs font-semibold">
+                  {executedWorkoutsHistory.length} registros
+                </span>
+              </div>
+              <p className="font-body-md text-xs text-secondary">
+                Historial inmutable sincronizado en Firestore: sesiones completadas, canceladas y telemetría de sobrecarga progresiva.
+              </p>
+            </div>
+
+            {/* Filter Pills */}
+            <div className="flex items-center gap-1.5 bg-surface-container-low p-1 rounded-xl border border-surface-container/60 shrink-0">
+              <button
+                type="button"
+                onClick={() => setHistoryFilter('all')}
+                className={`px-3 py-1 rounded-lg text-xs font-label-md transition-all cursor-pointer ${
+                  historyFilter === 'all'
+                    ? 'bg-surface-container-lowest text-primary font-bold shadow-xs'
+                    : 'text-secondary hover:text-on-surface'
+                }`}
+              >
+                Todas ({executedWorkoutsHistory.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setHistoryFilter('completed')}
+                className={`px-3 py-1 rounded-lg text-xs font-label-md transition-all cursor-pointer ${
+                  historyFilter === 'completed'
+                    ? 'bg-surface-container-lowest text-primary font-bold shadow-xs'
+                    : 'text-secondary hover:text-on-surface'
+                }`}
+              >
+                Completadas ({executedWorkoutsHistory.filter(w => w.status === 'completed').length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setHistoryFilter('abandoned')}
+                className={`px-3 py-1 rounded-lg text-xs font-label-md transition-all cursor-pointer ${
+                  historyFilter === 'abandoned'
+                    ? 'bg-surface-container-lowest text-amber-500 font-bold shadow-xs'
+                    : 'text-secondary hover:text-on-surface'
+                }`}
+              >
+                Canceladas ({executedWorkoutsHistory.filter(w => w.status === 'abandoned').length})
+              </button>
+            </div>
+          </div>
+
+          {/* List or Empty State */}
+          {executedWorkoutsHistory.length === 0 ? (
+            <div className="bg-surface-container-lowest rounded-2xl p-8 border border-surface-container/60 text-center flex flex-col items-center gap-2">
+              <span className="material-symbols-outlined text-4xl text-secondary">fitness_center</span>
+              <h3 className="font-headline-sm text-headline-sm font-bold text-on-surface">
+                Sin entrenamientos registrados en el historial
+              </h3>
+              <p className="font-body-md text-sm text-secondary max-w-md">
+                Inicia una sesión desde tu rutina activa o el modo libre para registrar tus series, tonelaje y RIR con trazabilidad completa.
+              </p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-space-md">
+              {executedWorkoutsHistory
+                .filter(w => (historyFilter === 'all' ? true : w.status === historyFilter))
+                .map(workout => {
+                  const isCompleted = workout.status === 'completed';
+                  const isAbandoned = workout.status === 'abandoned';
+                  const startDate = new Date(workout.startedAt);
+                  const formattedDate = startDate.toLocaleDateString('es-ES', {
+                    day: 'numeric',
+                    month: 'short',
+                    year: 'numeric',
+                  });
+                  const formattedTime = startDate.toLocaleTimeString('es-ES', {
+                    hour: '2-digit',
+                    minute: '2-digit',
+                  });
+
+                  return (
+                    <div
+                      key={workout.id}
+                      className="bg-surface-container-lowest rounded-2xl p-space-md border border-surface-container/70 shadow-xs flex flex-col justify-between gap-space-md hover:border-primary/50 transition-all"
+                    >
+                      <div className="flex flex-col gap-space-xs">
+                        <div className="flex items-center justify-between gap-2">
+                          <span
+                            className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold uppercase tracking-wider ${
+                              isCompleted
+                                ? 'bg-primary/10 text-primary border border-primary/20'
+                                : isAbandoned
+                                ? 'bg-amber-500/10 text-amber-500 border border-amber-500/20'
+                                : 'bg-blue-500/10 text-blue-500 border border-blue-500/20'
+                            }`}
+                          >
+                            <span className="material-symbols-outlined text-xs">
+                              {isCompleted ? 'check_circle' : isAbandoned ? 'cancel' : 'sync'}
+                            </span>
+                            <span>{isCompleted ? 'Completado' : isAbandoned ? 'Cancelado' : 'En Curso'}</span>
+                          </span>
+
+                          <span className="font-code-data text-xs text-secondary">
+                            {formattedDate} • {formattedTime}
+                          </span>
+                        </div>
+
+                        <h3 className="font-headline-md text-headline-md font-bold text-on-surface mt-1 truncate">
+                          {workout.routineName}
+                        </h3>
+                        <p className="font-body-md text-xs text-secondary truncate">
+                          {workout.routineDayName || 'Sesión periodizada'}
+                        </p>
+
+                        {/* Metric Strip */}
+                        <div className="grid grid-cols-3 gap-2 mt-2 pt-2 border-t border-surface-container/40">
+                          <div className="flex flex-col">
+                            <span className="font-label-sm text-[10px] text-secondary uppercase font-semibold">
+                              Tonelaje
+                            </span>
+                            <span className="font-code-data text-sm font-bold text-on-surface">
+                              {workout.totalTonnageKg.toLocaleString()} kg
+                            </span>
+                          </div>
+                          <div className="flex flex-col">
+                            <span className="font-label-sm text-[10px] text-secondary uppercase font-semibold">
+                              Series
+                            </span>
+                            <span className="font-code-data text-sm font-bold text-on-surface">
+                              {workout.totalCompletedSets} / {workout.totalReps} r
+                            </span>
+                          </div>
+                          <div className="flex flex-col">
+                            <span className="font-label-sm text-[10px] text-secondary uppercase font-semibold">
+                              Tiempo
+                            </span>
+                            <span className="font-code-data text-sm font-bold text-on-surface">
+                              {Math.round((workout.durationSeconds || 0) / 60)} min
+                            </span>
+                          </div>
+                        </div>
+
+                        {workout.notes && (
+                          <p className="font-body-md text-xs text-secondary italic line-clamp-2 mt-1 bg-surface-container-low p-2 rounded-lg">
+                            &ldquo;{workout.notes}&rdquo;
+                          </p>
+                        )}
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => setSelectedHistoricalWorkout(workout)}
+                        className="w-full py-2 px-3 rounded-xl bg-surface-container-low hover:bg-surface-container text-on-surface font-label-md text-xs font-semibold transition-all flex items-center justify-center gap-1.5 cursor-pointer border border-surface-container/60"
+                      >
+                        <span className="material-symbols-outlined text-sm text-primary">visibility</span>
+                        <span>Ver Detalle de Sesión</span>
+                      </button>
+                    </div>
+                  );
+                })}
+            </div>
+          )}
+        </section>
+
+        {/* MODAL DE DETALLE DE SESIÓN HISTÓRICA */}
+        {selectedHistoricalWorkout && (
+          <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+            <div className="bg-surface-container-lowest max-w-2xl w-full max-h-[90vh] rounded-2xl shadow-2xl border border-surface-container flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+              {/* Header */}
+              <div className="p-space-lg border-b border-surface-container/60 flex items-start justify-between gap-4">
+                <div className="flex flex-col gap-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span
+                      className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold uppercase tracking-wider ${
+                        selectedHistoricalWorkout.status === 'completed'
+                          ? 'bg-primary/10 text-primary border border-primary/20'
+                          : 'bg-amber-500/10 text-amber-500 border border-amber-500/20'
+                      }`}
+                    >
+                      <span className="material-symbols-outlined text-xs">
+                        {selectedHistoricalWorkout.status === 'completed' ? 'check_circle' : 'cancel'}
+                      </span>
+                      <span>
+                        {selectedHistoricalWorkout.status === 'completed' ? 'Sesión Completada' : 'Sesión Cancelada'}
+                      </span>
+                    </span>
+                    <span className="font-code-data text-xs text-secondary">
+                      ID: {selectedHistoricalWorkout.id}
+                    </span>
+                  </div>
+                  <h3 className="font-headline-md text-headline-md font-bold text-on-surface mt-1">
+                    {selectedHistoricalWorkout.routineName}: {selectedHistoricalWorkout.routineDayName}
+                  </h3>
+                  <span className="font-body-md text-xs text-secondary">
+                    Iniciada:{' '}
+                    {new Date(selectedHistoricalWorkout.startedAt).toLocaleString('es-ES', {
+                      dateStyle: 'medium',
+                      timeStyle: 'short',
+                    })}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSelectedHistoricalWorkout(null)}
+                  className="w-8 h-8 rounded-full bg-surface-container-low hover:bg-surface-container text-secondary hover:text-on-surface flex items-center justify-center cursor-pointer transition-colors"
+                >
+                  <span className="material-symbols-outlined text-base">close</span>
+                </button>
+              </div>
+
+              {/* Invariant Banner */}
+              <div className="bg-surface-container px-space-lg py-2 flex items-center gap-2 text-xs text-secondary border-b border-surface-container/60">
+                <span className="material-symbols-outlined text-primary text-sm">lock</span>
+                <span>
+                  Registro histórico inmutable en Firestore. No modificable ni eliminable desde el cliente.
+                </span>
+              </div>
+
+              {/* Metrics Strip */}
+              <div className="grid grid-cols-4 gap-2 p-space-md bg-surface-container-low border-b border-surface-container/60">
+                <div className="flex flex-col text-center">
+                  <span className="text-[10px] uppercase font-semibold text-secondary">Tonelaje</span>
+                  <span className="font-code-data font-bold text-on-surface text-sm">
+                    {selectedHistoricalWorkout.totalTonnageKg.toLocaleString()} kg
+                  </span>
+                </div>
+                <div className="flex flex-col text-center">
+                  <span className="text-[10px] uppercase font-semibold text-secondary">Series / Reps</span>
+                  <span className="font-code-data font-bold text-on-surface text-sm">
+                    {selectedHistoricalWorkout.totalCompletedSets} s • {selectedHistoricalWorkout.totalReps} r
+                  </span>
+                </div>
+                <div className="flex flex-col text-center">
+                  <span className="text-[10px] uppercase font-semibold text-secondary">RIR Promedio</span>
+                  <span className="font-code-data font-bold text-on-surface text-sm">
+                    {selectedHistoricalWorkout.averageRir != null && selectedHistoricalWorkout.averageRir > 0
+                      ? selectedHistoricalWorkout.averageRir.toFixed(1)
+                      : '—'}
+                  </span>
+                </div>
+                <div className="flex flex-col text-center">
+                  <span className="text-[10px] uppercase font-semibold text-secondary">Duración</span>
+                  <span className="font-code-data font-bold text-on-surface text-sm">
+                    {Math.round((selectedHistoricalWorkout.durationSeconds || 0) / 60)} min
+                  </span>
+                </div>
+              </div>
+
+              {/* Body: Exercises & Sets */}
+              <div className="p-space-lg overflow-y-auto flex flex-col gap-space-md">
+                {selectedHistoricalWorkout.exercisesSnapshot.map((ex, exIdx) => {
+                  const completedSets = ex.sets.filter(s => s.completed);
+                  return (
+                    <div
+                      key={ex.configId || exIdx}
+                      className="bg-surface-container-low rounded-xl p-space-md border border-surface-container flex flex-col gap-space-xs"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="font-headline-sm text-sm font-bold text-on-surface">
+                          {ex.exerciseName}
+                        </span>
+                        <span className="font-code-data text-xs text-secondary">
+                          {completedSets.length} / {ex.sets.length} series
+                        </span>
+                      </div>
+
+                      {completedSets.length === 0 ? (
+                        <span className="text-xs text-secondary italic">Sin series completadas en este ejercicio</span>
+                      ) : (
+                        <div className="flex flex-col gap-1 mt-1">
+                          {completedSets.map((s, sIdx) => (
+                            <div
+                              key={s.id || sIdx}
+                              className="flex items-center justify-between bg-surface-container-lowest px-3 py-1.5 rounded-lg text-xs font-code-data"
+                            >
+                              <span className="font-bold text-primary">
+                                Serie {s.setNumber}{' '}
+                                {s.type === 'warmup' && <span className="text-secondary font-normal">(Aprox.)</span>}
+                                {s.type === 'dropset' && <span className="text-amber-500 font-normal">(Drop)</span>}
+                              </span>
+                              <div className="flex items-center gap-3">
+                                <span>{s.weightKg} kg × {s.reps} reps</span>
+                                <span className="text-secondary">@ RIR {s.rir}</span>
+                                {s.estimated1RM > 0 && (
+                                  <span className="text-primary font-bold">1RM: {s.estimated1RM} kg</span>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Footer */}
+              <div className="p-space-md border-t border-surface-container/60 bg-surface-container-low flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => setSelectedHistoricalWorkout(null)}
+                  className="px-5 py-2 rounded-xl bg-primary text-on-primary font-label-md text-sm font-bold shadow-xs cursor-pointer"
+                >
+                  Cerrar
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -500,7 +820,7 @@ export const WorkoutLogView: React.FC = () => {
               </div>
               <div className="mt-1">
                 <div className="font-headline-sm text-headline-sm text-on-surface font-bold">
-                  {activeLiveWorkout.averageRir > 0 ? activeLiveWorkout.averageRir : '—'}{' '}
+                  {activeLiveWorkout.averageRir != null && activeLiveWorkout.averageRir > 0 ? activeLiveWorkout.averageRir : '—'}{' '}
                   <span className="text-xs font-normal text-secondary">RIR</span>
                 </div>
                 <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-primary mt-1">
@@ -609,14 +929,28 @@ export const WorkoutLogView: React.FC = () => {
                     </span>
                   </div>
 
-                  <div className="bg-surface-container-low p-space-sm rounded-xl flex items-center gap-2 self-start sm:self-auto border border-surface-container/40">
-                    <span className="material-symbols-outlined text-primary text-lg">history</span>
-                    <div className="flex flex-col">
-                      <span className="font-label-sm text-label-sm text-secondary">Récord / Anterior:</span>
-                      <span className="font-label-md text-label-md text-on-surface font-semibold tracking-tight">
-                        {currentExercise.historicalRecord || '80.0 kg × 8 reps'}
-                      </span>
+                  <div className="flex items-center gap-2 flex-wrap self-start sm:self-auto">
+                    <div className="bg-surface-container-low p-space-sm rounded-xl flex items-center gap-2 border border-surface-container/40">
+                      <span className="material-symbols-outlined text-primary text-lg">history</span>
+                      <div className="flex flex-col">
+                        <span className="font-label-sm text-label-sm text-secondary">Récord / Anterior:</span>
+                        <span className="font-label-md text-label-md text-on-surface font-semibold tracking-tight">
+                          {currentExercise.historicalRecord || '80.0 kg × 8 reps'}
+                        </span>
+                      </div>
                     </div>
+
+                    {nextIncompleteSet && nextIncompleteSet.weightKg > 0 && (
+                      <div className="bg-primary/5 p-space-sm rounded-xl flex items-center gap-2 border border-primary/20">
+                        <span className="material-symbols-outlined text-primary text-lg">psychology</span>
+                        <div className="flex flex-col">
+                          <span className="font-label-sm text-label-sm text-primary font-semibold">Prescripción Sugerida:</span>
+                          <span className="font-label-md text-label-md text-on-surface font-bold font-code-data tracking-tight">
+                            {nextIncompleteSet.weightKg} kg × {nextIncompleteSet.targetRepsMin || 8}-{nextIncompleteSet.targetRepsMax || 10} reps
+                          </span>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
 

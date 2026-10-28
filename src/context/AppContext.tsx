@@ -54,6 +54,7 @@ import {
   calculateAverageRir,
 } from '../utils/workoutCalculations';
 import { getExerciseById } from '../data/exerciseCatalog';
+import { createDemoExecutedWorkoutsHistory } from '../data/demoWorkoutsSeed';
 import { UserProfile, AppNotification, NotificationPreferences } from '../types/auth';
 import {
   auth,
@@ -617,7 +618,24 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   // Workout
   const [activeWorkout, setActiveWorkout] = useState<WorkoutExercise>(initialWorkout);
-  const [workoutHistory, setWorkoutHistory] = useState<WorkoutSessionRecord[]>([]);
+  const [workoutHistory, setWorkoutHistory] = useState<WorkoutSessionRecord[]>(() => {
+    const isDemo = localStorage.getItem('vigor_is_demo') === 'true';
+    if (isDemo) {
+      try {
+        const savedUser = localStorage.getItem('vigor_auth_user');
+        let uid = 'demo_camilo';
+        if (savedUser) {
+          try {
+            const parsed = JSON.parse(savedUser);
+            if (parsed?.id) uid = parsed.id;
+          } catch {}
+        }
+        const saved = localStorage.getItem(`vigor_workout_sessions_${uid}`) || localStorage.getItem('vigor_workout_sessions_demo');
+        if (saved) return JSON.parse(saved);
+      } catch {}
+    }
+    return [];
+  });
   const [restTimerSeconds, setRestTimerSeconds] = useState<number>(105);
   const [isRestTimerRunning, setIsRestTimerRunning] = useState<boolean>(true);
   const [cardioSessions, setCardioSessions] = useState<CardioSession[]>(initialCardioSessions);
@@ -661,6 +679,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         }
         const saved = localStorage.getItem(`vigor_executed_workouts_${uid}`) || localStorage.getItem('vigor_executed_workouts_demo');
         if (saved) return JSON.parse(saved);
+        // Default Demo Seed (Increment 6F)
+        const demoSeed = createDemoExecutedWorkoutsHistory(uid);
+        localStorage.setItem(`vigor_executed_workouts_${uid}`, JSON.stringify(demoSeed));
+        return demoSeed;
       } catch {}
     }
     return [];
@@ -1088,8 +1110,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         setExecutedWorkoutsHistory(list);
       },
       error => {
-        // Soft logging as security rules deployment is awaiting user authorization
-        console.warn('Nota: Colección executedWorkouts pendiente de autorización de reglas:', error.message);
+        handleFirestoreError(error, OperationType.LIST, `users/${activeUid}/executedWorkouts`);
       }
     );
 
@@ -2507,7 +2528,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           targetRepsMin: cfg.repsMin,
           targetRepsMax: cfg.repsMax,
           targetRir: cfg.targetRir ?? 2,
-          weightKg: 60,
+          weightKg: cfg.targetWeightKg && cfg.targetWeightKg > 0 ? cfg.targetWeightKg : 60,
           reps: cfg.repsMin,
           rir: cfg.targetRir ?? 2,
           completed: false,
@@ -2573,7 +2594,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           exercisesSnapshot,
         });
       } catch (err: any) {
-        console.warn('Nota: Persistencia remota en executedWorkouts preparada:', err.message);
+        handleFirestoreError(err, OperationType.CREATE, `users/${fbUser.uid}/executedWorkouts/${workoutId}`);
       }
     }
 
@@ -2681,7 +2702,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           exercisesSnapshot,
         });
       } catch (err: any) {
-        console.warn('Nota: Persistencia remota en executedWorkouts preparada:', err.message);
+        handleFirestoreError(err, OperationType.CREATE, `users/${fbUser.uid}/executedWorkouts/${workoutId}`);
       }
     }
 
@@ -2939,7 +2960,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           completedAt: nowIso,
         });
       } catch (err: any) {
-        console.warn('Nota: Persistencia remota al abandonar sesión:', err.message);
+        handleFirestoreError(err, OperationType.WRITE, `users/${fbUser.uid}/executedWorkouts/${workoutId}`);
       }
     } else {
       const demoUid = currentUser?.id || 'demo_camilo';
