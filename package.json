@@ -19,6 +19,7 @@
     "test:export": "tsx scripts/test_workout_export_e2e.ts",
     "test:analytics": "tsx scripts/test_workout_analytics_e2e.ts",
     "test:autoregulation": "tsx scripts/test_workout_autoregulation_e2e.ts",
+    "test:auth": "tsx scripts/test_auth_guard_and_session.ts",
     "test:verify": "tsx scripts/verify_implementation.ts",
     "test:rules": "tsx scripts/test_firestore_rules.ts",
     "test:emulator": "firebase emulators:exec --only firestore 'npm run test:rules'"

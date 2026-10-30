@@ -1,4 +1,9 @@
+export type AuthStatus = 'initializing' | 'authenticated' | 'unauthenticated' | 'error';
+
 export type NavigationPath =
+  | 'login'
+  | 'registro'
+  | 'recuperar-password'
   | 'dashboard-nutricional'
   | 'configuracion-nutricional'
   | 'menu-semanal'
@@ -11,6 +16,31 @@ export type NavigationPath =
   | 'registro-de-entrenamiento'
   | 'cardio-y-hiit'
   | 'progreso-del-entrenamiento';
+
+export const PRIVATE_NAVIGATION_PATHS: NavigationPath[] = [
+  'dashboard-nutricional',
+  'configuracion-nutricional',
+  'menu-semanal',
+  'registro-de-comidas',
+  'registro-diario',
+  'lista-de-compras',
+  'sustituciones',
+  'guia-y-ajustes',
+  'rutina-de-entrenamiento',
+  'registro-de-entrenamiento',
+  'cardio-y-hiit',
+  'progreso-del-entrenamiento',
+];
+
+export const PUBLIC_NAVIGATION_PATHS: NavigationPath[] = [
+  'login',
+  'registro',
+  'recuperar-password',
+];
+
+export function isPrivatePath(path: string): path is NavigationPath {
+  return PRIVATE_NAVIGATION_PATHS.includes(path as NavigationPath);
+}
 
 export type GroceryDepartment = 'carnes' | 'huevos' | 'verduras' | 'carbohidratos' | 'grasas';
 
@@ -141,3 +171,4 @@ export interface ToastMessage {
 
 export * from './nutrition';
 export * from './workout';
+export * from './auth';

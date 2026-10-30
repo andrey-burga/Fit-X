@@ -27,7 +27,18 @@ const workoutNav: NavItem[] = [
 ];
 
 export const Sidebar: React.FC = () => {
-  const { currentPath, navigate, isMobileSidebarOpen, closeMobileSidebar, currentUser, isAuthenticated, isDemoMode, openAuthModal } = useApp();
+  const {
+    currentPath,
+    navigate,
+    isMobileSidebarOpen,
+    closeMobileSidebar,
+    currentUser,
+    isAuthenticated,
+    isDemoMode,
+    openAuthModal,
+    logout,
+    isLoggingOut,
+  } = useApp();
 
   const handleNavClick = (path: NavigationPath) => {
     navigate(path);
@@ -172,14 +183,25 @@ export const Sidebar: React.FC = () => {
             </div>
           )}
         </div>
-        <button
-          onClick={openAuthModal}
-          className="p-1.5 rounded-lg text-on-surface-variant hover:bg-surface-container-highest hover:text-on-surface transition-colors"
-          type="button"
-          title="Gestión de cuenta"
-        >
-          <span className="material-symbols-outlined text-lg">manage_accounts</span>
-        </button>
+        <div className="flex items-center gap-1 shrink-0">
+          <button
+            onClick={openAuthModal}
+            className="p-1.5 rounded-lg text-on-surface-variant hover:bg-surface-container-highest hover:text-on-surface transition-colors"
+            type="button"
+            title="Gestión de perfil"
+          >
+            <span className="material-symbols-outlined text-lg">manage_accounts</span>
+          </button>
+          <button
+            onClick={logout}
+            disabled={isLoggingOut}
+            className="p-1.5 rounded-lg text-on-surface-variant hover:bg-error-container/30 hover:text-error transition-colors disabled:opacity-50"
+            type="button"
+            title="Cerrar sesión"
+          >
+            <span className="material-symbols-outlined text-lg">logout</span>
+          </button>
+        </div>
       </div>
     </div>
   );

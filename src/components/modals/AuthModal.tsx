@@ -9,6 +9,7 @@ export const AuthModal: React.FC = () => {
     loginWithGoogle,
     startDemoMode,
     logout,
+    isLoggingOut,
     isAuthModalOpen,
     closeAuthModal,
     showToast,
@@ -244,13 +245,17 @@ export const AuthModal: React.FC = () => {
                 </button>
                 <button
                   type="button"
-                  onClick={() => {
-                    logout();
+                  disabled={isLoggingOut}
+                  onClick={async () => {
+                    const res = await logout();
+                    if (res.success) {
+                      closeAuthModal();
+                    }
                   }}
-                  className="w-full py-2.5 px-4 bg-error-container/20 hover:bg-error-container/40 text-error rounded-xl font-medium text-sm transition-colors flex items-center justify-center gap-2"
+                  className="w-full py-2.5 px-4 bg-error-container/20 hover:bg-error-container/40 text-error rounded-xl font-medium text-sm transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
                 >
                   <span className="material-symbols-outlined text-base">logout</span>
-                  Cerrar Sesión
+                  {isLoggingOut ? 'Cerrando sesión...' : 'Cerrar Sesión'}
                 </button>
               </div>
             </div>

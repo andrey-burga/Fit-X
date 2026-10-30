@@ -1,6 +1,9 @@
 import React, { createContext, useContext, useState, useEffect, useMemo, ReactNode } from 'react';
 import {
   NavigationPath,
+  AuthStatus,
+  isPrivatePath,
+  PUBLIC_NAVIGATION_PATHS,
   GroceryItem,
   MealLogItem,
   BiometricConfig,
@@ -82,6 +85,12 @@ import {
   orderBy,
   limit,
 } from 'firebase/firestore';
+import {
+  enqueueOfflineSet,
+  syncOfflineSetsForUser,
+  getOfflinePendingSets,
+  migrateLegacyPendingSets,
+} from '../services/workoutSyncQueue';
 
 interface AppContextType {
   currentPath: NavigationPath;
@@ -91,9 +100,14 @@ interface AppContextType {
   currentUser: UserProfile | null;
   isAuthenticated: boolean;
   isDemoMode: boolean;
+  authStatus: AuthStatus;
+  authError: string | null;
+  isLoggingOut: boolean;
   loginWithGoogle: () => Promise<{ success: boolean; error?: string }>;
   startDemoMode: (role?: 'Atleta Pro' | 'Coach' | 'Nutricionista', name?: string, email?: string) => void;
-  logout: () => void;
+  logout: () => Promise<{ success: boolean; error?: string }>;
+  redirectPath: NavigationPath | null;
+  setRedirectPath: (path: NavigationPath | null) => void;
   isAuthModalOpen: boolean;
   openAuthModal: () => void;
   closeAuthModal: () => void;
@@ -219,6 +233,8 @@ interface AppContextType {
   resumeRecoveredLiveSession: () => void;
   discardRecoveredLiveSession: () => void;
   updateLiveSessionDuration: (seconds: number) => void;
+  pendingOfflineSetsCount: number;
+  syncPendingOfflineSets: () => Promise<void>;
 
   // Recipe Library & Weekly Plans (Increment 4)
   recipes: Recipe[];
@@ -524,22 +540,46 @@ const loadScopedPreference = <T,>(baseKey: string, scopeKey: string, fallback: T
 const AppContext = createContext<AppContextType | null>(null);
 
 export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
-  const [currentPath, setCurrentPath] = useState<NavigationPath>('dashboard-nutricional');
+  const getInitialPath = (): NavigationPath => {
+    if (typeof window !== 'undefined' && window.location.hash) {
+      const hash = window.location.hash.replace(/^#\/?/, '');
+      if (isPrivatePath(hash) || PUBLIC_NAVIGATION_PATHS.includes(hash as any)) {
+        return hash as NavigationPath;
+      }
+    }
+    return 'dashboard-nutricional';
+  };
+
+  const [currentPath, setCurrentPath] = useState<NavigationPath>(getInitialPath);
+  const [redirectPath, setRedirectPath] = useState<NavigationPath | null>(null);
 
   // Firebase Auth State
   const [fbUser, setFbUser] = useState<FirebaseUser | null>(null);
   const [isDemoMode, setIsDemoMode] = useState<boolean>(() => {
     return localStorage.getItem('vigor_is_demo') === 'true';
   });
+  const [authStatus, setAuthStatus] = useState<AuthStatus>('initializing');
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const isLogoutInProgressRef = React.useRef(false);
+  const [pendingOfflineSetsCount, setPendingOfflineSetsCount] = useState<number>(0);
+
+  // Lazy migration of any legacy shared pending queue on mount
+  useEffect(() => {
+    migrateLegacyPendingSets();
+  }, []);
 
   const [currentUser, setCurrentUser] = useState<UserProfile | null>(() => {
-    const saved = localStorage.getItem('vigor_auth_user');
-    if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch {}
+    const isDemo = localStorage.getItem('vigor_is_demo') === 'true';
+    if (isDemo) {
+      const saved = localStorage.getItem('vigor_demo_user');
+      if (saved) {
+        try {
+          return JSON.parse(saved);
+        } catch {}
+      }
     }
-    return defaultUser;
+    return null;
   });
 
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
@@ -811,117 +851,227 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const navigate = (path: NavigationPath) => {
+    // Check if trying to navigate to private route without authentication
+    if (isPrivatePath(path) && authStatus !== 'authenticated') {
+      setRedirectPath(path);
+      setCurrentPath('login');
+      if (typeof window !== 'undefined') {
+        window.location.hash = '#/login';
+      }
+      setIsMobileSidebarOpen(false);
+      return;
+    }
+
     setCurrentPath(path);
+    if (typeof window !== 'undefined') {
+      window.location.hash = `#/${path}`;
+    }
     setIsMobileSidebarOpen(false);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    if (typeof window !== 'undefined') {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
   };
+
+  // Synchronize hash with currentPath and enforce route protection on Back/Forward buttons
+  useEffect(() => {
+    const handleHashChange = () => {
+      const hash = window.location.hash.replace(/^#\/?/, '') as NavigationPath;
+      if (!hash) return;
+
+      if (isPrivatePath(hash)) {
+        if (authStatus === 'unauthenticated') {
+          setRedirectPath(hash);
+          setCurrentPath('login');
+          window.location.hash = '#/login';
+          return;
+        }
+      }
+
+      if (isPrivatePath(hash) || PUBLIC_NAVIGATION_PATHS.includes(hash as any)) {
+        setCurrentPath(hash);
+      }
+    };
+
+    window.addEventListener('hashchange', handleHashChange);
+    return () => window.removeEventListener('hashchange', handleHashChange);
+  }, [authStatus]);
+
+  // Handle route redirection when authStatus transitions
+  useEffect(() => {
+    if (authStatus === 'unauthenticated') {
+      if (isPrivatePath(currentPath)) {
+        setRedirectPath(currentPath);
+        setCurrentPath('login');
+        if (typeof window !== 'undefined') {
+          window.location.hash = '#/login';
+        }
+      }
+    } else if (authStatus === 'authenticated') {
+      if (currentPath === 'login' || currentPath === 'registro' || currentPath === 'recuperar-password') {
+        const target = redirectPath && isPrivatePath(redirectPath) ? redirectPath : 'dashboard-nutricional';
+        setRedirectPath(null);
+        setCurrentPath(target);
+        if (typeof window !== 'undefined') {
+          window.location.hash = `#/${target}`;
+        }
+      }
+    }
+  }, [authStatus]);
 
   // 1. Firebase Auth State Listener
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async user => {
-      setFbUser(user);
-      if (user) {
-        setIsDemoMode(false);
-        localStorage.setItem('vigor_is_demo', 'false');
+    let isMounted = true;
+    const unsubscribe = onAuthStateChanged(
+      auth,
+      async user => {
+        if (!isMounted) return;
+        setFbUser(user);
+        if (user) {
+          setIsDemoMode(false);
+          localStorage.setItem('vigor_is_demo', 'false');
+          localStorage.removeItem('vigor_demo_user');
 
-        const userRef = doc(db, 'users', user.uid);
-        try {
-          const snap = await getDoc(userRef);
-          if (snap.exists()) {
-            const data = snap.data();
-            const prof: UserProfile = {
-              id: user.uid,
-              name: data.name || user.displayName || 'Atleta Vigor',
-              email: data.email || user.email || '',
-              avatarUrl: data.avatarUrl || user.photoURL || defaultUser.avatarUrl,
-              role: data.role || 'Atleta Pro',
-              location: data.location || 'Bogotá (UTC-5)',
-              joinedDate: data.createdAt || 'Octubre 2024',
-            };
-            setCurrentUser(prof);
-          } else {
-            // New user registration
-            const newProfile: UserProfile = {
-              id: user.uid,
-              name: user.displayName || user.email?.split('@')[0] || 'Atleta Vigor',
-              email: user.email || '',
-              avatarUrl: user.photoURL || defaultUser.avatarUrl,
-              role: 'Atleta Pro',
-              location: 'Bogotá (UTC-5)',
-              joinedDate: new Date().toLocaleDateString('es-ES', { month: 'long', year: 'numeric' }),
-            };
-            await setDoc(userRef, {
-              ...newProfile,
-              createdAt: new Date().toISOString(),
-              updatedAt: new Date().toISOString(),
-            });
-            // Seed base biometrics for new profile so calculations work
-            await setDoc(doc(db, 'users', user.uid, 'biometrics', 'current'), {
-              ...defaultBiometrics,
-              userId: user.uid,
-              updatedAt: new Date().toISOString(),
-            });
-            setCurrentUser(newProfile);
-          }
-
-          // Load isolated preferences for this specific user from Firestore
+          const userRef = doc(db, 'users', user.uid);
           try {
-            const prefRef = doc(db, 'users', user.uid, 'preferences', 'settings');
-            const prefSnap = await getDoc(prefRef);
-            if (prefSnap.exists()) {
-              const pdata = prefSnap.data();
-              if (pdata.notificationPreferences) {
-                setNotificationPreferences(pdata.notificationPreferences);
-                localStorage.setItem(`vigor_notif_prefs_uid_${user.uid}`, JSON.stringify(pdata.notificationPreferences));
-              }
-              if (pdata.mealPartition) {
-                setMealPartition(pdata.mealPartition);
-                localStorage.setItem(`vigor_meal_partition_uid_${user.uid}`, JSON.stringify(pdata.mealPartition));
-              }
+            const snap = await getDoc(userRef);
+            let prof: UserProfile;
+            if (snap.exists()) {
+              const data = snap.data();
+              prof = {
+                id: user.uid,
+                name: data.name || user.displayName || 'Atleta Vigor',
+                email: data.email || user.email || '',
+                avatarUrl: data.avatarUrl || user.photoURL || defaultUser.avatarUrl,
+                role: data.role || 'Atleta Pro',
+                location: data.location || 'Bogotá (UTC-5)',
+                joinedDate: data.createdAt || 'Octubre 2024',
+              };
             } else {
-              // Initial user preferences setup
-              const currentNotif = loadScopedPreference('vigor_notif_prefs', `vigor_notif_prefs_uid_${user.uid}`, initialNotificationPreferences);
-              const currentMeal = loadScopedPreference('vigor_meal_partition', `vigor_meal_partition_uid_${user.uid}`, defaultMealPartition);
-              setNotificationPreferences(currentNotif);
-              setMealPartition(currentMeal);
-              await setDoc(prefRef, {
-                notificationPreferences: currentNotif,
-                mealPartition: currentMeal,
+              // New user registration
+              prof = {
+                id: user.uid,
+                name: user.displayName || user.email?.split('@')[0] || 'Atleta Vigor',
+                email: user.email || '',
+                avatarUrl: user.photoURL || defaultUser.avatarUrl,
+                role: 'Atleta Pro',
+                location: 'Bogotá (UTC-5)',
+                joinedDate: new Date().toLocaleDateString('es-ES', { month: 'long', year: 'numeric' }),
+              };
+              await setDoc(userRef, {
+                ...prof,
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+              });
+              // Seed base biometrics for new profile so calculations work
+              await setDoc(doc(db, 'users', user.uid, 'biometrics', 'current'), {
+                ...defaultBiometrics,
                 userId: user.uid,
                 updatedAt: new Date().toISOString(),
               });
-              localStorage.setItem(`vigor_notif_prefs_uid_${user.uid}`, JSON.stringify(currentNotif));
-              localStorage.setItem(`vigor_meal_partition_uid_${user.uid}`, JSON.stringify(currentMeal));
             }
-          } catch (prefErr) {
-            console.error('Error fetching user preferences from Firestore:', prefErr);
-          }
-        } catch (err) {
-          console.error('Error in user profile verification:', err);
-        }
-      } else {
-        // No Firebase user
-        if (!isDemoMode) {
-          // If not explicitly in demo mode, set as guest or fallback
-          const saved = localStorage.getItem('vigor_auth_user');
-          if (saved) {
-            try {
-              setCurrentUser(JSON.parse(saved));
-            } catch {
-              setCurrentUser(defaultUser);
-            }
-          }
-        }
-      }
-    });
 
-    return () => unsubscribe();
-  }, [isDemoMode]);
+            if (isMounted) {
+              setCurrentUser(prof);
+              setAuthStatus('authenticated');
+              setAuthError(null);
+            }
+
+            // Load isolated preferences for this specific user from Firestore
+            try {
+              const prefRef = doc(db, 'users', user.uid, 'preferences', 'settings');
+              const prefSnap = await getDoc(prefRef);
+              if (prefSnap.exists()) {
+                const pdata = prefSnap.data();
+                if (pdata.notificationPreferences) {
+                  setNotificationPreferences(pdata.notificationPreferences);
+                  localStorage.setItem(`vigor_notif_prefs_uid_${user.uid}`, JSON.stringify(pdata.notificationPreferences));
+                }
+                if (pdata.mealPartition) {
+                  setMealPartition(pdata.mealPartition);
+                  localStorage.setItem(`vigor_meal_partition_uid_${user.uid}`, JSON.stringify(pdata.mealPartition));
+                }
+              } else {
+                // Initial user preferences setup
+                const currentNotif = loadScopedPreference('vigor_notif_prefs', `vigor_notif_prefs_uid_${user.uid}`, initialNotificationPreferences);
+                const currentMeal = loadScopedPreference('vigor_meal_partition', `vigor_meal_partition_uid_${user.uid}`, defaultMealPartition);
+                setNotificationPreferences(currentNotif);
+                setMealPartition(currentMeal);
+                await setDoc(prefRef, {
+                  notificationPreferences: currentNotif,
+                  mealPartition: currentMeal,
+                  userId: user.uid,
+                  updatedAt: new Date().toISOString(),
+                });
+                localStorage.setItem(`vigor_notif_prefs_uid_${user.uid}`, JSON.stringify(currentNotif));
+                localStorage.setItem(`vigor_meal_partition_uid_${user.uid}`, JSON.stringify(currentMeal));
+              }
+            } catch (prefErr) {
+              console.error('Error fetching user preferences from Firestore:', prefErr);
+            }
+          } catch (err: any) {
+            console.error('Error in user profile verification:', err);
+            if (isMounted) {
+              setAuthError(err.message || 'Error al verificar credenciales.');
+              // Resilient fallback for authenticated user
+              setCurrentUser({
+                id: user.uid,
+                name: user.displayName || user.email?.split('@')[0] || 'Atleta Vigor',
+                email: user.email || '',
+                avatarUrl: user.photoURL || defaultUser.avatarUrl,
+                role: 'Atleta Pro',
+                location: 'Bogotá (UTC-5)',
+                joinedDate: 'Octubre 2024',
+              });
+              setAuthStatus('authenticated');
+            }
+          }
+        } else {
+          // No Firebase user
+          if (!isMounted) return;
+          const isExplicitDemo = localStorage.getItem('vigor_is_demo') === 'true';
+          const savedDemo = localStorage.getItem('vigor_demo_user');
+          if (isExplicitDemo && savedDemo) {
+            try {
+              const parsed = JSON.parse(savedDemo);
+              if (parsed?.id) {
+                setCurrentUser(parsed);
+                setIsDemoMode(true);
+                setAuthStatus('authenticated');
+                setAuthError(null);
+                return;
+              }
+            } catch {}
+          }
+
+          // Genuine unauthenticated state
+          setFbUser(null);
+          setCurrentUser(null);
+          setIsDemoMode(false);
+          localStorage.removeItem('vigor_is_demo');
+          localStorage.removeItem('vigor_auth_user');
+          localStorage.removeItem('vigor_demo_user');
+          setAuthStatus('unauthenticated');
+          setAuthError(null);
+        }
+      },
+      error => {
+        if (!isMounted) return;
+        console.error('onAuthStateChanged fatal error:', error);
+        setAuthError(error.message);
+        setAuthStatus('error');
+      }
+    );
+
+    return () => {
+      isMounted = false;
+      unsubscribe();
+    };
+  }, []);
 
   // 2. Real-time Firestore Listeners (Attached ONLY when authenticated with real UID)
   useEffect(() => {
     const activeUid = fbUser?.uid;
-    if (!activeUid || isDemoMode) {
+    if (!activeUid || isDemoMode || authStatus !== 'authenticated') {
       return;
     }
 
@@ -1127,12 +1277,16 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       unsubRoutines();
       unsubExecuted();
     };
-  }, [fbUser, isDemoMode]);
+  }, [fbUser, isDemoMode, authStatus]);
 
   // Synchronize local state backup for offline demo resilience and user isolation
   useEffect(() => {
-    localStorage.setItem('vigor_auth_user', JSON.stringify(currentUser));
-  }, [currentUser]);
+    if (currentUser && !isDemoMode) {
+      localStorage.setItem('vigor_auth_user', JSON.stringify(currentUser));
+    } else if (!currentUser) {
+      localStorage.removeItem('vigor_auth_user');
+    }
+  }, [currentUser, isDemoMode]);
 
   useEffect(() => {
     if (isDemoMode && currentUser?.id) {
@@ -1272,32 +1426,100 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       localStorage.setItem(`vigor_workout_routines_${demoId}`, JSON.stringify([defaultDemo]));
     }
     const savedActive = localStorage.getItem(`vigor_active_routine_${demoId}`);
+    localStorage.setItem(`vigor_active_routine_${demoId}`, savedActive || '');
     setActiveRoutineId(savedActive || null);
     setRoutineSyncStatus('synced');
+
+    // Isolated demo executed workouts (Increment 6C/6F)
+    const savedExecuted = localStorage.getItem(`vigor_executed_workouts_${demoId}`);
+    if (savedExecuted) {
+      try {
+        setExecutedWorkoutsHistory(JSON.parse(savedExecuted));
+      } catch {
+        setExecutedWorkoutsHistory(createDemoExecutedWorkoutsHistory(demoId));
+      }
+    } else {
+      const demoHistory = createDemoExecutedWorkoutsHistory(demoId);
+      setExecutedWorkoutsHistory(demoHistory);
+      localStorage.setItem(`vigor_executed_workouts_${demoId}`, JSON.stringify(demoHistory));
+    }
 
     setHasBiometricsConfigured(true);
     setSelectedDate('2024-10-24');
 
+    // Mark as authenticated in demo mode
+    localStorage.setItem('vigor_demo_user', JSON.stringify(demoProfile));
+    setAuthStatus('authenticated');
+    setAuthError(null);
+
+    const target = redirectPath && isPrivatePath(redirectPath) ? redirectPath : 'dashboard-nutricional';
+    setRedirectPath(null);
+    setCurrentPath(target);
+    if (typeof window !== 'undefined') {
+      window.location.hash = `#/${target}`;
+    }
+
     showToast(`Modo Demostración activo como ${name} (${role})`);
   };
 
-  const logout = async () => {
+  const logout = async (): Promise<{ success: boolean; error?: string }> => {
+    if (isLoggingOut) {
+      return { success: false, error: 'Cierre de sesión ya en curso' };
+    }
+    setIsLoggingOut(true);
+
     try {
-      await fbSignOut(auth);
-    } catch {}
-    setFbUser(null);
-    setIsDemoMode(false);
-    localStorage.setItem('vigor_is_demo', 'false');
-    setCurrentUser(null);
-    setGroceries([]);
-    setMealLogs([]);
-    setWorkoutHistory([]);
-    setWorkoutRoutines([]);
-    setActiveRoutineId(null);
-    setRoutineSyncStatus('idle');
-    setNotificationPreferences(initialNotificationPreferences);
-    setMealPartition(defaultMealPartition);
-    showToast('Sesión cerrada correctamente');
+      // 1. Remote Firebase sign-out if active
+      if (auth.currentUser) {
+        await fbSignOut(auth);
+      }
+    } catch (err: any) {
+      console.error('Error during fbSignOut:', err);
+      setIsLoggingOut(false);
+      showToast(`Error al cerrar sesión: ${err.message || 'Error de red'}`, 'warning');
+      return { success: false, error: err.message || 'Error al cerrar sesión' };
+    }
+
+    try {
+      // 2. Clear authentication and session flags
+      setFbUser(null);
+      setCurrentUser(null);
+      setIsDemoMode(false);
+      setAuthStatus('unauthenticated');
+      setAuthError(null);
+
+      // 3. Clear transient session storage keys
+      localStorage.removeItem('vigor_is_demo');
+      localStorage.removeItem('vigor_auth_user');
+      localStorage.removeItem('vigor_demo_user');
+      localStorage.removeItem('vigor_active_live_session');
+
+      // 4. Wipe in-memory private caches to prevent data leakage
+      setGroceries([]);
+      setMealLogs([]);
+      setWorkoutHistory([]);
+      setWorkoutRoutines([]);
+      setExecutedWorkoutsHistory([]);
+      setActiveLiveWorkout(null);
+      setActiveRoutineId(null);
+      setRoutineSyncStatus('idle');
+      setRecipes([]);
+      setMealPlans({});
+      setNotifications([]);
+      setHasBiometricsConfigured(false);
+
+      // 5. Navigate to login and sync hash
+      setRedirectPath(null);
+      setCurrentPath('login');
+      if (typeof window !== 'undefined') {
+        window.location.hash = '#/login';
+      }
+
+      showToast('Sesión cerrada correctamente', 'info');
+      return { success: true };
+    } finally {
+      setIsLoggingOut(false);
+    }
   };
 
   // Notifications Operations
@@ -3001,11 +3223,16 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
         // Auth
         currentUser,
-        isAuthenticated: !!currentUser,
+        isAuthenticated: authStatus === 'authenticated' && !!currentUser,
         isDemoMode,
+        authStatus,
+        authError,
+        isLoggingOut,
         loginWithGoogle,
         startDemoMode,
         logout,
+        redirectPath,
+        setRedirectPath,
         isAuthModalOpen,
         openAuthModal: () => setIsAuthModalOpen(true),
         closeAuthModal: () => setIsAuthModalOpen(false),

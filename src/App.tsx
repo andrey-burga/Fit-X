@@ -7,6 +7,8 @@ import React, { useState } from 'react';
 import { AppProvider, useApp } from './context/AppContext';
 import { Sidebar } from './components/layout/Sidebar';
 import { Header } from './components/layout/Header';
+import { ProtectedRoute } from './components/layout/ProtectedRoute';
+import { LoginView } from './views/LoginView';
 
 // Views
 import { NutritionalDashboardView } from './views/NutritionalDashboardView';
@@ -33,8 +35,42 @@ import { RecipeModal } from './components/modals/RecipeModal';
 import { AssignRecipeModal } from './components/modals/AssignRecipeModal';
 
 const AppContent: React.FC = () => {
-  const { currentPath } = useApp();
+  const { currentPath, authStatus, isAuthenticated } = useApp();
   const [isSearchOpen, setIsSearchOpen] = useState(false);
+
+  // 1. Initializing state: ProtectedRoute displays the secure branded loader (Zero data leakage)
+  if (authStatus === 'initializing') {
+    return (
+      <ProtectedRoute>
+        <div />
+      </ProtectedRoute>
+    );
+  }
+
+  // 2. Fatal Auth Error or Failed Logout Lockdown: ProtectedRoute displays lockdown error UI
+  if (authStatus === 'error') {
+    return (
+      <ProtectedRoute>
+        <div />
+      </ProtectedRoute>
+    );
+  }
+
+  // 2. Unauthenticated: Full private layout is stripped; dedicated LoginView rendered
+  if (
+    authStatus === 'unauthenticated' ||
+    !isAuthenticated ||
+    currentPath === 'login' ||
+    currentPath === 'registro' ||
+    currentPath === 'recuperar-password'
+  ) {
+    return (
+      <div className="min-h-screen bg-surface text-on-surface antialiased font-body-md selection:bg-primary-fixed selection:text-on-primary-fixed">
+        <LoginView />
+        <ToastNotification />
+      </div>
+    );
+  }
 
   const renderActiveView = () => {
     switch (currentPath) {
@@ -67,32 +103,35 @@ const AppContent: React.FC = () => {
     }
   };
 
+  // 3. Authenticated: Render full private shell
   return (
-    <div className="min-h-screen bg-surface flex text-on-surface antialiased font-body-md selection:bg-primary-fixed selection:text-on-primary-fixed">
-      {/* Persistent / Mobile Responsive Sidebar */}
-      <Sidebar />
+    <ProtectedRoute>
+      <div className="min-h-screen bg-surface flex text-on-surface antialiased font-body-md selection:bg-primary-fixed selection:text-on-primary-fixed">
+        {/* Persistent / Mobile Responsive Sidebar */}
+        <Sidebar />
 
-      {/* Main Content Area */}
-      <div className="flex-1 flex flex-col min-w-0 lg:pl-72">
-        {/* Top Header */}
-        <Header onOpenSearch={() => setIsSearchOpen(true)} />
+        {/* Main Content Area */}
+        <div className="flex-1 flex flex-col min-w-0 lg:pl-72">
+          {/* Top Header */}
+          <Header onOpenSearch={() => setIsSearchOpen(true)} />
 
-        {/* View Content with padding for top fixed header */}
-        <main className="flex-1 pt-16">
-          {renderActiveView()}
-        </main>
+          {/* View Content with padding for top fixed header */}
+          <main className="flex-1 pt-16">
+            {renderActiveView()}
+          </main>
+        </div>
+
+        {/* Global Modals & Drawers */}
+        <RegisterMealDrawer />
+        <AuthModal />
+        <NotificationPanel />
+        <NotificationPreferencesModal />
+        <GlobalSearchModal isOpen={isSearchOpen} onClose={() => setIsSearchOpen(false)} />
+        <RecipeModal />
+        <AssignRecipeModal />
+        <ToastNotification />
       </div>
-
-      {/* Global Modals & Drawers */}
-      <RegisterMealDrawer />
-      <AuthModal />
-      <NotificationPanel />
-      <NotificationPreferencesModal />
-      <GlobalSearchModal isOpen={isSearchOpen} onClose={() => setIsSearchOpen(false)} />
-      <RecipeModal />
-      <AssignRecipeModal />
-      <ToastNotification />
-    </div>
+    </ProtectedRoute>
   );
 };
 
