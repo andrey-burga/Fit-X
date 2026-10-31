@@ -56,7 +56,16 @@ const AppContent: React.FC = () => {
     );
   }
 
-  // 2. Unauthenticated: Full private layout is stripped; dedicated LoginView rendered
+  // 3. Email Verification Gate: Prevent Firestore access until email is confirmed
+  if (authStatus === 'email_verification_required') {
+    return (
+      <ProtectedRoute>
+        <div />
+      </ProtectedRoute>
+    );
+  }
+
+  // 4. Unauthenticated: Full private layout is stripped; dedicated LoginView rendered
   if (
     authStatus === 'unauthenticated' ||
     !isAuthenticated ||

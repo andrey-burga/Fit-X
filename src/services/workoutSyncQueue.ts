@@ -7,7 +7,8 @@
  * Ensures zero cross-tenant contamination, idempotency, and orphan data quarantine.
  */
 
-import { WorkoutSessionRecord, WorkoutSetType } from '../types/workout';
+import { WorkoutSessionRecord } from '../types';
+import { WorkoutSetType } from '../types/workout';
 
 export interface OfflinePendingSet {
   id: string;
@@ -23,7 +24,7 @@ export interface OfflinePendingSet {
   completed: boolean;
   createdAt: string;
   setNumber?: number;
-  setType?: WorkoutSetType;
+  setType?: WorkoutSetType | string;
   queuedAt: string;
   attempts?: number;
   lastError?: string;
@@ -214,7 +215,7 @@ export function removeOfflinePendingSet(userId: string, setId: string, isDemo = 
   const userKey = getScopedPendingQueueKey(userId, isDemo);
   try {
     const raw = localStorage.getItem(userKey);
-    if (!raw) return [];
+    if (!raw) return;
     const list: OfflinePendingSet[] = JSON.parse(raw);
     const updated = list.filter(item => item.id !== setId);
     localStorage.setItem(userKey, JSON.stringify(updated));

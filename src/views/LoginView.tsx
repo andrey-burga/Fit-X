@@ -12,12 +12,15 @@ import { useApp } from '../context/AppContext';
 export const LoginView: React.FC = () => {
   const {
     loginWithGoogle,
+    loginWithEmail,
+    registerWithEmail,
+    resetPassword,
     startDemoMode,
     redirectPath,
     showToast,
   } = useApp();
 
-  const [activeTab, setActiveTab] = useState<'login' | 'register'>('login');
+  const [activeTab, setActiveTab] = useState<'login' | 'register' | 'recovery'>('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -27,10 +30,12 @@ export const LoginView: React.FC = () => {
 
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [resetSuccessMessage, setResetSuccessMessage] = useState<string | null>(null);
 
   const handleGoogleLogin = async () => {
     setIsLoading(true);
     setErrorMessage(null);
+    setResetSuccessMessage(null);
     try {
       const result = await loginWithGoogle();
       if (!result.success) {
@@ -46,6 +51,7 @@ export const LoginView: React.FC = () => {
   const handleEmailLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage(null);
+    setResetSuccessMessage(null);
     if (!email.trim() || !password.trim()) {
       setErrorMessage('Por favor ingresa tu correo y contraseña.');
       return;
@@ -53,10 +59,10 @@ export const LoginView: React.FC = () => {
 
     setIsLoading(true);
     try {
-      // In VigorCore, full persistence is tied to Google OAuth.
-      // Email authentication initializes a secure local workspace.
-      startDemoMode('Atleta Pro', email.split('@')[0], email.trim());
-      showToast('Sesión iniciada. Para sincronización en la nube multi-dispositivo, vincula Google OAuth.', 'info');
+      const res = await loginWithEmail(email.trim(), password);
+      if (!res.success) {
+        setErrorMessage(res.error || 'Error al procesar el inicio de sesión.');
+      }
     } catch (err: any) {
       setErrorMessage(err.message || 'Error al procesar el inicio de sesión.');
     } finally {
@@ -67,6 +73,7 @@ export const LoginView: React.FC = () => {
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage(null);
+    setResetSuccessMessage(null);
 
     if (!fullName.trim()) {
       setErrorMessage('Por favor ingresa tu nombre completo.');
@@ -87,10 +94,37 @@ export const LoginView: React.FC = () => {
 
     setIsLoading(true);
     try {
-      startDemoMode(role, fullName.trim(), email.trim());
-      showToast(`Cuenta registrada (${role}). Bienvenido a VigorCore.`, 'success');
+      const res = await registerWithEmail(email.trim(), password, fullName.trim(), role);
+      if (!res.success) {
+        setErrorMessage(res.error || 'Error al procesar el registro.');
+      }
     } catch (err: any) {
       setErrorMessage(err.message || 'Error al procesar el registro.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handlePasswordReset = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMessage(null);
+    setResetSuccessMessage(null);
+
+    if (!email.trim() || !email.includes('@')) {
+      setErrorMessage('Ingresa un correo electrónico válido para enviar el enlace de recuperación.');
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      const res = await resetPassword(email.trim());
+      if (res.success) {
+        setResetSuccessMessage('Hemos enviado las instrucciones para restablecer tu contraseña a tu correo. Revisa tu bandeja de entrada o spam.');
+      } else {
+        setErrorMessage(res.error || 'Error al solicitar restablecimiento de contraseña.');
+      }
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Error al solicitar restablecimiento de contraseña.');
     } finally {
       setIsLoading(false);
     }
@@ -156,6 +190,14 @@ export const LoginView: React.FC = () => {
           </div>
         )}
 
+        {/* Password Reset Success Alert */}
+        {resetSuccessMessage && (
+          <div className="mb-4 p-3.5 bg-emerald-500/15 border border-emerald-500/30 rounded-xl text-xs text-emerald-700 flex items-start gap-2.5">
+            <span className="material-symbols-outlined text-emerald-700 text-lg shrink-0 mt-0.5">check_circle</span>
+            <div className="flex-1 font-medium">{resetSuccessMessage}</div>
+          </div>
+        )}
+
         {/* Main Card */}
         <div className="bg-surface-container-lowest rounded-2xl border border-surface-container shadow-xl overflow-hidden p-6 sm:p-8">
           {/* Primary Action: Google OAuth Button */}
@@ -209,6 +251,7 @@ export const LoginView: React.FC = () => {
               onClick={() => {
                 setActiveTab('login');
                 setErrorMessage(null);
+                setResetSuccessMessage(null);
               }}
               className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition-all ${
                 activeTab === 'login'
@@ -223,6 +266,7 @@ export const LoginView: React.FC = () => {
               onClick={() => {
                 setActiveTab('register');
                 setErrorMessage(null);
+                setResetSuccessMessage(null);
               }}
               className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition-all ${
                 activeTab === 'register'
@@ -232,10 +276,70 @@ export const LoginView: React.FC = () => {
             >
               Crear Cuenta
             </button>
+            {activeTab === 'recovery' && (
+              <button
+                type="button"
+                className="flex-1 py-1.5 text-xs font-semibold rounded-lg bg-surface-container-lowest text-primary shadow-xs"
+              >
+                Recuperación
+              </button>
+            )}
           </div>
 
           {/* Form */}
-          {activeTab === 'login' ? (
+          {activeTab === 'recovery' ? (
+            <form onSubmit={handlePasswordReset} className="space-y-4">
+              <div className="p-3 bg-primary-container/15 border border-primary/30 rounded-xl text-xs text-on-surface flex items-start gap-2.5">
+                <span className="material-symbols-outlined text-primary text-base shrink-0 mt-0.5">lock_reset</span>
+                <p>
+                  Ingresa tu correo electrónico registrado y te enviaremos un enlace oficial para restablecer tu contraseña con Firebase Authentication.
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-on-surface-variant uppercase tracking-wider mb-1.5">
+                  Correo Electrónico
+                </label>
+                <div className="relative">
+                  <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-variant text-lg">
+                    mail
+                  </span>
+                  <input
+                    type="email"
+                    value={email}
+                    onChange={e => setEmail(e.target.value)}
+                    placeholder="atleta@vigor.co"
+                    required
+                    className="w-full pl-10 pr-4 py-2.5 bg-surface-container-low border border-surface-container rounded-xl text-on-surface text-sm focus:outline-hidden focus:border-primary focus:ring-1 focus:ring-primary transition-colors"
+                  />
+                </div>
+              </div>
+
+              <button
+                type="submit"
+                disabled={isLoading}
+                className="w-full py-3 px-4 bg-primary hover:bg-primary-container text-on-primary rounded-xl font-semibold text-sm transition-all shadow-sm hover:shadow-md cursor-pointer disabled:opacity-60 flex items-center justify-center gap-2"
+              >
+                <span className="material-symbols-outlined text-lg">send</span>
+                <span>{isLoading ? 'Enviando enlace...' : 'Enviar Enlace de Restablecimiento'}</span>
+              </button>
+
+              <div className="text-center pt-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveTab('login');
+                    setErrorMessage(null);
+                    setResetSuccessMessage(null);
+                  }}
+                  className="text-xs text-primary hover:underline font-semibold inline-flex items-center gap-1 cursor-pointer"
+                >
+                  <span className="material-symbols-outlined text-sm">arrow_back</span>
+                  <span>Volver a Iniciar Sesión</span>
+                </button>
+              </div>
+            </form>
+          ) : activeTab === 'login' ? (
             <form onSubmit={handleEmailLogin} className="space-y-4">
               <div>
                 <label className="block text-xs font-semibold text-on-surface-variant uppercase tracking-wider mb-1.5">
@@ -263,8 +367,12 @@ export const LoginView: React.FC = () => {
                   </label>
                   <button
                     type="button"
-                    onClick={() => showToast('Para restablecer contraseña, inicia sesión con Google OAuth.', 'info')}
-                    className="text-xs text-primary hover:underline font-medium"
+                    onClick={() => {
+                      setActiveTab('recovery');
+                      setErrorMessage(null);
+                      setResetSuccessMessage(null);
+                    }}
+                    className="text-xs text-primary hover:underline font-medium cursor-pointer"
                   >
                     ¿Olvidaste tu clave?
                   </button>

@@ -6,6 +6,8 @@ export interface UserProfile {
   role: 'Atleta Pro' | 'Coach' | 'Nutricionista';
   location: string;
   joinedDate: string;
+  emailVerified?: boolean;
+  authProvider?: 'google.com' | 'password' | 'demo';
 }
 
 export type NotificationCategory = 'nutricion' | 'entrenamiento' | 'compras' | 'sistema';

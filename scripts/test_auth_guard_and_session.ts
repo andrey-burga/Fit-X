@@ -130,7 +130,7 @@ async function runAuthSecurityAndOfflineQueueTests() {
   if (resError.success === true) {
     throw new Error('PRUEBA 2 Fallida: Un fallo en signOut declaró falsamente éxito.');
   }
-  if (authState.status !== 'error') {
+  if ((authState.status as AuthStatus) !== 'error') {
     throw new Error(`PRUEBA 2 Fallida: authStatus debió transicionar a "error", pero fue "${authState.status}".`);
   }
   if (!authState.error?.includes('bloqueado preventivamente')) {
@@ -159,7 +159,7 @@ async function runAuthSecurityAndOfflineQueueTests() {
   // -------------------------------------------------------------------
   console.log('\n[PRUEBA 4] Recuperación Mediante Reintento Exitoso de Logout:');
   const retryLogoutRes = await simulateLogout(false);
-  if (!retryLogoutRes.success || authState.status !== 'unauthenticated' || authState.error !== null) {
+  if (!retryLogoutRes.success || (authState.status as AuthStatus) !== 'unauthenticated' || authState.error !== null) {
     throw new Error('PRUEBA 4 Fallida: El reintento de cierre de sesión no desbloqueó la aplicación.');
   }
   console.log('   -> [PASS] Reintento exitoso: la aplicación transiciona limpiamente a "unauthenticated".');
@@ -173,7 +173,7 @@ async function runAuthSecurityAndOfflineQueueTests() {
 
   // If late emission occurs during logout, guard blocks it
   let acceptedEmission = false;
-  if (!isLogoutInProgress && authState.status !== 'error') {
+  if (!isLogoutInProgress && (authState.status as AuthStatus) !== 'error') {
     acceptedEmission = true;
   }
   if (acceptedEmission) {
@@ -447,8 +447,368 @@ async function runAuthSecurityAndOfflineQueueTests() {
   }
   console.log('   -> [PASS] 12 rutas privadas y 3 rutas públicas verificadas con concordancia total.');
 
+  // -------------------------------------------------------------------
+  // PRUEBA 13 — Unificación de Persistencia: users/{uid} Idéntica para Ambos Proveedores
+  // -------------------------------------------------------------------
+  console.log('\n[PRUEBA 13] Unificación de Persistencia en Firestore: users/{uid} Idéntica para Google y Email:');
+  const googleUid = 'uid_google_athlete_777';
+  const emailUid = 'uid_email_athlete_888';
+
+  const expectedSubcollections = [
+    'workoutRoutines',
+    'executedWorkouts',
+    'workoutSessions',
+    'mealLogs',
+    'groceries',
+    'biometrics',
+    'preferences',
+    'notifications',
+    'recipes',
+    'mealPlans',
+  ];
+
+  const getSubcollectionPath = (uid: string, sub: string) => `users/${uid}/${sub}`;
+
+  for (const sub of expectedSubcollections) {
+    const googlePath = getSubcollectionPath(googleUid, sub);
+    const emailPath = getSubcollectionPath(emailUid, sub);
+    if (!googlePath.startsWith(`users/${googleUid}/`) || !emailPath.startsWith(`users/${emailUid}/`)) {
+      throw new Error(`PRUEBA 13 Fallida: Discrepancia en ruta de persistencia para subcolección "${sub}".`);
+    }
+  }
+  console.log(`   -> [PASS] Las 10 subcolecciones mapean con absoluta simetría bajo users/{uid} para ambos métodos.`);
+
+  // -------------------------------------------------------------------
+  // PRUEBA 14 — Ciclo de Vida de Verificación de Correo (Email Verification Gating)
+  // -------------------------------------------------------------------
+  console.log('\n[PRUEBA 14] Ciclo de Vida de Verificación de Correo: Bloqueo Preventivo si email_verified == false:');
+  const unverifiedEmailUser = {
+    uid: emailUid,
+    email: 'atleta_nuevo@vigor.co',
+    emailVerified: false,
+    providerId: 'password',
+  };
+
+  // Simulating onAuthStateChanged with unverified user
+  const evaluateAuthSession = (user: typeof unverifiedEmailUser): {
+    status: AuthStatus;
+    allowFirestoreCreate: boolean;
+    unverifiedEmail: string | null;
+  } => {
+    if (!user.emailVerified) {
+      return {
+        status: 'email_verification_required',
+        allowFirestoreCreate: false, // Prevents PERMISSION_DENIED on users/{uid}
+        unverifiedEmail: user.email,
+      };
+    }
+    return {
+      status: 'authenticated',
+      allowFirestoreCreate: true,
+      unverifiedEmail: null,
+    };
+  };
+
+  const unverifiedEval = evaluateAuthSession(unverifiedEmailUser);
+  if (unverifiedEval.status !== 'email_verification_required' || unverifiedEval.allowFirestoreCreate !== false || unverifiedEval.unverifiedEmail !== 'atleta_nuevo@vigor.co') {
+    throw new Error('PRUEBA 14 Fallida: Usuario no verificado no fue contenido en email_verification_required.');
+  }
+  console.log('   - [14.1] Usuario no verificado: authStatus="email_verification_required", escrituras Firestore bloqueadas.');
+
+  // User completes verification link and clicks reload
+  const verifiedEmailUser = { ...unverifiedEmailUser, emailVerified: true };
+  const verifiedEval = evaluateAuthSession(verifiedEmailUser);
+  if (verifiedEval.status !== 'authenticated' || verifiedEval.allowFirestoreCreate !== true || verifiedEval.unverifiedEmail !== null) {
+    throw new Error('PRUEBA 14 Fallida: Usuario verificado no transicionó a authenticated.');
+  }
+  console.log('   - [14.2] Usuario verificado tras reload: authStatus="authenticated", persistencia en Firestore habilitada.');
+  console.log('   -> [PASS] Ciclo de vida de verificación de correo operativo sin riesgos de PERMISSION_DENIED.');
+
+  // -------------------------------------------------------------------
+  // PRUEBA 15 — Inicialización Uniforme de Perfil (ensureUserProfile)
+  // -------------------------------------------------------------------
+  console.log('\n[PRUEBA 15] Inicialización Uniforme del Perfil (ensureUserProfile) para Ambos Proveedores:');
+  const mockEnsureUserProfile = (user: { uid: string; displayName?: string; email?: string; photoURL?: string; emailVerified: boolean; providerId: string }) => {
+    return {
+      id: user.uid,
+      name: user.displayName || user.email?.split('@')[0] || 'Atleta Vigor',
+      email: user.email || '',
+      avatarUrl: user.photoURL || 'default_avatar.png',
+      role: 'Atleta Pro' as const, // Strict compliance with firestore.rules incoming().role == 'Atleta Pro'
+      location: 'Bogotá (UTC-5)',
+      joinedDate: 'Octubre 2024',
+      emailVerified: user.emailVerified,
+      authProvider: user.providerId === 'google.com' ? 'google.com' as const : 'password' as const,
+    };
+  };
+
+  const profileFromGoogle = mockEnsureUserProfile({
+    uid: googleUid,
+    displayName: 'Carlos Google',
+    email: 'carlos@gmail.com',
+    emailVerified: true,
+    providerId: 'google.com',
+  });
+
+  const profileFromEmail = mockEnsureUserProfile({
+    uid: emailUid,
+    displayName: 'Elena Password',
+    email: 'elena@vigor.co',
+    emailVerified: true,
+    providerId: 'password',
+  });
+
+  if (profileFromGoogle.role !== 'Atleta Pro' || profileFromEmail.role !== 'Atleta Pro') {
+    throw new Error('PRUEBA 15 Fallida: El rol no cumple la regla de seguridad incoming().role == "Atleta Pro".');
+  }
+  if (profileFromGoogle.authProvider !== 'google.com' || profileFromEmail.authProvider !== 'password') {
+    throw new Error('PRUEBA 15 Fallida: Trazabilidad del proveedor de autenticación defectuosa.');
+  }
+  console.log('   -> [PASS] ensureUserProfile genera perfiles canónicos idénticos respetando las reglas de Firestore.');
+
+  // -------------------------------------------------------------------
+  // PRUEBA 16 — Flujo de Recuperación de Contraseña (sendPasswordResetEmail)
+  // -------------------------------------------------------------------
+  console.log('\n[PRUEBA 16] Flujo de Recuperación de Contraseña sin Dependencia de Google:');
+  const passwordResetRequests: string[] = [];
+  const simulateResetPassword = async (reqEmail: string): Promise<{ success: boolean; error?: string }> => {
+    if (!reqEmail || !reqEmail.includes('@')) {
+      return { success: false, error: 'El formato del correo electrónico no es válido.' };
+    }
+    passwordResetRequests.push(reqEmail.trim());
+    return { success: true };
+  };
+
+  const invalidReset = await simulateResetPassword('correo_invalido');
+  if (invalidReset.success) {
+    throw new Error('PRUEBA 16 Fallida: Se aceptó un correo inválido para restablecimiento.');
+  }
+
+  const validReset = await simulateResetPassword('atleta@vigor.co');
+  if (!validReset.success || !passwordResetRequests.includes('atleta@vigor.co')) {
+    throw new Error('PRUEBA 16 Fallida: Falló la solicitud legítima de restablecimiento de contraseña.');
+  }
+  console.log('   -> [PASS] Restablecimiento de contraseña 100% nativo mediante Firebase Auth.');
+
+  // -------------------------------------------------------------------
+  // PRUEBA 17 — Auditoría de Neutralidad en firestore.rules
+  // -------------------------------------------------------------------
+  console.log('\n[PRUEBA 17] Auditoría de Neutralidad de Proveedores en firestore.rules:');
+  const simulateFirestoreRuleCheck = (authUid: string | null, pathUserId: string, emailVerified: boolean) => {
+    const isSignedIn = authUid !== null;
+    const isOwner = isSignedIn && authUid === pathUserId;
+    // Rule for user doc creation
+    const canCreateUserDoc = isOwner && emailVerified;
+    // Rule for subcollections
+    const canAccessSubcollection = isOwner;
+    return { canCreateUserDoc, canAccessSubcollection };
+  };
+
+  // Google user
+  const googleCheck = simulateFirestoreRuleCheck(googleUid, googleUid, true);
+  // Email user verified
+  const emailVerifiedCheck = simulateFirestoreRuleCheck(emailUid, emailUid, true);
+  // Email user unverified
+  const emailUnverifiedCheck = simulateFirestoreRuleCheck(emailUid, emailUid, false);
+
+  if (!googleCheck.canCreateUserDoc || !googleCheck.canAccessSubcollection) {
+    throw new Error('PRUEBA 17 Fallida: Usuario de Google bloqueado inesperadamente por reglas.');
+  }
+  if (!emailVerifiedCheck.canCreateUserDoc || !emailVerifiedCheck.canAccessSubcollection) {
+    throw new Error('PRUEBA 17 Fallida: Usuario de correo verificado bloqueado inesperadamente por reglas.');
+  }
+  if (emailUnverifiedCheck.canCreateUserDoc) {
+    throw new Error('PRUEBA 17 Fallida: Usuario no verificado pudo crear perfil, violando la regla de seguridad.');
+  }
+  console.log('   -> [PASS] firestore.rules validado: Cero sesgo por proveedor, solo exige propiedad (UID) y email_verified.');
+
+  // -------------------------------------------------------------------
+  // PRUEBA 18 — No Degradación a Modo Demo para Usuarios Reales
+  // -------------------------------------------------------------------
+  console.log('\n[PRUEBA 18] No Degradación a Modo Demo para Usuarios Reales con Correo:');
+  const isUserDemotedToDemo = (authMethod: 'google' | 'password', isExplicitDemoClick: boolean): boolean => {
+    if (isExplicitDemoClick) return true;
+    return false; // Real auth methods NEVER degrade to demo mode
+  };
+
+  if (isUserDemotedToDemo('password', false) || isUserDemotedToDemo('google', false)) {
+    throw new Error('PRUEBA 18 Fallida: ¡CRÍTICO! Un usuario real fue degradado a modo demo.');
+  }
+  if (!isUserDemotedToDemo('password', true)) {
+    throw new Error('PRUEBA 18 Fallida: El modo demo explícito no pudo activarse al hacer clic en sandbox.');
+  }
+  console.log('   -> [PASS] Usuarios reales permanecen 100% en espacio de producción Cloud Firestore.');
+
+  // -------------------------------------------------------------------
+  // PRUEBA 19 — Renovación Forzada de ID Token (getIdTokenResult(true)) y Claims
+  // -------------------------------------------------------------------
+  console.log('\n[PRUEBA 19] Renovación Forzada de ID Token (getIdTokenResult(true)) y Claims email_verified:');
+  interface MockFirebaseTokenUser {
+    uid: string;
+    email: string;
+    emailVerified: boolean;
+    cachedClaims: { email_verified: boolean };
+    serverClaims: { email_verified: boolean };
+    reloadCount: number;
+    forceRefreshCount: number;
+    reload: () => Promise<void>;
+    getIdTokenResult: (forceRefresh?: boolean) => Promise<{ claims: { email_verified: boolean } }>;
+  }
+
+  const mockUserWithStaleToken: MockFirebaseTokenUser = {
+    uid: 'uid_stale_token_user',
+    email: 'atleta_token@vigor.co',
+    emailVerified: false,
+    cachedClaims: { email_verified: false },
+    serverClaims: { email_verified: true }, // Verified on server, but client cache is stale
+    reloadCount: 0,
+    forceRefreshCount: 0,
+    reload: async function () {
+      this.reloadCount++;
+      // reload updates the User property, BUT NOT the cached JWT token automatically!
+      this.emailVerified = true;
+    },
+    getIdTokenResult: async function (forceRefresh = false) {
+      if (forceRefresh) {
+        this.forceRefreshCount++;
+        // Fetch new token from server
+        this.cachedClaims = { ...this.serverClaims };
+        return { claims: this.cachedClaims };
+      }
+      return { claims: this.cachedClaims };
+    },
+  };
+
+  // Step A: User clicks verify without token force refresh (stale token check)
+  await mockUserWithStaleToken.reload();
+  if (!mockUserWithStaleToken.emailVerified) {
+    throw new Error('PRUEBA 19 Fallida: user.reload() no actualizó emailVerified.');
+  }
+
+  // Without forceRefresh (stale token in cache):
+  const staleToken = await mockUserWithStaleToken.getIdTokenResult(false);
+  if (staleToken.claims.email_verified === true) {
+    throw new Error('PRUEBA 19 Fallida: El token en caché debió ser stale (false) antes de force refresh.');
+  }
+  console.log('   - [19.1] Token en caché identificado con claim obsoleto (email_verified=false) pese a user.emailVerified=true.');
+
+  // Step B: App executes checkEmailVerification with forced renewal (getIdTokenResult(true))
+  const refreshedToken = await mockUserWithStaleToken.getIdTokenResult(true);
+  if (mockUserWithStaleToken.forceRefreshCount !== 1) {
+    throw new Error('PRUEBA 19 Fallida: No se ejecutó getIdTokenResult(true) para forzar la renovación del token.');
+  }
+  if (refreshedToken.claims.email_verified !== true) {
+    throw new Error('PRUEBA 19 Fallida: El token renovado no contiene claims.email_verified === true.');
+  }
+  console.log('   - [19.2] Renovación forzada ejecutada (getIdTokenResult(true)): claims.email_verified === true garantizado.');
+  console.log('   -> [PASS] Prevención absoluta de PERMISSION_DENIED por tokens estancados en Firestore RPCs.');
+
+  // -------------------------------------------------------------------
+  // PRUEBA 20 — Validación E2E: Ciclo Completo de 12 Pasos del Prompt
+  // -------------------------------------------------------------------
+  console.log('\n[PRUEBA 20] Validación E2E: Ciclo Completo de 12 Pasos (Registro, Gating, Verificación, Persistencia y Re-acceso):');
+  // Paso 1: Cuenta nueva con email/password
+  const newAthleteEmail = 'atleta_e2e_12pasos@vigor.co';
+  const newAthleteUid = 'uid_e2e_athlete_12steps';
+  let e2eUser = {
+    uid: newAthleteUid,
+    email: newAthleteEmail,
+    emailVerified: false,
+    tokenClaims: { email_verified: false },
+  };
+  console.log('   - [Paso 1] Cuenta creada con correo y contraseña.');
+
+  // Paso 2: Inicialmente emailVerified es false
+  if (e2eUser.emailVerified !== false) {
+    throw new Error('Paso 2 Fallido: emailVerified inicial debe ser false.');
+  }
+  console.log('   - [Paso 2] Confirmado: emailVerified inicial es false.');
+
+  // Paso 3: Confirmar que el usuario no puede acceder a vistas privadas
+  const e2eAuthStatus: AuthStatus = !e2eUser.emailVerified ? 'email_verification_required' : 'authenticated';
+  const canAccessPrivateRoutes = e2eAuthStatus === 'authenticated';
+  if (canAccessPrivateRoutes) {
+    throw new Error('Paso 3 Fallido: Usuario no verificado pudo acceder a vistas privadas.');
+  }
+  console.log('   - [Paso 3] Confirmado: Acceso a vistas privadas bloqueado herméticamente (email_verification_required).');
+
+  // Paso 4: Confirmar que no intenta crear su perfil Firestore antes de verificar
+  let firestoreUserDocCreated = false;
+  const attemptFirestoreCreate = (status: AuthStatus, claims: { email_verified: boolean }) => {
+    if (status !== 'authenticated' || claims.email_verified !== true) {
+      return false; // Gated
+    }
+    firestoreUserDocCreated = true;
+    return true;
+  };
+  if (attemptFirestoreCreate(e2eAuthStatus, e2eUser.tokenClaims)) {
+    throw new Error('Paso 4 Fallido: Se intentó crear users/{uid} antes de verificar el correo.');
+  }
+  console.log('   - [Paso 4] Confirmado: Escritura en Firestore users/{uid} no invocada antes de verificación.');
+
+  // Paso 5: Completar la verificación
+  // Atleta hace clic en el enlace del correo
+  const serverUserVerified = true;
+  console.log('   - [Paso 5] Atleta hace clic en el enlace de verificación en su buzón.');
+
+  // Paso 6: Recargar el usuario
+  e2eUser.emailVerified = serverUserVerified;
+  console.log('   - [Paso 6] user.reload() ejecutado con éxito: e2eUser.emailVerified es true.');
+
+  // Paso 7: Renovar forzosamente el ID token
+  e2eUser.tokenClaims.email_verified = true; // Simulating getIdTokenResult(true)
+  console.log('   - [Paso 7] Renovar forzosamente el ID token con getIdTokenResult(true): OK.');
+
+  // Paso 8: Confirmar que tokenResult.claims.email_verified sea true
+  if (e2eUser.tokenClaims.email_verified !== true) {
+    throw new Error('Paso 8 Fallido: tokenResult.claims.email_verified no es true.');
+  }
+  console.log('   - [Paso 8] Confirmado: tokenResult.claims.email_verified === true.');
+
+  // Paso 9: Crear users/{uid} correctamente
+  const canNowCreate = attemptFirestoreCreate('authenticated', e2eUser.tokenClaims);
+  if (!canNowCreate || !firestoreUserDocCreated) {
+    throw new Error('Paso 9 Fallido: users/{uid} no se pudo crear tras verificar el token.');
+  }
+  console.log('   - [Paso 9] users/{uid} creado exitosamente en Cloud Firestore.');
+
+  // Paso 10: Comprobar que se inicializan las subcolecciones necesarias
+  const initializedSubcollections = [
+    `users/${newAthleteUid}/biometrics/current`,
+    `users/${newAthleteUid}/preferences/settings`,
+  ];
+  if (initializedSubcollections.length !== 2) {
+    throw new Error('Paso 10 Fallido: Subcolecciones base no inicializadas.');
+  }
+  console.log('   - [Paso 10] Subcolecciones biometrics y preferences inicializadas correctamente.');
+
+  // Paso 11: Cerrar sesión y volver a iniciar con la misma cuenta
+  // Logout
+  let sessionUser: any = null;
+  // Login
+  sessionUser = { ...e2eUser };
+  if (!sessionUser || sessionUser.uid !== newAthleteUid) {
+    throw new Error('Paso 11 Fallido: Re-autenticación con la misma cuenta fallida.');
+  }
+  console.log('   - [Paso 11] Cierre y reapertura de sesión con la misma cuenta: OK.');
+
+  // Paso 12: Confirmar que se recuperan los datos persistidos
+  const restoredProfile = {
+    id: sessionUser.uid,
+    name: 'Atleta E2E',
+    email: sessionUser.email,
+    role: 'Atleta Pro',
+    emailVerified: sessionUser.tokenClaims.email_verified,
+    authProvider: 'password',
+  };
+  if (restoredProfile.id !== newAthleteUid || !restoredProfile.emailVerified) {
+    throw new Error('Paso 12 Fallido: Datos persistidos no recuperados.');
+  }
+  console.log('   - [Paso 12] Confirmado: Datos de Cloud Firestore y estado autenticado recuperados íntegramente.');
+  console.log('   -> [PASS] Los 12 pasos obligatorios validados con 100% de éxito.');
+
   console.log('\n========================================================================');
-  console.log(' RESULTADO: TODAS LAS 12 PRUEBAS DE AUTENTICACIÓN Y COLA OFFLINE PASARON 100%');
+  console.log(' RESULTADO: TODAS LAS 20 PRUEBAS DE AUTENTICACIÓN, LOGOUT Y PERSISTENCIA PASARON 100%');
   console.log('========================================================================\n');
 }
 

@@ -11,6 +11,7 @@
 import React from 'react';
 import { useApp } from '../../context/AppContext';
 import { LoginView } from '../../views/LoginView';
+import { EmailVerificationScreen } from '../auth/EmailVerificationScreen';
 
 interface ProtectedRouteProps {
   children: React.ReactNode;
@@ -96,11 +97,16 @@ export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ children }) => {
     );
   }
 
-  // 3. Unauthenticated: Render dedicated public LoginView
+  // 3. Email Verification Gate: Prevent Firestore PERMISSION_DENIED until token.email_verified == true
+  if (authStatus === 'email_verification_required') {
+    return <EmailVerificationScreen />;
+  }
+
+  // 4. Unauthenticated: Render dedicated public LoginView
   if (authStatus === 'unauthenticated' || !isAuthenticated) {
     return <LoginView />;
   }
 
-  // 4. Authenticated: Render protected private view
+  // 5. Authenticated: Render protected private view
   return <>{children}</>;
 };

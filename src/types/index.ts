@@ -1,4 +1,4 @@
-export type AuthStatus = 'initializing' | 'authenticated' | 'unauthenticated' | 'error';
+export type AuthStatus = 'initializing' | 'authenticated' | 'unauthenticated' | 'email_verification_required' | 'error';
 
 export type NavigationPath =
   | 'login'

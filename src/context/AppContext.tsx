@@ -65,6 +65,11 @@ import {
   googleProvider,
   signInWithPopup,
   fbSignOut,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  sendEmailVerification,
+  sendPasswordResetEmail,
+  updateProfile,
   handleFirestoreError,
   OperationType,
 } from '../firebase';
@@ -102,8 +107,14 @@ interface AppContextType {
   isDemoMode: boolean;
   authStatus: AuthStatus;
   authError: string | null;
+  unverifiedEmail: string | null;
   isLoggingOut: boolean;
   loginWithGoogle: () => Promise<{ success: boolean; error?: string }>;
+  loginWithEmail: (email: string, password: string) => Promise<{ success: boolean; error?: string; verificationRequired?: boolean }>;
+  registerWithEmail: (email: string, password: string, fullName: string, role?: 'Atleta Pro' | 'Coach' | 'Nutricionista') => Promise<{ success: boolean; error?: string }>;
+  resetPassword: (email: string) => Promise<{ success: boolean; error?: string }>;
+  checkEmailVerification: () => Promise<{ verified: boolean; error?: string }>;
+  sendVerificationEmail: () => Promise<{ success: boolean; error?: string }>;
   startDemoMode: (role?: 'Atleta Pro' | 'Coach' | 'Nutricionista', name?: string, email?: string) => void;
   logout: () => Promise<{ success: boolean; error?: string }>;
   redirectPath: NavigationPath | null;
@@ -560,6 +571,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   });
   const [authStatus, setAuthStatus] = useState<AuthStatus>('initializing');
   const [authError, setAuthError] = useState<string | null>(null);
+  const [unverifiedEmail, setUnverifiedEmail] = useState<string | null>(null);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
   const isLogoutInProgressRef = React.useRef(false);
   const [pendingOfflineSetsCount, setPendingOfflineSetsCount] = useState<number>(0);
@@ -918,6 +930,102 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   }, [authStatus]);
 
+  // Uniform Cloud Firestore User Profile & Subcollection Initializer
+  // Ensures identical multi-device cloud persistence for Google OAuth and Email/Password athletes
+  const ensureUserProfile = async (user: FirebaseUser): Promise<UserProfile> => {
+    const userRef = doc(db, 'users', user.uid);
+    const snap = await getDoc(userRef);
+    let prof: UserProfile;
+
+    const providerId = user.providerData?.[0]?.providerId === 'google.com' ? 'google.com' : 'password';
+
+    if (snap.exists()) {
+      const data = snap.data();
+      prof = {
+        id: user.uid,
+        name: data.name || user.displayName || 'Atleta Vigor',
+        email: data.email || user.email || '',
+        avatarUrl: data.avatarUrl || user.photoURL || defaultUser.avatarUrl,
+        role: data.role || 'Atleta Pro',
+        location: data.location || 'Bogotá (UTC-5)',
+        joinedDate: data.createdAt ? new Date(data.createdAt).toLocaleDateString('es-ES', { month: 'long', year: 'numeric' }) : 'Octubre 2024',
+        emailVerified: user.emailVerified,
+        authProvider: providerId,
+      };
+    } else {
+      // New user registration in Cloud Firestore (requires incoming().role == 'Atleta Pro' per firestore.rules)
+      prof = {
+        id: user.uid,
+        name: user.displayName || user.email?.split('@')[0] || 'Atleta Vigor',
+        email: user.email || '',
+        avatarUrl: user.photoURL || defaultUser.avatarUrl,
+        role: 'Atleta Pro',
+        location: 'Bogotá (UTC-5)',
+        joinedDate: new Date().toLocaleDateString('es-ES', { month: 'long', year: 'numeric' }),
+        emailVerified: user.emailVerified,
+        authProvider: providerId,
+      };
+
+      // 1. Create root user profile document
+      await setDoc(userRef, {
+        id: prof.id,
+        name: prof.name,
+        email: prof.email,
+        avatarUrl: prof.avatarUrl,
+        role: prof.role,
+        location: prof.location,
+        joinedDate: prof.joinedDate,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+
+      // 2. Seed initial biometrics in Firestore so calculation engines function immediately
+      const bioRef = doc(db, 'users', user.uid, 'biometrics', 'current');
+      const bioSnap = await getDoc(bioRef);
+      if (!bioSnap.exists()) {
+        await setDoc(bioRef, {
+          ...defaultBiometrics,
+          userId: user.uid,
+          updatedAt: new Date().toISOString(),
+        });
+      }
+    }
+
+    // 3. Load or initialize isolated user preferences from Cloud Firestore
+    try {
+      const prefRef = doc(db, 'users', user.uid, 'preferences', 'settings');
+      const prefSnap = await getDoc(prefRef);
+      if (prefSnap.exists()) {
+        const pdata = prefSnap.data();
+        if (pdata.notificationPreferences) {
+          setNotificationPreferences(pdata.notificationPreferences);
+          localStorage.setItem(`vigor_notif_prefs_uid_${user.uid}`, JSON.stringify(pdata.notificationPreferences));
+        }
+        if (pdata.mealPartition) {
+          setMealPartition(pdata.mealPartition);
+          localStorage.setItem(`vigor_meal_partition_uid_${user.uid}`, JSON.stringify(pdata.mealPartition));
+        }
+      } else {
+        const currentNotif = loadScopedPreference('vigor_notif_prefs', `vigor_notif_prefs_uid_${user.uid}`, initialNotificationPreferences);
+        const currentMeal = loadScopedPreference('vigor_meal_partition', `vigor_meal_partition_uid_${user.uid}`, defaultMealPartition);
+        setNotificationPreferences(currentNotif);
+        setMealPartition(currentMeal);
+        await setDoc(prefRef, {
+          notificationPreferences: currentNotif,
+          mealPartition: currentMeal,
+          userId: user.uid,
+          updatedAt: new Date().toISOString(),
+        });
+        localStorage.setItem(`vigor_notif_prefs_uid_${user.uid}`, JSON.stringify(currentNotif));
+        localStorage.setItem(`vigor_meal_partition_uid_${user.uid}`, JSON.stringify(currentMeal));
+      }
+    } catch (prefErr) {
+      console.error('Error fetching user preferences from Firestore:', prefErr);
+    }
+
+    return prof;
+  };
+
   // 1. Firebase Auth State Listener
   useEffect(() => {
     let isMounted = true;
@@ -926,103 +1034,55 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       async user => {
         if (!isMounted) return;
         setFbUser(user);
+
         if (user) {
           setIsDemoMode(false);
           localStorage.setItem('vigor_is_demo', 'false');
           localStorage.removeItem('vigor_demo_user');
 
-          const userRef = doc(db, 'users', user.uid);
+          // Strict Security Verification Check:
+          // Users with unverified emails are blocked from private Firestore documents
+          // to prevent PERMISSION_DENIED security rule violations.
+          if (!user.emailVerified) {
+            setUnverifiedEmail(user.email || null);
+            setCurrentUser(null);
+            setAuthStatus('email_verification_required');
+            setAuthError(null);
+            return;
+          }
+
+          // Force ID token renewal to guarantee request.auth.token.email_verified == true in Firestore RPCs
           try {
-            const snap = await getDoc(userRef);
-            let prof: UserProfile;
-            if (snap.exists()) {
-              const data = snap.data();
-              prof = {
-                id: user.uid,
-                name: data.name || user.displayName || 'Atleta Vigor',
-                email: data.email || user.email || '',
-                avatarUrl: data.avatarUrl || user.photoURL || defaultUser.avatarUrl,
-                role: data.role || 'Atleta Pro',
-                location: data.location || 'Bogotá (UTC-5)',
-                joinedDate: data.createdAt || 'Octubre 2024',
-              };
-            } else {
-              // New user registration
-              prof = {
-                id: user.uid,
-                name: user.displayName || user.email?.split('@')[0] || 'Atleta Vigor',
-                email: user.email || '',
-                avatarUrl: user.photoURL || defaultUser.avatarUrl,
-                role: 'Atleta Pro',
-                location: 'Bogotá (UTC-5)',
-                joinedDate: new Date().toLocaleDateString('es-ES', { month: 'long', year: 'numeric' }),
-              };
-              await setDoc(userRef, {
-                ...prof,
-                createdAt: new Date().toISOString(),
-                updatedAt: new Date().toISOString(),
-              });
-              // Seed base biometrics for new profile so calculations work
-              await setDoc(doc(db, 'users', user.uid, 'biometrics', 'current'), {
-                ...defaultBiometrics,
-                userId: user.uid,
-                updatedAt: new Date().toISOString(),
-              });
+            let tokenResult = await user.getIdTokenResult(false);
+            if (tokenResult.claims.email_verified !== true) {
+              tokenResult = await user.getIdTokenResult(true);
             }
 
+            if (tokenResult.claims.email_verified !== true) {
+              setUnverifiedEmail(user.email || null);
+              setCurrentUser(null);
+              setAuthStatus('email_verification_required');
+              setAuthError(null);
+              return;
+            }
+          } catch (tokenErr) {
+            console.warn('ID token claims inspection warning:', tokenErr);
+          }
+
+          // Email is confirmed verified and ID token is refreshed
+          setUnverifiedEmail(null);
+          try {
+            const prof = await ensureUserProfile(user);
             if (isMounted) {
               setCurrentUser(prof);
               setAuthStatus('authenticated');
               setAuthError(null);
             }
-
-            // Load isolated preferences for this specific user from Firestore
-            try {
-              const prefRef = doc(db, 'users', user.uid, 'preferences', 'settings');
-              const prefSnap = await getDoc(prefRef);
-              if (prefSnap.exists()) {
-                const pdata = prefSnap.data();
-                if (pdata.notificationPreferences) {
-                  setNotificationPreferences(pdata.notificationPreferences);
-                  localStorage.setItem(`vigor_notif_prefs_uid_${user.uid}`, JSON.stringify(pdata.notificationPreferences));
-                }
-                if (pdata.mealPartition) {
-                  setMealPartition(pdata.mealPartition);
-                  localStorage.setItem(`vigor_meal_partition_uid_${user.uid}`, JSON.stringify(pdata.mealPartition));
-                }
-              } else {
-                // Initial user preferences setup
-                const currentNotif = loadScopedPreference('vigor_notif_prefs', `vigor_notif_prefs_uid_${user.uid}`, initialNotificationPreferences);
-                const currentMeal = loadScopedPreference('vigor_meal_partition', `vigor_meal_partition_uid_${user.uid}`, defaultMealPartition);
-                setNotificationPreferences(currentNotif);
-                setMealPartition(currentMeal);
-                await setDoc(prefRef, {
-                  notificationPreferences: currentNotif,
-                  mealPartition: currentMeal,
-                  userId: user.uid,
-                  updatedAt: new Date().toISOString(),
-                });
-                localStorage.setItem(`vigor_notif_prefs_uid_${user.uid}`, JSON.stringify(currentNotif));
-                localStorage.setItem(`vigor_meal_partition_uid_${user.uid}`, JSON.stringify(currentMeal));
-              }
-            } catch (prefErr) {
-              console.error('Error fetching user preferences from Firestore:', prefErr);
-            }
           } catch (err: any) {
             console.error('Error in user profile verification:', err);
             if (isMounted) {
-              setAuthError(err.message || 'Error al verificar credenciales.');
-              // Resilient fallback for authenticated user
-              setCurrentUser({
-                id: user.uid,
-                name: user.displayName || user.email?.split('@')[0] || 'Atleta Vigor',
-                email: user.email || '',
-                avatarUrl: user.photoURL || defaultUser.avatarUrl,
-                role: 'Atleta Pro',
-                location: 'Bogotá (UTC-5)',
-                joinedDate: 'Octubre 2024',
-              });
-              setAuthStatus('authenticated');
+              setAuthError(err.message || 'Error al verificar credenciales en Cloud Firestore.');
+              setAuthStatus('error');
             }
           }
         } else {
@@ -1376,6 +1436,174 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
+  const loginWithEmail = async (
+    email: string,
+    password: string
+  ): Promise<{ success: boolean; error?: string; verificationRequired?: boolean }> => {
+    try {
+      const result = await signInWithEmailAndPassword(auth, email.trim(), password);
+      const user = result.user;
+      setIsDemoMode(false);
+      localStorage.setItem('vigor_is_demo', 'false');
+
+      if (!user.emailVerified) {
+        setUnverifiedEmail(user.email || email.trim());
+        setAuthStatus('email_verification_required');
+        return { success: true, verificationRequired: true };
+      }
+
+      // Force ID token renewal to guarantee request.auth.token.email_verified == true in Firestore
+      const tokenResult = await user.getIdTokenResult(true);
+      if (tokenResult.claims.email_verified !== true) {
+        setUnverifiedEmail(user.email || email.trim());
+        setAuthStatus('email_verification_required');
+        return {
+          success: true,
+          verificationRequired: true,
+          error: 'El token de seguridad aún no refleja la confirmación del correo. Por favor reintenta en unos instantes.',
+        };
+      }
+
+      setUnverifiedEmail(null);
+      const prof = await ensureUserProfile(user);
+      setCurrentUser(prof);
+      setAuthStatus('authenticated');
+      showToast(`¡Sesión iniciada (${prof.name})!`, 'success');
+      return { success: true, verificationRequired: false };
+    } catch (err: any) {
+      console.error('Email login error:', err);
+      let errorMsg = 'Error al iniciar sesión.';
+      if (
+        err.code === 'auth/invalid-credential' ||
+        err.code === 'auth/wrong-password' ||
+        err.code === 'auth/user-not-found'
+      ) {
+        errorMsg = 'Correo electrónico o contraseña incorrectos.';
+      } else if (err.code === 'auth/too-many-requests') {
+        errorMsg = 'Demasiados intentos fallidos. Por favor espera unos minutos o restablece tu contraseña.';
+      } else if (err.code === 'auth/invalid-email') {
+        errorMsg = 'El formato del correo electrónico es inválido.';
+      } else if (err.message) {
+        errorMsg = err.message;
+      }
+      return { success: false, error: errorMsg };
+    }
+  };
+
+  const registerWithEmail = async (
+    email: string,
+    password: string,
+    fullName: string,
+    role: 'Atleta Pro' | 'Coach' | 'Nutricionista' = 'Atleta Pro'
+  ): Promise<{ success: boolean; error?: string }> => {
+    try {
+      const result = await createUserWithEmailAndPassword(auth, email.trim(), password);
+      const user = result.user;
+
+      // Update Firebase display name
+      await updateProfile(user, { displayName: fullName.trim() });
+
+      // Dispatch security verification email to satisfy Cloud Firestore rules
+      await sendEmailVerification(user);
+
+      setIsDemoMode(false);
+      localStorage.setItem('vigor_is_demo', 'false');
+      setUnverifiedEmail(user.email || email.trim());
+      setAuthStatus('email_verification_required');
+
+      showToast(`Cuenta registrada. Hemos enviado un enlace de confirmación a ${user.email}.`, 'info');
+      return { success: true };
+    } catch (err: any) {
+      console.error('Email registration error:', err);
+      let errorMsg = 'Error al registrar usuario.';
+      if (err.code === 'auth/email-already-in-use') {
+        errorMsg = 'Ya existe una cuenta registrada con este correo electrónico.';
+      } else if (err.code === 'auth/weak-password') {
+        errorMsg = 'La contraseña debe tener al menos 6 caracteres.';
+      } else if (err.code === 'auth/invalid-email') {
+        errorMsg = 'El correo electrónico no es válido.';
+      } else if (err.message) {
+        errorMsg = err.message;
+      }
+      return { success: false, error: errorMsg };
+    }
+  };
+
+  const resetPassword = async (email: string): Promise<{ success: boolean; error?: string }> => {
+    try {
+      await sendPasswordResetEmail(auth, email.trim());
+      showToast('Enlace de restablecimiento enviado a tu correo.', 'info');
+      return { success: true };
+    } catch (err: any) {
+      console.error('Password reset error:', err);
+      let errorMsg = 'Error al enviar enlace de restablecimiento.';
+      if (err.code === 'auth/user-not-found') {
+        errorMsg = 'No existe una cuenta registrada con este correo electrónico.';
+      } else if (err.code === 'auth/invalid-email') {
+        errorMsg = 'El formato del correo electrónico no es válido.';
+      } else if (err.message) {
+        errorMsg = err.message;
+      }
+      return { success: false, error: errorMsg };
+    }
+  };
+
+  const checkEmailVerification = async (): Promise<{ verified: boolean; error?: string }> => {
+    const user = auth.currentUser;
+    if (!user) {
+      return { verified: false, error: 'No hay sesión de usuario activa.' };
+    }
+    try {
+      await user.reload();
+      const refreshedUser = auth.currentUser;
+
+      if (!refreshedUser || !refreshedUser.emailVerified) {
+        // Mantener acceso privado bloqueado
+        return {
+          verified: false,
+          error: 'Aún no hemos detectado la confirmación. Por favor haz clic en el enlace enviado a tu correo y vuelve a presionar este botón.',
+        };
+      }
+
+      // Forzar la renovación del ID token para que los claims de Firebase incluyan email_verified: true
+      const tokenResult = await refreshedUser.getIdTokenResult(true);
+
+      if (tokenResult.claims.email_verified !== true) {
+        // No inicializar perfil ni habilitar Firestore si el token renovado aún no contiene el claim
+        return {
+          verified: false,
+          error: 'El token de seguridad aún no refleja la confirmación del correo en los servidores de Firebase. Espera unos segundos y vuelve a comprobar.',
+        };
+      }
+
+      // Con el token renovado, request.auth.token.email_verified == true en Firestore RPCs está garantizado
+      setFbUser({ ...refreshedUser } as FirebaseUser);
+      const prof = await ensureUserProfile(refreshedUser);
+      setCurrentUser(prof);
+      setUnverifiedEmail(null);
+      setAuthStatus('authenticated');
+      setAuthError(null);
+      showToast('¡Correo verificado con éxito! Bienvenido a tu espacio en Cloud Firestore.', 'success');
+      return { verified: true };
+    } catch (err: any) {
+      console.error('Error during checkEmailVerification token renewal:', err);
+      return { verified: false, error: err.message || 'Error al comprobar verificación de correo y renovar credenciales.' };
+    }
+  };
+
+  const sendVerificationEmail = async (): Promise<{ success: boolean; error?: string }> => {
+    if (!auth.currentUser) {
+      return { success: false, error: 'No hay usuario autenticado para enviar verificación.' };
+    }
+    try {
+      await sendEmailVerification(auth.currentUser);
+      showToast('Correo de verificación reenviado. Revisa tu buzón de entrada o spam.', 'info');
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message || 'Error al reenviar correo de verificación.' };
+    }
+  };
+
   const startDemoMode = (
     role: 'Atleta Pro' | 'Coach' | 'Nutricionista' = 'Atleta Pro',
     name: string = 'Camilo R. (Demo)',
@@ -1484,6 +1712,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       // 2. Clear authentication and session flags
       setFbUser(null);
       setCurrentUser(null);
+      setUnverifiedEmail(null);
       setIsDemoMode(false);
       setAuthStatus('unauthenticated');
       setAuthError(null);
@@ -3215,6 +3444,34 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setActiveLiveWorkout(prev => (prev ? { ...prev, durationSeconds: seconds } : null));
   };
 
+  const syncPendingOfflineSets = async (): Promise<void> => {
+    const activeUid = fbUser?.uid;
+    if (!activeUid || isDemoMode) return;
+    try {
+      const summary = await syncOfflineSetsForUser(activeUid, async (pendingSet) => {
+        const setDocRef = doc(db, 'users', activeUid, 'workoutSessions', pendingSet.id);
+        const { queuedAt, attempts, lastError, ...cleanSet } = pendingSet;
+        await setDoc(setDocRef, cleanSet);
+      });
+      const remaining = getOfflinePendingSets(activeUid);
+      setPendingOfflineSetsCount(remaining.length);
+      if (summary.syncedCount > 0) {
+        showToast(`Se sincronizaron ${summary.syncedCount} series pendientes en Cloud Firestore`, 'success');
+      }
+    } catch (err: any) {
+      console.error('Error syncing offline sets:', err);
+    }
+  };
+
+  useEffect(() => {
+    if (fbUser?.uid && !isDemoMode) {
+      const pending = getOfflinePendingSets(fbUser.uid);
+      setPendingOfflineSetsCount(pending.length);
+    } else {
+      setPendingOfflineSetsCount(0);
+    }
+  }, [fbUser?.uid, isDemoMode]);
+
   return (
     <AppContext.Provider
       value={{
@@ -3227,8 +3484,14 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         isDemoMode,
         authStatus,
         authError,
+        unverifiedEmail,
         isLoggingOut,
         loginWithGoogle,
+        loginWithEmail,
+        registerWithEmail,
+        resetPassword,
+        checkEmailVerification,
+        sendVerificationEmail,
         startDemoMode,
         logout,
         redirectPath,
@@ -3353,6 +3616,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         resumeRecoveredLiveSession,
         discardRecoveredLiveSession,
         updateLiveSessionDuration,
+        pendingOfflineSetsCount,
+        syncPendingOfflineSets,
 
         // Recipe Library & Weekly Plans (Increment 4)
         recipes,

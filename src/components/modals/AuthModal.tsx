@@ -7,6 +7,9 @@ export const AuthModal: React.FC = () => {
     isAuthenticated,
     isDemoMode,
     loginWithGoogle,
+    loginWithEmail,
+    registerWithEmail,
+    resetPassword,
     startDemoMode,
     logout,
     isLoggingOut,
@@ -49,12 +52,15 @@ export const AuthModal: React.FC = () => {
     }
 
     setIsLoading(true);
-    startDemoMode('Atleta Pro', email.split('@')[0], email);
+    const result = await loginWithEmail(email.trim(), password);
     setIsLoading(false);
-    showToast('Sesión local iniciada (Para persistencia en la nube usa Google OAuth)', 'info');
-    closeAuthModal();
-    setEmail('');
-    setPassword('');
+    if (result.success) {
+      closeAuthModal();
+      setEmail('');
+      setPassword('');
+    } else {
+      setErrorMessage(result.error || 'Error al iniciar sesión.');
+    }
   };
 
   const handleRegister = async (e: React.FormEvent) => {
@@ -79,13 +85,16 @@ export const AuthModal: React.FC = () => {
     }
 
     setIsLoading(true);
-    startDemoMode(role, fullName.trim(), email.trim());
+    const result = await registerWithEmail(email.trim(), password, fullName.trim(), role);
     setIsLoading(false);
-    showToast(`Cuenta local (${role}) creada en Sandbox`, 'info');
-    closeAuthModal();
-    setFullName('');
-    setEmail('');
-    setPassword('');
+    if (result.success) {
+      closeAuthModal();
+      setFullName('');
+      setEmail('');
+      setPassword('');
+    } else {
+      setErrorMessage(result.error || 'Error al registrar la cuenta.');
+    }
   };
 
   const handleFillDemo = (demoEmail: string, demoPass: string) => {
@@ -391,8 +400,19 @@ export const AuthModal: React.FC = () => {
                     </label>
                     <button
                       type="button"
-                      onClick={() => showToast('Enlace de recuperación enviado al correo')}
-                      className="text-primary hover:underline font-medium"
+                      onClick={async () => {
+                        if (!email.trim() || !email.includes('@')) {
+                          setErrorMessage('Ingresa tu correo en el campo superior para enviarte el enlace de recuperación.');
+                          return;
+                        }
+                        const res = await resetPassword(email.trim());
+                        if (res.success) {
+                          setErrorMessage(null);
+                        } else {
+                          setErrorMessage(res.error || 'Error al enviar enlace.');
+                        }
+                      }}
+                      className="text-primary hover:underline font-medium cursor-pointer"
                     >
                       ¿Olvidaste tu clave?
                     </button>
