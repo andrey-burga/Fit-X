@@ -8,7 +8,49 @@ export interface UserProfile {
   joinedDate: string;
   emailVerified?: boolean;
   authProvider?: 'google.com' | 'password' | 'demo';
+  onboardingCompleted?: boolean;
+  onboardingStep?: number;
+  goal?: AthleteGoal;
 }
+
+export type WeightUnit = 'kg' | 'lbs';
+export type HeightUnit = 'cm' | 'in';
+export type AthleteGoal = 'perdida_grasa' | 'ganancia_muscular' | 'mantenimiento' | 'rendimiento' | 'salud_general';
+export type TrainingExperience = 'principiante' | 'intermedio' | 'avanzado';
+export type DietaryPreference = 'omnivoro' | 'vegetariano' | 'vegano' | 'pescetariano' | 'sin_gluten';
+
+export interface AthletePreferences {
+  weightUnit: WeightUnit;
+  heightUnit: HeightUnit;
+  timezone: string;
+  trainingDaysPerWeek: number; // 3, 4, 5, 6
+  trainingExperience: TrainingExperience;
+  availableEquipment: string[];
+  trainingGoal: 'hipertrofia' | 'fuerza' | 'recomposicion' | 'resistencia';
+  muscleFocus: string[];
+  mealsPerDay: number;
+  dietaryPreference: DietaryPreference;
+  excludedFoods?: string[];
+  onboardingStep: number;
+  onboardingCompleted: boolean;
+  updatedAt?: string;
+}
+
+export const DEFAULT_ATHLETE_PREFERENCES: AthletePreferences = {
+  weightUnit: 'kg',
+  heightUnit: 'cm',
+  timezone: 'America/Bogota',
+  trainingDaysPerWeek: 4,
+  trainingExperience: 'intermedio',
+  availableEquipment: ['barra', 'mancuerna', 'polea', 'maquina', 'peso_corporal'],
+  trainingGoal: 'hipertrofia',
+  muscleFocus: ['pecho', 'espalda', 'cuadriceps', 'hombros'],
+  mealsPerDay: 4,
+  dietaryPreference: 'omnivoro',
+  excludedFoods: [],
+  onboardingStep: 1,
+  onboardingCompleted: true,
+};
 
 export type NotificationCategory = 'nutricion' | 'entrenamiento' | 'compras' | 'sistema';
 

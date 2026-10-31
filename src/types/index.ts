@@ -4,6 +4,8 @@ export type NavigationPath =
   | 'login'
   | 'registro'
   | 'recuperar-password'
+  | 'onboarding'
+  | 'perfil-atleta'
   | 'dashboard-nutricional'
   | 'configuracion-nutricional'
   | 'menu-semanal'
@@ -18,6 +20,8 @@ export type NavigationPath =
   | 'progreso-del-entrenamiento';
 
 export const PRIVATE_NAVIGATION_PATHS: NavigationPath[] = [
+  'onboarding',
+  'perfil-atleta',
   'dashboard-nutricional',
   'configuracion-nutricional',
   'menu-semanal',

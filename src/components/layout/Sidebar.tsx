@@ -26,6 +26,10 @@ const workoutNav: NavItem[] = [
   { id: 'progreso-del-entrenamiento', label: 'Progreso del Entrenamiento', icon: 'trending_up' },
 ];
 
+const accountNav: NavItem[] = [
+  { id: 'perfil-atleta', label: 'Perfil del Atleta', icon: 'account_circle' },
+];
+
 export const Sidebar: React.FC = () => {
   const {
     currentPath,
@@ -148,8 +152,14 @@ export const Sidebar: React.FC = () => {
       <div className="p-space-md m-space-sm bg-surface-container-low rounded-xl flex items-center justify-between border border-surface-container/50">
         <div
           className="flex items-center gap-space-sm overflow-hidden cursor-pointer hover:opacity-80 transition-opacity"
-          onClick={openAuthModal}
-          title="Ver perfil y cambiar usuario"
+          onClick={() => {
+            if (isAuthenticated) {
+              navigate('perfil-atleta');
+            } else {
+              openAuthModal();
+            }
+          }}
+          title={isAuthenticated ? `Perfil de ${currentUser?.name} (Click para ver perfil)` : 'Acceder a tu cuenta'}
         >
           {isAuthenticated && currentUser ? (
             <>
@@ -185,7 +195,13 @@ export const Sidebar: React.FC = () => {
         </div>
         <div className="flex items-center gap-1 shrink-0">
           <button
-            onClick={openAuthModal}
+            onClick={() => {
+              if (isAuthenticated) {
+                navigate('perfil-atleta');
+              } else {
+                openAuthModal();
+              }
+            }}
             className="p-1.5 rounded-lg text-on-surface-variant hover:bg-surface-container-highest hover:text-on-surface transition-colors"
             type="button"
             title="Gestión de perfil"

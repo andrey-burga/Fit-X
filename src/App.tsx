@@ -23,6 +23,8 @@ import { WorkoutRoutineView } from './views/WorkoutRoutineView';
 import { WorkoutLogView } from './views/WorkoutLogView';
 import { CardioHiitView } from './views/CardioHiitView';
 import { TrainingProgressView } from './views/TrainingProgressView';
+import { OnboardingView } from './views/OnboardingView';
+import { AthleteProfileView } from './views/AthleteProfileView';
 
 // Modals
 import { RegisterMealDrawer } from './components/modals/RegisterMealDrawer';
@@ -35,7 +37,7 @@ import { RecipeModal } from './components/modals/RecipeModal';
 import { AssignRecipeModal } from './components/modals/AssignRecipeModal';
 
 const AppContent: React.FC = () => {
-  const { currentPath, authStatus, isAuthenticated } = useApp();
+  const { currentPath, authStatus, isAuthenticated, currentUser } = useApp();
   const [isSearchOpen, setIsSearchOpen] = useState(false);
 
   // 1. Initializing state: ProtectedRoute displays the secure branded loader (Zero data leakage)
@@ -81,8 +83,22 @@ const AppContent: React.FC = () => {
     );
   }
 
+  // 5. Onboarding Gate: If authenticated user has not completed onboarding or is currently at onboarding
+  if (currentUser?.onboardingCompleted === false || currentPath === 'onboarding') {
+    return (
+      <ProtectedRoute>
+        <div className="min-h-screen bg-surface text-on-surface antialiased font-body-md selection:bg-primary-fixed selection:text-on-primary-fixed">
+          <OnboardingView />
+          <ToastNotification />
+        </div>
+      </ProtectedRoute>
+    );
+  }
+
   const renderActiveView = () => {
     switch (currentPath) {
+      case 'perfil-atleta':
+        return <AthleteProfileView />;
       case 'dashboard-nutricional':
         return <NutritionalDashboardView />;
       case 'configuracion-nutricional':

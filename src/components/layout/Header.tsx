@@ -192,9 +192,15 @@ export const Header: React.FC<HeaderProps> = ({ onOpenSearch }) => {
 
         {/* User Auth Profile Trigger */}
         <div
-          onClick={openAuthModal}
+          onClick={() => {
+            if (isAuthenticated) {
+              navigate('perfil-atleta');
+            } else {
+              openAuthModal();
+            }
+          }}
           className="flex items-center gap-2 p-1 pl-1.5 pr-2 rounded-xl bg-surface-container-low/70 hover:bg-surface-container cursor-pointer transition-colors border border-surface-container/40"
-          title={isAuthenticated ? `Perfil de ${currentUser?.name}` : 'Iniciar sesión'}
+          title={isAuthenticated ? `Perfil de ${currentUser?.name} (Click para ver perfil)` : 'Iniciar sesión'}
         >
           {isAuthenticated && currentUser ? (
             <>

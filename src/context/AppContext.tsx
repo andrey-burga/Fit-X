@@ -58,7 +58,7 @@ import {
 } from '../utils/workoutCalculations';
 import { getExerciseById } from '../data/exerciseCatalog';
 import { createDemoExecutedWorkoutsHistory } from '../data/demoWorkoutsSeed';
-import { UserProfile, AppNotification, NotificationPreferences } from '../types/auth';
+import { UserProfile, AppNotification, NotificationPreferences, AthletePreferences, DEFAULT_ATHLETE_PREFERENCES } from '../types/auth';
 import {
   auth,
   db,
@@ -142,6 +142,13 @@ interface AppContextType {
   isPreferencesModalOpen: boolean;
   openPreferencesModal: () => void;
   closePreferencesModal: () => void;
+
+  // Athlete Preferences & Onboarding (Increment 7A)
+  athletePreferences: AthletePreferences;
+  updateAthleteProfile: (updates: Partial<UserProfile>) => Promise<{ success: boolean; error?: string }>;
+  updateAthletePreferences: (updates: Partial<AthletePreferences>) => Promise<{ success: boolean; error?: string }>;
+  saveOnboardingStep: (step: number, partialData?: { profile?: Partial<UserProfile>; preferences?: Partial<AthletePreferences>; biometrics?: Partial<BiometricConfig> }) => Promise<void>;
+  completeOnboarding: (data: { profile: Partial<UserProfile>; biometrics: Partial<BiometricConfig>; preferences: Partial<AthletePreferences> }) => Promise<{ success: boolean; error?: string }>;
 
   // Biometrics & Nutrition Target
   biometrics: BiometricConfig;
@@ -637,6 +644,20 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     return loadScopedPreference('vigor_meal_partition', `vigor_meal_partition_${uid}`, defaultMealPartition);
   });
 
+  // Athlete Preferences (Units, Timezone, Experience, Goals, Onboarding State)
+  const [athletePreferences, setAthletePreferences] = useState<AthletePreferences>(() => {
+    const isDemo = localStorage.getItem('vigor_is_demo') === 'true';
+    const savedUser = localStorage.getItem('vigor_auth_user');
+    let uid = 'demo_camilo';
+    if (savedUser) {
+      try {
+        const parsed = JSON.parse(savedUser);
+        if (parsed?.id) uid = isDemo ? parsed.id : `uid_${parsed.id}`;
+      } catch {}
+    }
+    return loadScopedPreference('vigor_athlete_prefs', `vigor_athlete_prefs_${uid}`, DEFAULT_ATHLETE_PREFERENCES);
+  });
+
   // Groceries & Meals
   const [groceries, setGroceries] = useState<GroceryItem[]>(() => {
     const saved = localStorage.getItem('vigor_groceries');
@@ -874,6 +895,17 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       return;
     }
 
+    // If user is authenticated but onboarding is incomplete, restrict navigation to onboarding
+    if (authStatus === 'authenticated' && currentUser?.onboardingCompleted === false && path !== 'onboarding') {
+      setCurrentPath('onboarding');
+      if (typeof window !== 'undefined') {
+        window.location.hash = '#/onboarding';
+      }
+      setIsMobileSidebarOpen(false);
+      showToast('Por favor completa la configuración inicial para ingresar a tu dashboard personalizado.', 'info');
+      return;
+    }
+
     setCurrentPath(path);
     if (typeof window !== 'undefined') {
       window.location.hash = `#/${path}`;
@@ -897,6 +929,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           window.location.hash = '#/login';
           return;
         }
+        if (currentUser?.onboardingCompleted === false && hash !== 'onboarding') {
+          setCurrentPath('onboarding');
+          window.location.hash = '#/onboarding';
+          return;
+        }
       }
 
       if (isPrivatePath(hash) || PUBLIC_NAVIGATION_PATHS.includes(hash as any)) {
@@ -906,7 +943,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     window.addEventListener('hashchange', handleHashChange);
     return () => window.removeEventListener('hashchange', handleHashChange);
-  }, [authStatus]);
+  }, [authStatus, currentUser?.onboardingCompleted]);
 
   // Handle route redirection when authStatus transitions
   useEffect(() => {
@@ -919,8 +956,14 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         }
       }
     } else if (authStatus === 'authenticated') {
-      if (currentPath === 'login' || currentPath === 'registro' || currentPath === 'recuperar-password') {
-        const target = redirectPath && isPrivatePath(redirectPath) ? redirectPath : 'dashboard-nutricional';
+      if (currentUser?.onboardingCompleted === false) {
+        // Direct new or partially completed users to onboarding
+        setCurrentPath('onboarding');
+        if (typeof window !== 'undefined') {
+          window.location.hash = '#/onboarding';
+        }
+      } else if (currentPath === 'login' || currentPath === 'registro' || currentPath === 'recuperar-password' || currentPath === 'onboarding') {
+        const target = redirectPath && isPrivatePath(redirectPath) && redirectPath !== 'onboarding' ? redirectPath : 'dashboard-nutricional';
         setRedirectPath(null);
         setCurrentPath(target);
         if (typeof window !== 'undefined') {
@@ -928,7 +971,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         }
       }
     }
-  }, [authStatus]);
+  }, [authStatus, currentUser?.onboardingCompleted]);
 
   // Uniform Cloud Firestore User Profile & Subcollection Initializer
   // Ensures identical multi-device cloud persistence for Google OAuth and Email/Password athletes
@@ -941,16 +984,22 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     if (snap.exists()) {
       const data = snap.data();
+      // Existing user: preserve backward compatibility. Default onboardingCompleted to true if not explicitly false.
+      const onboardingCompleted = data.onboardingCompleted !== undefined ? Boolean(data.onboardingCompleted) : true;
+      const onboardingStep = typeof data.onboardingStep === 'number' ? data.onboardingStep : (onboardingCompleted ? 6 : 1);
       prof = {
         id: user.uid,
         name: data.name || user.displayName || 'Atleta Vigor',
         email: data.email || user.email || '',
         avatarUrl: data.avatarUrl || user.photoURL || defaultUser.avatarUrl,
         role: data.role || 'Atleta Pro',
-        location: data.location || 'Bogotá (UTC-5)',
+        location: data.location || Intl.DateTimeFormat().resolvedOptions().timeZone || 'Bogotá (UTC-5)',
         joinedDate: data.createdAt ? new Date(data.createdAt).toLocaleDateString('es-ES', { month: 'long', year: 'numeric' }) : 'Octubre 2024',
         emailVerified: user.emailVerified,
         authProvider: providerId,
+        onboardingCompleted,
+        onboardingStep,
+        goal: data.goal || 'ganancia_muscular',
       };
     } else {
       // New user registration in Cloud Firestore (requires incoming().role == 'Atleta Pro' per firestore.rules)
@@ -960,10 +1009,13 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         email: user.email || '',
         avatarUrl: user.photoURL || defaultUser.avatarUrl,
         role: 'Atleta Pro',
-        location: 'Bogotá (UTC-5)',
+        location: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Bogotá (UTC-5)',
         joinedDate: new Date().toLocaleDateString('es-ES', { month: 'long', year: 'numeric' }),
         emailVerified: user.emailVerified,
         authProvider: providerId,
+        onboardingCompleted: false, // Brand-new user: onboarding required
+        onboardingStep: 1,
+        goal: 'ganancia_muscular',
       };
 
       // 1. Create root user profile document
@@ -975,6 +1027,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         role: prof.role,
         location: prof.location,
         joinedDate: prof.joinedDate,
+        onboardingCompleted: false,
+        onboardingStep: 1,
+        goal: 'ganancia_muscular',
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       });
@@ -1005,19 +1060,32 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           setMealPartition(pdata.mealPartition);
           localStorage.setItem(`vigor_meal_partition_uid_${user.uid}`, JSON.stringify(pdata.mealPartition));
         }
+        if (pdata.athletePreferences) {
+          setAthletePreferences(pdata.athletePreferences);
+          localStorage.setItem(`vigor_athlete_prefs_uid_${user.uid}`, JSON.stringify(pdata.athletePreferences));
+        }
       } else {
         const currentNotif = loadScopedPreference('vigor_notif_prefs', `vigor_notif_prefs_uid_${user.uid}`, initialNotificationPreferences);
         const currentMeal = loadScopedPreference('vigor_meal_partition', `vigor_meal_partition_uid_${user.uid}`, defaultMealPartition);
+        const currentAthlete = loadScopedPreference('vigor_athlete_prefs', `vigor_athlete_prefs_uid_${user.uid}`, {
+          ...DEFAULT_ATHLETE_PREFERENCES,
+          onboardingCompleted: prof.onboardingCompleted ?? true,
+          onboardingStep: prof.onboardingStep ?? 1,
+          timezone: prof.location || 'America/Bogota',
+        });
         setNotificationPreferences(currentNotif);
         setMealPartition(currentMeal);
+        setAthletePreferences(currentAthlete);
         await setDoc(prefRef, {
           notificationPreferences: currentNotif,
           mealPartition: currentMeal,
+          athletePreferences: currentAthlete,
           userId: user.uid,
           updatedAt: new Date().toISOString(),
         });
         localStorage.setItem(`vigor_notif_prefs_uid_${user.uid}`, JSON.stringify(currentNotif));
         localStorage.setItem(`vigor_meal_partition_uid_${user.uid}`, JSON.stringify(currentMeal));
+        localStorage.setItem(`vigor_athlete_prefs_uid_${user.uid}`, JSON.stringify(currentAthlete));
       }
     } catch (prefErr) {
       console.error('Error fetching user preferences from Firestore:', prefErr);
@@ -1248,6 +1316,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           if (pdata.mealPartition) {
             setMealPartition(pdata.mealPartition);
             localStorage.setItem(`vigor_meal_partition_uid_${activeUid}`, JSON.stringify(pdata.mealPartition));
+          }
+          if (pdata.athletePreferences) {
+            setAthletePreferences(pdata.athletePreferences);
+            localStorage.setItem(`vigor_athlete_prefs_uid_${activeUid}`, JSON.stringify(pdata.athletePreferences));
           }
         }
       },
@@ -1623,6 +1695,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       role,
       location: 'Bogotá (UTC-5)',
       joinedDate: 'Octubre 2024',
+      onboardingCompleted: true,
+      onboardingStep: 6,
+      goal: 'ganancia_muscular',
     };
     setCurrentUser(demoProfile);
 
@@ -1969,6 +2044,251 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       return next;
     });
     showToast('Distribución de momentos actualizada');
+  };
+
+  // Athlete Profile & Onboarding Operations (Increment 7A)
+  const updateAthleteProfile = async (updates: Partial<UserProfile>): Promise<{ success: boolean; error?: string }> => {
+    const uid = fbUser?.uid || currentUser?.id;
+    if (!uid || !currentUser) return { success: false, error: 'No hay usuario autenticado.' };
+
+    const merged: UserProfile = { ...currentUser, ...updates };
+    setCurrentUser(merged);
+
+    if (fbUser && !isDemoMode) {
+      try {
+        const userRef = doc(db, 'users', uid);
+        await setDoc(
+          userRef,
+          {
+            name: merged.name,
+            location: merged.location,
+            avatarUrl: merged.avatarUrl,
+            role: merged.role,
+            goal: merged.goal || athletePreferences.trainingGoal,
+            updatedAt: new Date().toISOString(),
+          },
+          { merge: true }
+        );
+        showToast('Perfil actualizado en Cloud Firestore', 'success');
+        return { success: true };
+      } catch (err: any) {
+        handleFirestoreError(err, OperationType.UPDATE, `users/${uid}`);
+        return { success: false, error: err.message };
+      }
+    } else {
+      localStorage.setItem('vigor_demo_user', JSON.stringify(merged));
+      showToast('Perfil actualizado en modo demostración', 'success');
+      return { success: true };
+    }
+  };
+
+  const updateAthletePreferences = async (updates: Partial<AthletePreferences>): Promise<{ success: boolean; error?: string }> => {
+    const uid = fbUser?.uid || currentUser?.id;
+    if (!uid) return { success: false, error: 'No hay usuario autenticado.' };
+
+    const merged: AthletePreferences = { ...athletePreferences, ...updates, updatedAt: new Date().toISOString() };
+    setAthletePreferences(merged);
+
+    const scopeKey = isDemoMode ? `vigor_athlete_prefs_${uid}` : `vigor_athlete_prefs_uid_${uid}`;
+    localStorage.setItem(scopeKey, JSON.stringify(merged));
+
+    if (fbUser && !isDemoMode) {
+      try {
+        const prefRef = doc(db, 'users', uid, 'preferences', 'settings');
+        await setDoc(
+          prefRef,
+          {
+            athletePreferences: merged,
+            userId: uid,
+            updatedAt: new Date().toISOString(),
+          },
+          { merge: true }
+        );
+        showToast('Preferencias guardadas en Cloud Firestore', 'success');
+        return { success: true };
+      } catch (err: any) {
+        handleFirestoreError(err, OperationType.WRITE, `users/${uid}/preferences/settings`);
+        return { success: false, error: err.message };
+      }
+    } else {
+      showToast('Preferencias guardadas en modo demo', 'success');
+      return { success: true };
+    }
+  };
+
+  const saveOnboardingStep = async (
+    step: number,
+    partialData?: {
+      profile?: Partial<UserProfile>;
+      preferences?: Partial<AthletePreferences>;
+      biometrics?: Partial<BiometricConfig>;
+    }
+  ) => {
+    const uid = fbUser?.uid || currentUser?.id;
+    if (!uid) return;
+
+    if (partialData?.preferences) {
+      setAthletePreferences(prev => ({
+        ...prev,
+        ...partialData.preferences,
+        onboardingStep: step,
+      }));
+    }
+    if (partialData?.profile && currentUser) {
+      setCurrentUser(prev => prev ? {
+        ...prev,
+        ...partialData.profile,
+        onboardingStep: step,
+      } : null);
+    }
+    if (partialData?.biometrics) {
+      setBiometrics(prev => ({
+        ...prev,
+        ...partialData.biometrics,
+      }));
+    }
+
+    if (fbUser && !isDemoMode) {
+      try {
+        const userRef = doc(db, 'users', uid);
+        await updateDoc(userRef, {
+          onboardingStep: step,
+          updatedAt: new Date().toISOString(),
+        });
+        const prefRef = doc(db, 'users', uid, 'preferences', 'settings');
+        await setDoc(
+          prefRef,
+          {
+            'athletePreferences.onboardingStep': step,
+            userId: uid,
+            updatedAt: new Date().toISOString(),
+          },
+          { merge: true }
+        );
+      } catch (e) {
+        console.warn('Partial onboarding step save notice:', e);
+      }
+    }
+  };
+
+  const completeOnboarding = async (data: {
+    profile: Partial<UserProfile>;
+    biometrics: Partial<BiometricConfig>;
+    preferences: Partial<AthletePreferences>;
+  }): Promise<{ success: boolean; error?: string }> => {
+    try {
+      const uid = fbUser?.uid || currentUser?.id;
+      if (!uid) {
+        return { success: false, error: 'No hay usuario autenticado' };
+      }
+
+      // 1. Recalculate biometrics
+      const mergedBio = { ...biometrics, ...data.biometrics };
+      const bmr = Math.round(10 * mergedBio.weightKg + 6.25 * mergedBio.heightCm - 5 * mergedBio.age + 5);
+      const tdee = Math.round(bmr * mergedBio.palFactor);
+      const targetCalories = tdee + mergedBio.targetDeltaKcal;
+      const targetProteinG = Math.round(mergedBio.weightKg * mergedBio.proteinPerKg);
+      const targetFatG = Math.round(mergedBio.weightKg * mergedBio.fatPerKg);
+      const targetCarbsG = Math.max(0, Math.round((targetCalories - targetProteinG * 4 - targetFatG * 9) / 4));
+
+      const updatedBio: BiometricConfig = {
+        ...mergedBio,
+        bmr,
+        tdee,
+        targetCalories,
+        targetProteinG,
+        targetFatG,
+        targetCarbsG,
+      };
+
+      // 2. Prepare merged preferences
+      const updatedAthletePrefs: AthletePreferences = {
+        ...athletePreferences,
+        ...data.preferences,
+        onboardingCompleted: true,
+        onboardingStep: 6,
+        updatedAt: new Date().toISOString(),
+      };
+
+      // 3. Prepare merged profile
+      const updatedProfile: UserProfile = {
+        ...(currentUser || defaultUser),
+        ...data.profile,
+        id: uid,
+        onboardingCompleted: true,
+        onboardingStep: 6,
+      };
+
+      if (fbUser && !isDemoMode) {
+        // Multi-document atomic writes in Cloud Firestore
+        const batch = writeBatch(db);
+
+        // A. Update users/{uid}
+        const userRef = doc(db, 'users', uid);
+        batch.set(
+          userRef,
+          {
+            name: updatedProfile.name,
+            email: updatedProfile.email,
+            role: updatedProfile.role,
+            avatarUrl: updatedProfile.avatarUrl,
+            location: updatedProfile.location,
+            onboardingCompleted: true,
+            onboardingStep: 6,
+            goal: data.profile.goal || updatedAthletePrefs.trainingGoal,
+            updatedAt: new Date().toISOString(),
+          },
+          { merge: true }
+        );
+
+        // B. Update biometrics/current
+        const bioRef = doc(db, 'users', uid, 'biometrics', 'current');
+        batch.set(
+          bioRef,
+          {
+            ...updatedBio,
+            userId: uid,
+            updatedAt: new Date().toISOString(),
+          },
+          { merge: true }
+        );
+
+        // C. Update preferences/settings
+        const prefRef = doc(db, 'users', uid, 'preferences', 'settings');
+        batch.set(
+          prefRef,
+          {
+            athletePreferences: updatedAthletePrefs,
+            userId: uid,
+            updatedAt: new Date().toISOString(),
+          },
+          { merge: true }
+        );
+
+        await batch.commit();
+      }
+
+      // Update in-memory state
+      setBiometrics(updatedBio);
+      setAthletePreferences(updatedAthletePrefs);
+      setCurrentUser(updatedProfile);
+      setHasBiometricsConfigured(true);
+
+      const scopeKey = isDemoMode ? `vigor_athlete_prefs_${uid}` : `vigor_athlete_prefs_uid_${uid}`;
+      localStorage.setItem(scopeKey, JSON.stringify(updatedAthletePrefs));
+      if (isDemoMode) {
+        localStorage.setItem('vigor_demo_user', JSON.stringify(updatedProfile));
+      } else {
+        localStorage.setItem('vigor_auth_user', JSON.stringify(updatedProfile));
+      }
+
+      showToast('¡Configuración completada con éxito! Bienvenido a VigorCore.', 'success');
+      navigate('dashboard-nutricional');
+      return { success: true };
+    } catch (err: any) {
+      console.error('Error completing onboarding:', err);
+      return { success: false, error: err.message || 'Error al persistir la configuración en Cloud Firestore' };
+    }
   };
 
   // Groceries CRUD with Firestore
@@ -3519,6 +3839,13 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         isPreferencesModalOpen,
         openPreferencesModal: () => setIsPreferencesModalOpen(true),
         closePreferencesModal: () => setIsPreferencesModalOpen(false),
+
+        // Athlete Preferences & Onboarding (Increment 7A)
+        athletePreferences,
+        updateAthleteProfile,
+        updateAthletePreferences,
+        saveOnboardingStep,
+        completeOnboarding,
 
         // Biometrics
         biometrics,
