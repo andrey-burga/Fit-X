@@ -40,6 +40,8 @@ export const NutritionalDashboardView: React.FC = () => {
     setSelectedDate,
     selectedDateFormatted,
     groceries,
+    currentUser,
+    athletePreferences,
   } = useApp();
 
   const [selectedRange, setSelectedRange] = useState<'week' | '14d'>('week');
@@ -220,20 +222,31 @@ export const NutritionalDashboardView: React.FC = () => {
       <div className="bg-surface-container-low rounded-xl p-space-md shadow-xs flex flex-col md:flex-row items-start md:items-center justify-between gap-space-md border border-surface-container">
         <div className="flex items-center gap-space-md">
           <div className="w-10 h-10 rounded-lg bg-surface-container-lowest flex items-center justify-center text-primary shadow-xs shrink-0">
-            <span className="material-symbols-outlined text-xl">database</span>
+            <span className="material-symbols-outlined text-xl">vital_signs</span>
           </div>
           <div className="flex flex-col">
             <div className="flex items-center gap-space-sm flex-wrap">
               <span className="font-headline-sm text-headline-sm text-on-surface font-semibold">
-                Estructura Sincronizada en Tiempo Real
+                ¡Hola, {currentUser?.name || 'Atleta'}!
               </span>
               <span className="font-label-sm text-label-sm bg-primary-fixed text-on-primary-fixed px-space-xs py-0.5 rounded-full font-semibold flex items-center gap-1">
                 <span className="w-1.5 h-1.5 rounded-full bg-primary" />
-                Cloud Firestore Persistente
+                {currentUser?.goal === 'perdida_grasa'
+                  ? 'Objetivo: Pérdida de Grasa'
+                  : currentUser?.goal === 'mantenimiento'
+                  ? 'Objetivo: Mantenimiento'
+                  : currentUser?.goal === 'rendimiento'
+                  ? 'Objetivo: Rendimiento'
+                  : currentUser?.goal === 'salud_general'
+                  ? 'Objetivo: Salud General'
+                  : 'Objetivo: Ganancia Muscular'}
+              </span>
+              <span className="text-xs font-mono font-medium text-primary">
+                ({biometrics.targetCalories} kcal / día)
               </span>
             </div>
             <p className="font-body-md text-body-md text-on-surface-variant">
-              Visualizando registros reales del <strong>{selectedDateFormatted}</strong>. Los agregados y metas se actualizan dinámicamente.
+              Registros y balance del <strong>{selectedDateFormatted}</strong>. Tus metas metabólicas y agregados se sincronizan en tiempo real.
             </p>
           </div>
         </div>

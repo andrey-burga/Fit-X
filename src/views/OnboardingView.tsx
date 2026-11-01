@@ -147,7 +147,7 @@ export const OnboardingView: React.FC = () => {
   const [trainingDays, setTrainingDays] = useState<number>(athletePreferences.trainingDaysPerWeek || 4);
   const [experience, setExperience] = useState<TrainingExperience>(athletePreferences.trainingExperience || 'intermedio');
   const [equipment, setEquipment] = useState<string[]>(athletePreferences.availableEquipment || ['barra', 'mancuerna', 'polea', 'maquina', 'peso_corporal']);
-  const [trainingGoal, setTrainingGoal] = useState<'hipertrofia' | 'fuerza' | 'recomposicion' | 'resistencia'>(athletePreferences.trainingGoal || 'hipertrofia');
+  const [trainingGoal, setTrainingGoal] = useState<AthleteGoal>(athletePreferences.trainingGoal || 'hipertrofia');
   const [muscleFocus, setMuscleFocus] = useState<string[]>(athletePreferences.muscleFocus || ['pecho', 'espalda', 'cuadriceps']);
 
   // Step 5 Form States

@@ -276,12 +276,20 @@ export const WorkoutRoutineView: React.FC = () => {
             <span>Exportar PDF</span>
           </button>
           <button
+            onClick={() => navigate('planificador-mesociclo')}
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 font-label-md text-label-md shadow-xs transition-colors cursor-pointer border border-amber-500/30 font-medium"
+            type="button"
+          >
+            <span className="material-symbols-outlined text-base">event_note</span>
+            <span>Planificador de Mesociclos</span>
+          </button>
+          <button
             onClick={() => setIsManageModalOpen(true)}
             className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-surface-container-lowest hover:bg-surface-container text-on-surface font-label-md text-label-md shadow-xs transition-colors cursor-pointer border border-surface-container"
             type="button"
           >
             <span className="material-symbols-outlined text-base text-secondary">tune</span>
-            <span>Cambiar / Personalizar Mesociclo</span>
+            <span>Cambiar / Plantillas</span>
           </button>
           {currentDay && (
             <button

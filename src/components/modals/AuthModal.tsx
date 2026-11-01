@@ -16,6 +16,7 @@ export const AuthModal: React.FC = () => {
     isAuthModalOpen,
     closeAuthModal,
     showToast,
+    navigate,
   } = useApp();
 
   const [activeTab, setActiveTab] = useState<'login' | 'register'>('login');
@@ -245,7 +246,18 @@ export const AuthModal: React.FC = () => {
                   type="button"
                   onClick={() => {
                     closeAuthModal();
-                    showToast('Ventana de ajustes nutricionales abierta');
+                    navigate('perfil-atleta');
+                  }}
+                  className="w-full py-2.5 px-4 bg-primary hover:bg-primary-container text-on-primary rounded-xl font-medium text-sm transition-colors flex items-center justify-center gap-2 shadow-xs"
+                >
+                  <span className="material-symbols-outlined text-base">account_circle</span>
+                  Gestionar Perfil &amp; Preferencias
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    closeAuthModal();
+                    navigate('configuracion-nutricional');
                   }}
                   className="w-full py-2.5 px-4 bg-surface-container-low hover:bg-surface-container text-on-surface rounded-xl font-medium text-sm transition-colors flex items-center justify-center gap-2"
                 >

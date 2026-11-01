@@ -25,6 +25,7 @@ import { CardioHiitView } from './views/CardioHiitView';
 import { TrainingProgressView } from './views/TrainingProgressView';
 import { OnboardingView } from './views/OnboardingView';
 import { AthleteProfileView } from './views/AthleteProfileView';
+import { MesocyclePlanningView } from './views/MesocyclePlanningView';
 
 // Modals
 import { RegisterMealDrawer } from './components/modals/RegisterMealDrawer';
@@ -123,6 +124,8 @@ const AppContent: React.FC = () => {
         return <CardioHiitView />;
       case 'progreso-del-entrenamiento':
         return <TrainingProgressView />;
+      case 'planificador-mesociclo':
+        return <MesocyclePlanningView />;
       default:
         return <NutritionalDashboardView />;
     }

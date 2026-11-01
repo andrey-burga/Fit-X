@@ -17,7 +17,8 @@ export type NavigationPath =
   | 'rutina-de-entrenamiento'
   | 'registro-de-entrenamiento'
   | 'cardio-y-hiit'
-  | 'progreso-del-entrenamiento';
+  | 'progreso-del-entrenamiento'
+  | 'planificador-mesociclo';
 
 export const PRIVATE_NAVIGATION_PATHS: NavigationPath[] = [
   'onboarding',
@@ -34,6 +35,7 @@ export const PRIVATE_NAVIGATION_PATHS: NavigationPath[] = [
   'registro-de-entrenamiento',
   'cardio-y-hiit',
   'progreso-del-entrenamiento',
+  'planificador-mesociclo',
 ];
 
 export const PUBLIC_NAVIGATION_PATHS: NavigationPath[] = [
@@ -176,3 +178,4 @@ export interface ToastMessage {
 export * from './nutrition';
 export * from './workout';
 export * from './auth';
+export * from './mesocycle';

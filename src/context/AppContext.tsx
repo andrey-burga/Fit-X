@@ -59,6 +59,8 @@ import {
 import { getExerciseById } from '../data/exerciseCatalog';
 import { createDemoExecutedWorkoutsHistory } from '../data/demoWorkoutsSeed';
 import { UserProfile, AppNotification, NotificationPreferences, AthletePreferences, DEFAULT_ATHLETE_PREFERENCES } from '../types/auth';
+import { MesocycleRoutine } from '../types/mesocycle';
+import { updateMesocycleWeekProgress } from '../services/mesocycleGeneratorService';
 import {
   auth,
   db,
@@ -237,6 +239,8 @@ interface AppContextType {
   removeExerciseFromRoutineDay: (routineId: string, dayId: string, configId: string) => Promise<void>;
   reorderExercisesInRoutineDay: (routineId: string, dayId: string, startIndex: number, endIndex: number) => Promise<void>;
   updateRoutineExerciseConfig: (routineId: string, dayId: string, configId: string, updates: Partial<PlannedExerciseConfig>) => Promise<void>;
+  saveMesocycleRoutine: (program: MesocycleRoutine, activateNow?: boolean) => Promise<string>;
+  advanceMesocycleWeek: (routineId: string, targetWeek: number) => Promise<void>;
 
   // Live Workout Execution Engine (Increment 6C)
   activeLiveWorkout: ExecutedWorkout | null;
@@ -3281,6 +3285,110 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     showToast('Configuración del ejercicio actualizada', 'success');
   };
 
+  const saveMesocycleRoutine = async (program: MesocycleRoutine, activateNow: boolean = true): Promise<string> => {
+    const uid = fbUser?.uid || currentUser?.id || 'demo_camilo';
+    const now = new Date().toISOString();
+    const routineId = program.id || `meso_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+
+    const finalizedProgram: MesocycleRoutine = {
+      ...program,
+      id: routineId,
+      userId: uid,
+      isDefault: activateNow ? true : Boolean(program.isDefault),
+      createdAt: program.createdAt || now,
+      updatedAt: now,
+    };
+
+    const updatedList = activateNow
+      ? [finalizedProgram, ...workoutRoutines.map(r => ({ ...r, isDefault: false }))]
+      : [finalizedProgram, ...workoutRoutines];
+
+    setWorkoutRoutines(updatedList);
+    if (activateNow) {
+      setActiveRoutineId(finalizedProgram.id);
+    }
+
+    if (isDemoMode || !fbUser?.uid) {
+      const demoKey = `vigor_workout_routines_${uid}`;
+      localStorage.setItem(demoKey, JSON.stringify(updatedList));
+      if (activateNow) {
+        localStorage.setItem(`vigor_active_routine_${uid}`, finalizedProgram.id);
+      }
+      setRoutineSyncStatus('synced');
+      showToast(`Mesociclo "${finalizedProgram.name}" guardado`, 'success');
+      return finalizedProgram.id;
+    }
+
+    setRoutineSyncStatus('saving');
+    try {
+      await setDoc(doc(db, 'users', fbUser.uid, 'workoutRoutines', finalizedProgram.id), {
+        ...finalizedProgram,
+        userId: fbUser.uid,
+        updatedAt: now,
+      });
+
+      if (activateNow) {
+        for (const other of workoutRoutines) {
+          if (other.isDefault && other.id !== finalizedProgram.id) {
+            updateDoc(doc(db, 'users', fbUser.uid, 'workoutRoutines', other.id), {
+              isDefault: false,
+              updatedAt: now,
+            }).catch(() => {});
+          }
+        }
+      }
+
+      setRoutineSyncStatus('synced');
+      showToast(`Mesociclo "${finalizedProgram.name}" persistido en Cloud Firestore`, 'success');
+      return finalizedProgram.id;
+    } catch (err) {
+      setRoutineSyncStatus('error');
+      handleFirestoreError(err, OperationType.CREATE, `users/${fbUser.uid}/workoutRoutines/${finalizedProgram.id}`);
+      throw err;
+    }
+  };
+
+  const advanceMesocycleWeek = async (routineId: string, targetWeek: number): Promise<void> => {
+    const routine = workoutRoutines.find(r => r.id === routineId) as MesocycleRoutine | undefined;
+    if (!routine || !routine.isMesocycle || !routine.mesocycleConfig) return;
+
+    const targetWeekObj = routine.mesocycleConfig.weeks.find(w => w.weekNumber === targetWeek);
+    if (!targetWeekObj) return;
+
+    const now = new Date().toISOString();
+    const updatedRoutine: MesocycleRoutine = {
+      ...routine,
+      days: targetWeekObj.days,
+      mesocycleConfig: {
+        ...routine.mesocycleConfig,
+        currentWeek: targetWeek,
+      },
+      updatedAt: now,
+    };
+
+    const updatedList = workoutRoutines.map(r => (r.id === routineId ? updatedRoutine : r));
+    setWorkoutRoutines(updatedList);
+
+    const uid = fbUser?.uid || currentUser?.id || 'demo_camilo';
+    if (isDemoMode || !fbUser?.uid) {
+      const demoKey = `vigor_workout_routines_${uid}`;
+      localStorage.setItem(demoKey, JSON.stringify(updatedList));
+      showToast(`Semana cambiada a: ${targetWeekObj.name}`, 'info');
+      return;
+    }
+
+    try {
+      await updateDoc(doc(db, 'users', fbUser.uid, 'workoutRoutines', routineId), {
+        days: targetWeekObj.days,
+        'mesocycleConfig.currentWeek': targetWeek,
+        updatedAt: now,
+      });
+      showToast(`Semana actualizada a: ${targetWeekObj.name}`, 'success');
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `users/${fbUser.uid}/workoutRoutines/${routineId}`);
+    }
+  };
+
   // Live Workout Execution Engine (Increment 6C)
   const startLiveWorkout = async (routine: WorkoutRoutine, day: RoutineDay): Promise<string> => {
     const uid = fbUser?.uid || currentUser?.id || 'demo_camilo';
@@ -3703,6 +3811,32 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setActiveLiveWorkout(null);
     setHasRecoveredLiveSession(false);
 
+    // Mesocycle progress tracking (Increment 7B)
+    if (completedWorkout.routineId) {
+      const parentMeso = workoutRoutines.find(r => r.id === completedWorkout.routineId) as MesocycleRoutine | undefined;
+      if (parentMeso?.isMesocycle && parentMeso.mesocycleConfig) {
+        const curWeek = parentMeso.mesocycleConfig.currentWeek || 1;
+        const dayId = completedWorkout.routineDayId || parentMeso.days[0]?.id;
+        if (dayId) {
+          const updatedMeso = updateMesocycleWeekProgress(parentMeso, curWeek, dayId, completedWorkout.id);
+          setWorkoutRoutines(prev => prev.map(r => (r.id === updatedMeso.id ? updatedMeso : r)));
+
+          if (fbUser?.uid && !isDemoMode) {
+            updateDoc(doc(db, 'users', fbUser.uid, 'workoutRoutines', updatedMeso.id), {
+              days: updatedMeso.days,
+              mesocycleConfig: updatedMeso.mesocycleConfig,
+              updatedAt: new Date().toISOString(),
+            }).catch(e => console.warn('Aviso de actualización de progreso del mesociclo:', e));
+          } else {
+            const uid = fbUser?.uid || currentUser?.id || 'demo_camilo';
+            const demoKey = `vigor_workout_routines_${uid}`;
+            const updatedAll = workoutRoutines.map(r => (r.id === updatedMeso.id ? updatedMeso : r));
+            localStorage.setItem(demoKey, JSON.stringify(updatedAll));
+          }
+        }
+      }
+    }
+
     showToast(
       `¡Entrenamiento finalizado con éxito! Tonelaje: ${totalTonnageKg.toLocaleString()} kg en ${Math.round(duration / 60)} min.`,
       'success'
@@ -3929,6 +4063,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         removeExerciseFromRoutineDay,
         reorderExercisesInRoutineDay,
         updateRoutineExerciseConfig,
+        saveMesocycleRoutine,
+        advanceMesocycleWeek,
 
         // Live Workout Execution Engine (Increment 6C)
         activeLiveWorkout,

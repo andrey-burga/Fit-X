@@ -20,6 +20,7 @@ const nutritionNav: NavItem[] = [
 ];
 
 const workoutNav: NavItem[] = [
+  { id: 'planificador-mesociclo', label: 'Planificador & Mesociclos', icon: 'event_note' },
   { id: 'rutina-de-entrenamiento', label: 'Rutina de Entrenamiento', icon: 'fitness_center' },
   { id: 'registro-de-entrenamiento', label: 'Registro de Entrenamiento', icon: 'format_list_bulleted' },
   { id: 'cardio-y-hiit', label: 'Cardio y HIIT', icon: 'directions_run' },
@@ -125,6 +126,31 @@ export const Sidebar: React.FC = () => {
             Entrenamiento
           </div>
           {workoutNav.map(item => {
+            const isActive = currentPath === item.id;
+            return (
+              <button
+                key={item.id}
+                onClick={() => handleNavClick(item.id)}
+                className={`w-full text-left px-space-sm py-2 rounded-lg font-body-md text-body-md transition-all flex items-center gap-space-sm ${
+                  isActive
+                    ? 'bg-primary text-on-primary font-medium shadow-sm'
+                    : 'text-on-surface-variant hover:bg-surface-container hover:text-on-surface'
+                }`}
+              >
+                {item.icon && (
+                  <span className={`material-symbols-outlined text-lg ${isActive ? 'text-on-primary' : 'text-on-surface-variant'}`}>
+                    {item.icon}
+                  </span>
+                )}
+                <span>{item.label}</span>
+              </button>
+            );
+          })}
+
+          <div className="px-space-sm pt-space-md pb-space-xs font-label-sm text-label-sm uppercase tracking-wider text-on-surface-variant font-semibold">
+            Cuenta &amp; Configuración
+          </div>
+          {accountNav.map(item => {
             const isActive = currentPath === item.id;
             return (
               <button

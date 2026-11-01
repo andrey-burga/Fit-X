@@ -15,7 +15,17 @@ export interface UserProfile {
 
 export type WeightUnit = 'kg' | 'lbs';
 export type HeightUnit = 'cm' | 'in';
-export type AthleteGoal = 'perdida_grasa' | 'ganancia_muscular' | 'mantenimiento' | 'rendimiento' | 'salud_general';
+export type AthleteGoal =
+  | 'hipertrofia'
+  | 'fuerza'
+  | 'recomposicion'
+  | 'definicion'
+  | 'mantenimiento'
+  | 'resistencia'
+  | 'perdida_grasa'
+  | 'ganancia_muscular'
+  | 'rendimiento'
+  | 'salud_general';
 export type TrainingExperience = 'principiante' | 'intermedio' | 'avanzado';
 export type DietaryPreference = 'omnivoro' | 'vegetariano' | 'vegano' | 'pescetariano' | 'sin_gluten';
 
@@ -24,9 +34,12 @@ export interface AthletePreferences {
   heightUnit: HeightUnit;
   timezone: string;
   trainingDaysPerWeek: number; // 3, 4, 5, 6
+  daysPerWeek?: number;
+  sessionDurationMinutes?: number;
+  equipmentType?: string;
   trainingExperience: TrainingExperience;
   availableEquipment: string[];
-  trainingGoal: 'hipertrofia' | 'fuerza' | 'recomposicion' | 'resistencia';
+  trainingGoal: AthleteGoal;
   muscleFocus: string[];
   mealsPerDay: number;
   dietaryPreference: DietaryPreference;
