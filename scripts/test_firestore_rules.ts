@@ -345,6 +345,115 @@ export async function runFirestoreRulesTests() {
     );
     console.log('  -> [PASS] 5.1 Nutrición, despensa y rutinas: CERO REGRESIONES.');
 
+    console.log('\n--- GRUPO 6: SEGURIDAD Y REGLAS DE BIOMETRÍA Y PERIODIZACIÓN (Incremento 7C.2) ---');
+
+    // 6.1 Usuario propietario puede actualizar sus biometrías
+    const validBioDoc = {
+      userId: userA,
+      weightKg: 75,
+      heightCm: 178,
+      age: 28,
+      palFactor: 1.55,
+      targetCalories: 2666,
+      targetProteinG: 150,
+      targetFatG: 60,
+      targetCarbsG: 382,
+      proteinPerKg: 2.0,
+      fatPerKg: 0.8,
+    };
+    await assertSucceeds(
+      setDoc(doc(dbA, 'users', userA, 'biometrics', 'current'), validBioDoc)
+    );
+    console.log('  -> [PASS] 6.1 Usuario propietario actualiza biometrías válidas: PERMITIDO.');
+
+    // 6.2 Usuario propietario puede guardar lastAppliedPeriodization (metas periodizadas)
+    const periodizedBioDoc = {
+      ...validBioDoc,
+      targetCalories: 2850,
+      targetProteinG: 165,
+      lastAppliedPeriodization: {
+        phase: 'Semana 2 de 6',
+        athleteGoal: 'hipertrofia',
+        appliedAt: new Date().toISOString(),
+        isDietBreak: false,
+        previousTargets: {
+          targetCalories: 2666,
+          targetProteinG: 150,
+          targetCarbsG: 382,
+          targetFatG: 60,
+          proteinPerKg: 2.0,
+          fatPerKg: 0.8,
+          targetDeltaKcal: 0,
+        },
+      },
+    };
+    await assertSucceeds(
+      setDoc(doc(dbA, 'users', userA, 'biometrics', 'current'), periodizedBioDoc)
+    );
+    console.log('  -> [PASS] 6.2 Guardado de periodización y previousTargets: PERMITIDO.');
+
+    // 6.3 Usuario propietario puede restaurar previousTargets (reversión)
+    const revertedBioDoc = {
+      ...validBioDoc,
+      targetCalories: 2666,
+      targetProteinG: 150,
+      lastAppliedPeriodization: null,
+    };
+    await assertSucceeds(
+      setDoc(doc(dbA, 'users', userA, 'biometrics', 'current'), revertedBioDoc)
+    );
+    console.log('  -> [PASS] 6.3 Reversión y restauración de previousTargets: PERMITIDO.');
+
+    // 6.4 Usuario A no puede modificar ni leer biometrías de Usuario B
+    await assertFails(
+      getDoc(doc(dbB, 'users', userA, 'biometrics', 'current'))
+    );
+    await assertFails(
+      setDoc(doc(dbB, 'users', userA, 'biometrics', 'current'), {
+        ...validBioDoc,
+        userId: userB,
+      })
+    );
+    console.log('  -> [PASS] 6.4 Usuario A no puede leer ni modificar biometrías de B: RECHAZADO.');
+
+    // 6.5 Usuario no autenticado no puede actualizar biometrías
+    await assertFails(
+      setDoc(doc(dbAnon, 'users', userA, 'biometrics', 'current'), validBioDoc)
+    );
+    await assertFails(
+      getDoc(doc(dbAnon, 'users', userA, 'biometrics', 'current'))
+    );
+    console.log('  -> [PASS] 6.5 Usuario no autenticado rechazado en biometrías: RECHAZADO.');
+
+    // 6.6 Valores fuera de rango son rechazados por isValidBiometrics
+    await assertFails(
+      setDoc(doc(dbA, 'users', userA, 'biometrics', 'current'), {
+        ...validBioDoc,
+        weightKg: -10, // Inválido: weightKg <= 0
+      })
+    );
+    await assertFails(
+      setDoc(doc(dbA, 'users', userA, 'biometrics', 'current'), {
+        ...validBioDoc,
+        heightCm: 30, // Inválido: heightCm <= 50
+      })
+    );
+    await assertFails(
+      setDoc(doc(dbA, 'users', userA, 'biometrics', 'current'), {
+        ...validBioDoc,
+        targetCalories: 200, // Inválido: targetCalories < 500
+      })
+    );
+    console.log('  -> [PASS] 6.6 Valores fuera de rango (peso, altura, calorías) rechazados: RECHAZADO.');
+
+    // 6.7 La actualización conserva los campos inmutables (userId no transferible)
+    await assertFails(
+      updateDoc(doc(dbA, 'users', userA, 'biometrics', 'current'), {
+        userId: userB, // Intento de transferir posesión
+      })
+    );
+    console.log('  -> [PASS] 6.7 Intento de transferir userId en update de biometrías: RECHAZADO.');
+
     console.log('\n========================================================================');
     console.log(' RESULTADO: TODAS LAS PRUEBAS DE EMULADOR FIRESTORE APROBARON 100%');
     console.log('========================================================================\n');
@@ -356,7 +465,7 @@ export async function runFirestoreRulesTests() {
 }
 
 function runStaticIntegrityAudit(rulesContent: string) {
-  console.log('[AUDITORÍA ESTÁTICA]: Verificando reglas de Incremente 6C...');
+  console.log('[AUDITORÍA ESTÁTICA]: Verificando reglas de Incrementos 6C, 7A y 7C (Biometría y Periodización)...');
   const checks = [
     { label: 'isValidExecutedWorkout definida', pass: rulesContent.includes('function isValidExecutedWorkout') },
     { label: 'isLinkedWorkoutActive definida', pass: rulesContent.includes('function isLinkedWorkoutActive') },
@@ -365,6 +474,13 @@ function runStaticIntegrityAudit(rulesContent: string) {
     { label: 'Bloqueo de borrado en executedWorkouts (allow delete: if false)', pass: rulesContent.includes('match /executedWorkouts/{workoutId}') && rulesContent.includes('allow delete: if false;') },
     { label: 'Vinculación obligatoria de series (workoutSessions)', pass: rulesContent.includes("('executedWorkoutId' in incoming()) &&") && rulesContent.includes('isLinkedWorkoutActive(incoming().executedWorkoutId, userId)') },
     { label: 'Inmutabilidad de executedWorkoutId en update', pass: rulesContent.includes('incoming().executedWorkoutId == existing().executedWorkoutId') },
+    { label: 'isValidBiometrics definida', pass: rulesContent.includes('function isValidBiometrics(data, userId)') },
+    { label: 'isValidBiometrics valida data.userId == userId', pass: rulesContent.includes('data.userId == userId') && rulesContent.includes('data.weightKg > 0') },
+    { label: 'isValidBiometrics valida límites de peso (0 a 500 kg) y estatura (50 a 300 cm)', pass: rulesContent.includes('data.weightKg < 500') && rulesContent.includes('data.heightCm < 300') },
+    { label: 'isValidBiometrics valida rango calórico (500 a 10000 kcal)', pass: rulesContent.includes('data.targetCalories >= 500 && data.targetCalories <= 10000') },
+    { label: 'Match /biometrics/{docId} con control de propietario isOwner(userId)', pass: rulesContent.includes('match /biometrics/{docId}') && rulesContent.includes('isOwner(userId)') },
+    { label: 'allow create/update en biometrics con isValidBiometrics', pass: rulesContent.includes('isValidBiometrics(incoming(), userId)') },
+    { label: 'Inmutabilidad de userId en update de biometrics (incoming().userId == existing().userId)', pass: rulesContent.includes('incoming().userId == existing().userId') },
     { label: 'Default deny catch-all presente', pass: rulesContent.includes('match /{document=**} {\n      allow read, write: if false;\n    }') },
   ];
 
@@ -382,7 +498,7 @@ function runStaticIntegrityAudit(rulesContent: string) {
     console.error('\n[ERROR] Falló una o más comprobaciones estáticas de reglas.');
     process.exit(1);
   }
-  console.log('\n[ÉXITO] Todas las aserciones de reglas estáticas verificadas.');
+  console.log('\n[ÉXITO] Todas las 15 aserciones de reglas estáticas verificadas.');
 }
 
 if (import.meta.url.endsWith(process.argv[1]) || process.argv[1]?.includes('test_firestore_rules')) {

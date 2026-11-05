@@ -156,6 +156,7 @@ interface AppContextType {
   biometrics: BiometricConfig;
   updateBiometrics: (updates: Partial<BiometricConfig>) => void;
   resetBiometricsToExcel: () => void;
+  revertToPreviousBiometrics: () => Promise<boolean>;
   mealPartition: MealMomentPartition;
   updateMealPartition: (updates: Partial<MealMomentPartition>) => void;
 
@@ -2020,6 +2021,40 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         handleFirestoreError(err, OperationType.WRITE, `users/${fbUser.uid}/biometrics/current`);
       }
     }
+  };
+
+  const revertToPreviousBiometrics = async (): Promise<boolean> => {
+    const prev = biometrics.lastAppliedPeriodization?.previousTargets;
+    if (!prev) {
+      showToast('No existen metas nutricionales anteriores para revertir', 'warning');
+      return false;
+    }
+    const reverted: BiometricConfig = {
+      ...biometrics,
+      targetCalories: prev.targetCalories,
+      targetProteinG: prev.targetProteinG,
+      targetCarbsG: prev.targetCarbsG,
+      targetFatG: prev.targetFatG,
+      proteinPerKg: prev.proteinPerKg,
+      fatPerKg: prev.fatPerKg,
+      targetDeltaKcal: prev.targetDeltaKcal,
+      lastAppliedPeriodization: undefined,
+    };
+    setBiometrics(reverted);
+    showToast('¡Metas nutricionales revertidas a la configuración anterior con éxito!', 'success');
+
+    if (fbUser?.uid && !isDemoMode) {
+      try {
+        await setDoc(doc(db, 'users', fbUser.uid, 'biometrics', 'current'), {
+          ...reverted,
+          userId: fbUser.uid,
+          updatedAt: new Date().toISOString(),
+        });
+      } catch (err) {
+        handleFirestoreError(err, OperationType.WRITE, `users/${fbUser.uid}/biometrics/current`);
+      }
+    }
+    return true;
   };
 
   const updateMealPartition = (updates: Partial<MealMomentPartition>) => {
@@ -3985,6 +4020,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         biometrics,
         updateBiometrics,
         resetBiometricsToExcel,
+        revertToPreviousBiometrics,
         mealPartition,
         updateMealPartition,
 

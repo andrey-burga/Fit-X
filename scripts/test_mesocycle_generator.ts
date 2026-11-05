@@ -195,28 +195,32 @@ dbPlan.program.days.forEach(day => {
 assert(allExercisesMatchDumbbell, 'Ningún ejercicio requiere barra ni máquinas cuando el atleta solo tiene mancuernas.');
 
 // -----------------------------------------------------------------------------
-// [PRUEBA 8] Prevención de sustituciones biomecánicamente inadecuadas
+// [PRUEBA 8] Sustitución biomecánica tren superior (Press banca mancuernas)
 // -----------------------------------------------------------------------------
-console.log('\n[PRUEBA 8] Sustitución biomecánica adecuada mediante variantes del catálogo:');
+console.log('\n[PRUEBA 8] Sustitución biomecánica tren superior mediante catálogo real:');
 const resolutionBench = selectExerciseWithEquipment('barbell_bench_press', ['mancuerna', 'peso_corporal']);
 assert(
   resolutionBench.exercise.id === 'dumbbell_bench_press' &&
   resolutionBench.exercise.movementPattern === 'empuje_horizontal' &&
   resolutionBench.exercise.muscleGroup === 'pecho',
-  'Press de banca con barra se sustituye por Press plano con mancuernas (mismo patrón biomecánico y grupo muscular).'
+  'Press de banca con barra se sustituye por Press plano con mancuernas (mismo patrón y grupo muscular).'
 );
 
+// -----------------------------------------------------------------------------
+// [PRUEBA 9] Sustitución biomecánica tren inferior (Sentadilla / Zancada)
+// -----------------------------------------------------------------------------
+console.log('\n[PRUEBA 9] Sustitución biomecánica tren inferior mediante catálogo real:');
 const resolutionSquat = selectExerciseWithEquipment('barbell_back_squat', ['mancuerna', 'peso_corporal']);
 assert(
   resolutionSquat.exercise.muscleGroup === 'cuadriceps' &&
   (resolutionSquat.exercise.movementPattern === 'sentadilla' || resolutionSquat.exercise.movementPattern === 'zancada'),
-  'Sentadilla trasera con barra se sustituye por variante de tren inferior (Zancada búlgara o Sentadilla con mancuerna).'
+  'Sentadilla trasera con barra se sustituye por variante de tren inferior (Zancada búlgara o Sentadilla mancuerna).'
 );
 
 // -----------------------------------------------------------------------------
-// [PRUEBA 9] Coherencia de series, repeticiones y descansos
+// [PRUEBA 10] Prescripción fisiológica de series, repeticiones y descansos
 // -----------------------------------------------------------------------------
-console.log('\n[PRUEBA 9] Prescripción fisiológica de series, repeticiones y descansos:');
+console.log('\n[PRUEBA 10] Prescripción fisiológica de series, repeticiones y descansos:');
 const strengthPlan = generateMesocyclePlan({
   athleteGoal: 'fuerza',
   experience: 'intermedio',
@@ -233,9 +237,9 @@ assert(
 );
 
 // -----------------------------------------------------------------------------
-// [PRUEBA 10] Integración con principios de 6G (micro-cargas y RIR)
+// [PRUEBA 11] Integración con principios de 6G (micro-cargas y RIR)
 // -----------------------------------------------------------------------------
-console.log('\n[PRUEBA 10] Principios de progresión doble y RIR integrado:');
+console.log('\n[PRUEBA 11] Principios de progresión doble y RIR integrado:');
 const week1Rir = fullResult.program.mesocycleConfig.weeks[0].intensityRirTarget;
 const week2Rir = fullResult.program.mesocycleConfig.weeks[1].intensityRirTarget;
 assert(
@@ -244,9 +248,9 @@ assert(
 );
 
 // -----------------------------------------------------------------------------
-// [PRUEBA 11] Evolución semanal del mesociclo
+// [PRUEBA 12] Evolución semanal del mesociclo
 // -----------------------------------------------------------------------------
-console.log('\n[PRUEBA 11] Evolución semanal del mesociclo (Calibración -> Repeticiones -> Cargas):');
+console.log('\n[PRUEBA 12] Evolución semanal del mesociclo (Calibración -> Repeticiones -> Cargas):');
 const w1 = fullResult.program.mesocycleConfig.weeks[0];
 const w2 = fullResult.program.mesocycleConfig.weeks[1];
 const w3 = fullResult.program.mesocycleConfig.weeks[2];
@@ -258,9 +262,9 @@ assert(
 );
 
 // -----------------------------------------------------------------------------
-// [PRUEBA 12] Semana de descarga planificada (Deload)
+// [PRUEBA 13] Semana de descarga planificada (Deload) y reducción calculada
 // -----------------------------------------------------------------------------
-console.log('\n[PRUEBA 12] Configuración de semana de descarga opcional:');
+console.log('\n[PRUEBA 13] Configuración de semana de descarga y porcentaje real calculado:');
 const deloadWeek = fullResult.program.mesocycleConfig.weeks[5];
 const normalWeek = fullResult.program.mesocycleConfig.weeks[1];
 const deloadSetsTotal = deloadWeek.days.reduce((acc, d) => acc + d.exercises.reduce((s, ex) => s + ex.sets, 0), 0);
@@ -270,14 +274,15 @@ const volumeReduction = Math.round((1 - deloadSetsTotal / normalSetsTotal) * 100
 assert(
   deloadWeek.isDeload === true &&
   deloadWeek.intensityRirTarget === 4 &&
-  volumeReduction >= 25,
-  `Semana de descarga reduce volumen en un ${volumeReduction}% y prescribe RIR 4 para recuperación articular.`
+  volumeReduction >= 25 &&
+  deloadWeek.actualVolumeReductionPct === volumeReduction,
+  `Semana de descarga reduce volumen en un ${volumeReduction}% (registrado ${deloadWeek.actualVolumeReductionPct}%) con RIR 4.`
 );
 
 // -----------------------------------------------------------------------------
-// [PRUEBA 13] Vista previa sin escrituras en base de datos
+// [PRUEBA 14] Vista previa sin escrituras en base de datos
 // -----------------------------------------------------------------------------
-console.log('\n[PRUEBA 13] Inmutabilidad y cero escrituras en Firestore durante la vista previa:');
+console.log('\n[PRUEBA 14] Inmutabilidad y cero escrituras en Firestore durante la vista previa:');
 const prevJson = JSON.stringify(fullResult.program);
 const testCall = generateMesocyclePlan(fullInput);
 assert(
@@ -286,9 +291,9 @@ assert(
 );
 
 // -----------------------------------------------------------------------------
-// [PRUEBA 14] Persistencia solo tras confirmación explícita
+// [PRUEBA 15] Persistencia solo tras confirmación explícita
 // -----------------------------------------------------------------------------
-console.log('\n[PRUEBA 14] Persistencia condicionada a confirmación explícita:');
+console.log('\n[PRUEBA 15] Persistencia condicionada a confirmación explícita:');
 const pendingPlan = generateMesocyclePlan(fullInput).program;
 assert(
   pendingPlan.id.startsWith('meso_') && pendingPlan.isDefault === true,
@@ -296,9 +301,9 @@ assert(
 );
 
 // -----------------------------------------------------------------------------
-// [PRUEBA 15] Conservación de rutinas anteriores
+// [PRUEBA 16] Conservación de rutinas anteriores
 // -----------------------------------------------------------------------------
-console.log('\n[PRUEBA 15] Conservación de rutinas anteriores (cero sobrescritura):');
+console.log('\n[PRUEBA 16] Conservación de rutinas anteriores (cero sobrescritura):');
 const existingRoutines = [
   { id: 'rot_1', name: 'Rutina Torso Original', frequencyDays: 3, days: [], goal: 'hipertrofia' as any, userId: 'u1', createdAt: '', updatedAt: '' },
 ];
@@ -309,9 +314,9 @@ assert(
 );
 
 // -----------------------------------------------------------------------------
-// [PRUEBA 16] Prevención de duplicados por reintentos
+// [PRUEBA 17] Prevención de duplicados por reintentos
 // -----------------------------------------------------------------------------
-console.log('\n[PRUEBA 16] Idempotencia en guardado y prevención de duplicados:');
+console.log('\n[PRUEBA 17] Idempotencia en guardado y prevención de duplicados:');
 const stableId = pendingPlan.id;
 const duplicateMap = new Map();
 duplicateMap.set(stableId, pendingPlan);
@@ -322,9 +327,9 @@ assert(
 );
 
 // -----------------------------------------------------------------------------
-// [PRUEBA 17] Seguimiento y avance de sesiones del mesociclo
+// [PRUEBA 18] Seguimiento y avance de sesiones del mesociclo
 // -----------------------------------------------------------------------------
-console.log('\n[PRUEBA 17] Seguimiento de sesiones completadas y avance de semana:');
+console.log('\n[PRUEBA 18] Seguimiento de sesiones completadas y avance de semana:');
 const initialMeso = fullResult.program;
 const step1 = updateMesocycleWeekProgress(initialMeso, 1, 'd1', 'ewk_101');
 const step2 = updateMesocycleWeekProgress(step1, 1, 'd2', 'ewk_102');
@@ -339,9 +344,9 @@ assert(
 );
 
 // -----------------------------------------------------------------------------
-// [PRUEBA 18] Integridad de sesiones históricas
+// [PRUEBA 19] Integridad de sesiones históricas
 // -----------------------------------------------------------------------------
-console.log('\n[PRUEBA 18] Inmutabilidad de sesiones históricas completadas:');
+console.log('\n[PRUEBA 19] Inmutabilidad de sesiones históricas completadas:');
 const dummyHistorical: ExecutedWorkout = {
   id: 'hist_workout_1',
   userId: 'u1',
@@ -357,7 +362,6 @@ const dummyHistorical: ExecutedWorkout = {
   exercisesSnapshot: [],
 };
 const cloneHistorical = { ...dummyHistorical };
-// La generación no debe mutar registros pasados
 const newMeso = generateMesocyclePlan(fullInput, [dummyHistorical]);
 assert(
   cloneHistorical.id === dummyHistorical.id && cloneHistorical.status === 'completed',
@@ -365,9 +369,9 @@ assert(
 );
 
 // -----------------------------------------------------------------------------
-// [PRUEBA 19] Aislamiento multiusuario (User A vs User B)
+// [PRUEBA 20] Aislamiento multiusuario (User A vs User B)
 // -----------------------------------------------------------------------------
-console.log('\n[PRUEBA 19] Aislamiento estricto multiusuario:');
+console.log('\n[PRUEBA 20] Aislamiento estricto multiusuario:');
 const mesoUserA: MesocycleRoutine = { ...fullResult.program, id: 'meso_user_a', userId: 'user_alpha' };
 const mesoUserB: MesocycleRoutine = { ...fullResult.program, id: 'meso_user_b', userId: 'user_beta' };
 assert(
@@ -376,9 +380,9 @@ assert(
 );
 
 // -----------------------------------------------------------------------------
-// [PRUEBA 20] Separación del modo demo
+// [PRUEBA 21] Separación del modo demo
 // -----------------------------------------------------------------------------
-console.log('\n[PRUEBA 20] Separación del modo demo en almacenamiento local aislado:');
+console.log('\n[PRUEBA 21] Separación del modo demo en almacenamiento local aislado:');
 const demoKey = 'vigor_workout_routines_demo_camilo';
 assert(
   demoKey.includes('demo_camilo') && !demoKey.startsWith('users/'),
@@ -386,16 +390,9 @@ assert(
 );
 
 // -----------------------------------------------------------------------------
-// [PRUEBA 21] Compatibilidad con reglas de Firestore (isValidWorkoutRoutine)
+// [PRUEBA 22] Compatibilidad con reglas de Firestore (isValidWorkoutRoutine)
 // -----------------------------------------------------------------------------
-console.log('\n[PRUEBA 21] Compatibilidad con isValidWorkoutRoutine en firestore.rules:');
-// function isValidWorkoutRoutine(data, userId) {
-//   return data.userId == userId &&
-//          data.name is string && data.name.size() >= 2 && data.name.size() <= 150 &&
-//          data.goal in ['hipertrofia', 'fuerza', 'recomposicion', 'resistencia'] &&
-//          data.frequencyDays is number && data.frequencyDays >= 1 && data.frequencyDays <= 7 &&
-//          data.days is list && data.days.size() <= 14;
-// }
+console.log('\n[PRUEBA 22] Compatibilidad con isValidWorkoutRoutine en firestore.rules:');
 const programData = fullResult.program;
 const passesRules =
   typeof programData.name === 'string' &&
@@ -411,9 +408,9 @@ const passesRules =
 assert(passesRules, 'La entidad generada satisface al 100% isValidWorkoutRoutine de firestore.rules.');
 
 // -----------------------------------------------------------------------------
-// [PRUEBA 22] Compatibilidad con el Onboarding del Incremento 7A
+// [PRUEBA 23] Compatibilidad con el Onboarding del Incremento 7A
 // -----------------------------------------------------------------------------
-console.log('\n[PRUEBA 22] Utilización de los datos recopilados durante el Onboarding:');
+console.log('\n[PRUEBA 23] Utilización de los datos recopilados durante el Onboarding:');
 const athletePrefsMock = {
   trainingGoal: 'fuerza' as AthleteGoal,
   trainingExperience: 'avanzado' as TrainingExperience,
@@ -437,9 +434,9 @@ assert(
 );
 
 // -----------------------------------------------------------------------------
-// [PRUEBA 23] No regresión del motor de entrenamiento en vivo
+// [PRUEBA 24] No regresión del motor de entrenamiento en vivo
 // -----------------------------------------------------------------------------
-console.log('\n[PRUEBA 23] No regresión: Compatibilidad con Live Workout Execution Engine:');
+console.log('\n[PRUEBA 24] No regresión: Compatibilidad con Live Workout Execution Engine:');
 const testDay = fullResult.program.days[0];
 assert(
   Array.isArray(testDay.exercises) && testDay.exercises.length > 0 &&
@@ -448,9 +445,9 @@ assert(
 );
 
 // -----------------------------------------------------------------------------
-// [PRUEBA 24] No regresión de la analítica de carga 6F
+// [PRUEBA 25] No regresión de la analítica de carga 6F
 // -----------------------------------------------------------------------------
-console.log('\n[PRUEBA 24] No regresión: Servicio de analítica de carga y ACWR:');
+console.log('\n[PRUEBA 25] No regresión: Servicio de analítica de carga y ACWR:');
 const acwr = calculateACWR([]);
 assert(
   typeof acwr.isCalculable === 'boolean',
@@ -458,9 +455,9 @@ assert(
 );
 
 // -----------------------------------------------------------------------------
-// [PRUEBA 25] No regresión de exportación PDF y CSV (6E)
+// [PRUEBA 26] No regresión de exportación PDF y CSV (6E)
 // -----------------------------------------------------------------------------
-console.log('\n[PRUEBA 25] No regresión: Exportación de sesiones en PDF y CSV:');
+console.log('\n[PRUEBA 26] No regresión: Exportación de sesiones en PDF y CSV:');
 const csvSummary = generateSessionsSummaryCsv([dummyHistorical]);
 assert(
   csvSummary.includes('ID Sesion') && csvSummary.includes('Tonelaje Efectivo (kg)'),
@@ -468,9 +465,9 @@ assert(
 );
 
 // -----------------------------------------------------------------------------
-// [PRUEBA 26] No regresión de autorregulación 6G (Doble progresión)
+// [PRUEBA 27] No regresión de autorregulación 6G (Doble progresión)
 // -----------------------------------------------------------------------------
-console.log('\n[PRUEBA 26] No regresión: Motor de autorregulación y estancamiento 6G:');
+console.log('\n[PRUEBA 27] No regresión: Motor de autorregulación y estancamiento 6G:');
 const dummyCfg = fullResult.program.days[0].exercises[0];
 const rec = generateExerciseRecommendation(dummyCfg, [dummyHistorical]);
 assert(

@@ -108,6 +108,22 @@ export interface BiometricConfig {
   targetProteinG: number;
   targetFatG: number;
   targetCarbsG: number;
+  // Metadatos de auditoría y reversibilidad (Incremento 7C.1)
+  lastAppliedPeriodization?: {
+    phase: string;
+    athleteGoal: string;
+    appliedAt: string;
+    isDietBreak?: boolean;
+    previousTargets?: {
+      targetCalories: number;
+      targetProteinG: number;
+      targetFatG: number;
+      targetCarbsG: number;
+      proteinPerKg: number;
+      fatPerKg: number;
+      targetDeltaKcal: number;
+    };
+  };
 }
 
 export interface MealMomentPartition {

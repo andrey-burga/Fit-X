@@ -55,6 +55,7 @@ export interface MesocycleWeekPrescription {
   intensityRirTarget: number; // Ej: Sem 1: 3, Sem 2: 2, Sem 3: 1, Sem 4: 4 (descarga)
   loadIncrementStrategy: 'baseline' | 'reps_progression' | 'micro_load' | 'deload_recovery';
   days: RoutineDay[];
+  actualVolumeReductionPct?: number;
 }
 
 export interface MesocycleConfig {

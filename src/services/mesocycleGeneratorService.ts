@@ -638,15 +638,16 @@ export const generateWeekPrescription = (
     const updatedExercises: PlannedExerciseConfig[] = day.exercises.map(ex => {
       let weekSets = ex.sets;
       let targetWeight = ex.targetWeightKg || 50;
+      const exItem = getExerciseById(ex.exerciseId);
+      const isCompound = exItem ? exItem.movementPattern !== 'aislamiento' : true;
 
       if (isDeload) {
-        // Reducir series un 33%-40% (mínimo 2 series)
+        // Reducir series respetando umbrales fisiológicos (mínimo 2 series)
         weekSets = Math.max(2, Math.round(ex.sets * volumeMultiplier));
-        // Reducción leve del 10% de peso para garantizar RIR 4
+        // Reducción leve del 10% de peso para garantizar RIR 4 estricto
         targetWeight = Math.round(targetWeight * 0.9 * 2) / 2;
       } else if (weekNumber >= 3) {
         // En semana de micro-carga, reflejar sugerencia progresiva
-        const exItem = getExerciseById(ex.exerciseId);
         const micro = exItem?.equipment === 'mancuerna' ? 2 : exItem?.equipment === 'barra' ? 2.5 : 2.5;
         targetWeight = Math.round((targetWeight + (weekNumber - 2) * micro) * 2) / 2;
       }
@@ -657,7 +658,7 @@ export const generateWeekPrescription = (
         targetRir: intensityRirTarget,
         targetWeightKg: targetWeight,
         notes: isDeload
-          ? `[Descarga]: ${weekSets} series a RIR 4. Enfócate en la fluidez del movimiento sin fatiga.`
+          ? `[Descarga]: ${weekSets} series a RIR 4. ${isCompound ? 'Multiarticular: reducción de series y carga para disipar fatiga del SNC.' : 'Accesorio: estímulo local moderado sin fatiga sistémica.'}`
           : ex.notes,
       };
     });
@@ -668,6 +669,16 @@ export const generateWeekPrescription = (
     };
   });
 
+  const baseSetsTotal = baseDays.reduce((acc, d) => acc + d.exercises.reduce((s, ex) => s + ex.sets, 0), 0);
+  const weekSetsTotal = weekDays.reduce((acc, d) => acc + d.exercises.reduce((s, ex) => s + ex.sets, 0), 0);
+  const actualVolumeReductionPct = isDeload && baseSetsTotal > 0
+    ? Math.round((1 - weekSetsTotal / baseSetsTotal) * 100)
+    : 0;
+
+  if (isDeload) {
+    focus = `Descarga Activa (${actualVolumeReductionPct}% de reducción real de volumen) y RIR 4. Alivio del SNC y recuperación articular sin pérdida de adaptaciones.`;
+  }
+
   return {
     weekNumber,
     name,
@@ -677,6 +688,7 @@ export const generateWeekPrescription = (
     intensityRirTarget,
     loadIncrementStrategy,
     days: weekDays,
+    actualVolumeReductionPct: isDeload ? actualVolumeReductionPct : 0,
   };
 };
 

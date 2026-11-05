@@ -8,6 +8,12 @@ import {
   formatTimeOnly,
   getChartDayBuckets,
 } from '../services/dateUtils';
+import { MesocycleRoutine } from '../types/mesocycle';
+import {
+  generateNutritionalPeriodizationRecommendation,
+  applyPeriodizationToBiometrics,
+  NutritionalPeriodizationResult,
+} from '../services/nutritionalPeriodizationService';
 
 const MOMENT_ICONS: Record<MealMoment, string> = {
   desayuno: 'wb_twilight',
@@ -42,10 +48,85 @@ export const NutritionalDashboardView: React.FC = () => {
     groceries,
     currentUser,
     athletePreferences,
+    activeRoutine,
+    workoutRoutines,
+    executedWorkoutsHistory,
+    updateBiometrics,
+    revertToPreviousBiometrics,
   } = useApp();
 
   const [selectedRange, setSelectedRange] = useState<'week' | '14d'>('week');
   const [isSyncing, setIsSyncing] = useState(false);
+  const [isPeriodizationConfirmModalOpen, setIsPeriodizationConfirmModalOpen] = useState(false);
+  const [isApplyingPeriodization, setIsApplyingPeriodization] = useState(false);
+  const [showCarbCyclingDetails, setShowCarbCyclingDetails] = useState(false);
+  const [dietBreakSelectedInUI, setDietBreakSelectedInUI] = useState(false);
+  const [isRevertConfirmModalOpen, setIsRevertConfirmModalOpen] = useState(false);
+  const [isRevertingPeriodization, setIsRevertingPeriodization] = useState(false);
+
+  // Active mesocycle routine detection
+  const activeMesocycle = useMemo(() => {
+    if (activeRoutine && (activeRoutine as MesocycleRoutine).isMesocycle) {
+      return activeRoutine as MesocycleRoutine;
+    }
+    const found = workoutRoutines.find(r => (r as MesocycleRoutine).isMesocycle);
+    return found ? (found as MesocycleRoutine) : null;
+  }, [activeRoutine, workoutRoutines]);
+
+  // Actual athlete goal preserving definition and maintenance
+  const athleteGoal = useMemo(() => {
+    return (
+      activeMesocycle?.mesocycleConfig?.athleteGoal ||
+      athletePreferences?.trainingGoal ||
+      'hipertrofia'
+    );
+  }, [activeMesocycle, athletePreferences]);
+
+  // Intelligent Nutritional Periodization Recommendation
+  const periodizationRecommendation = useMemo<NutritionalPeriodizationResult>(() => {
+    return generateNutritionalPeriodizationRecommendation({
+      athleteGoal,
+      biometrics,
+      activeMesocycle,
+      executedWorkoutsHistory,
+      dietBreakOptionSelected: dietBreakSelectedInUI,
+    });
+  }, [athleteGoal, biometrics, activeMesocycle, executedWorkoutsHistory, dietBreakSelectedInUI]);
+
+  const handleApplyPeriodization = async () => {
+    if (!periodizationRecommendation.canAutoApply) {
+      showToast('No se pueden aplicar metas automáticas sin datos biométricos completos.', 'warning');
+      return;
+    }
+    setIsApplyingPeriodization(true);
+    try {
+      const updatedBio = applyPeriodizationToBiometrics(biometrics, periodizationRecommendation);
+      await updateBiometrics(updatedBio);
+      showToast('¡Metas nutricionales periodizadas actualizadas con éxito!', 'success');
+      setIsPeriodizationConfirmModalOpen(false);
+    } catch (err: any) {
+      showToast('Error al actualizar las metas: ' + (err.message || 'Error desconocido'), 'warning');
+    } finally {
+      setIsApplyingPeriodization(false);
+    }
+  };
+
+  const handleRevertPeriodization = async () => {
+    setIsRevertingPeriodization(true);
+    try {
+      const ok = await revertToPreviousBiometrics();
+      if (ok) {
+        showToast('¡Metas nutricionales revertidas a los valores previos con éxito!', 'success');
+        setIsRevertConfirmModalOpen(false);
+      } else {
+        showToast('No se encontraron metas previas para revertir.', 'warning');
+      }
+    } catch (err: any) {
+      showToast('Error al revertir metas: ' + (err.message || 'Error desconocido'), 'warning');
+    } finally {
+      setIsRevertingPeriodization(false);
+    }
+  };
 
   const handleSyncExcel = async () => {
     setIsSyncing(true);
@@ -272,6 +353,367 @@ export const NutritionalDashboardView: React.FC = () => {
             <span>{isSyncing ? 'Sincronizando...' : 'Sincronizar Cloud Firestore'}</span>
           </button>
         </div>
+      </div>
+
+      {/* ======================================================== */}
+      {/* INCREMENTO 7C: PERIODIZACIÓN NUTRICIONAL ASISTIDA       */}
+      {/* ======================================================== */}
+      <div className="bg-surface-container-low rounded-xl p-space-md md:p-space-lg border border-primary/20 shadow-xs flex flex-col gap-space-md relative overflow-hidden">
+        {/* Subtle accent bar */}
+        <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-primary via-secondary to-tertiary" />
+
+        {/* Header row */}
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-space-sm">
+          <div className="flex items-start gap-space-sm">
+            <div className="w-10 h-10 rounded-lg bg-primary/10 text-primary flex items-center justify-center shrink-0">
+              <span className="material-symbols-outlined text-xl">auto_graph</span>
+            </div>
+            <div>
+              <div className="flex items-center gap-space-xs flex-wrap">
+                <span className="font-headline-sm text-headline-sm text-on-surface font-bold">
+                  Periodización Nutricional Asistida
+                </span>
+                {periodizationRecommendation.isDeloadWeek ? (
+                  <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-tertiary-container text-on-tertiary-container flex items-center gap-1">
+                    <span className="material-symbols-outlined text-xs">healing</span>
+                    Semana de Descarga (Diet Break / Recuperación)
+                  </span>
+                ) : (
+                  <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-primary/15 text-primary flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-primary" />
+                    Fase Activa: {periodizationRecommendation.mesocyclePhase}
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-on-surface-variant mt-0.5">
+                {activeMesocycle
+                  ? `Sincronizada con mesociclo: "${activeMesocycle.name}" (Objetivo real: ${athleteGoal.toUpperCase()})`
+                  : `Configuración basada en tu objetivo de perfil (${athleteGoal.toUpperCase()})`}
+              </p>
+            </div>
+          </div>
+
+          {/* Action buttons */}
+          <div className="flex items-center gap-space-xs self-start md:self-auto flex-wrap">
+            {biometrics.lastAppliedPeriodization?.previousTargets && (
+              <button
+                type="button"
+                onClick={() => setIsRevertConfirmModalOpen(true)}
+                className="px-3 py-1.5 rounded-lg border border-tertiary/40 hover:bg-surface-container text-tertiary text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
+                title="Revertir a las metas previas a la última periodización"
+              >
+                <span className="material-symbols-outlined text-sm">history</span>
+                <span>Revertir a Metas Previas</span>
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setShowCarbCyclingDetails(prev => !prev)}
+              className="px-3 py-1.5 rounded-lg border border-outline-variant hover:bg-surface-container text-on-surface text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer"
+            >
+              <span className="material-symbols-outlined text-sm text-secondary">sync_alt</span>
+              <span>{showCarbCyclingDetails ? 'Ocultar Ciclado' : 'Ver Ciclado de Carbos'}</span>
+            </button>
+            <button
+              type="button"
+              disabled={!periodizationRecommendation.canAutoApply}
+              onClick={() => setIsPeriodizationConfirmModalOpen(true)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors shadow-xs ${
+                periodizationRecommendation.canAutoApply
+                  ? 'bg-primary hover:bg-primary/90 text-on-primary cursor-pointer'
+                  : 'bg-surface-container-high text-on-surface-variant opacity-50 cursor-not-allowed'
+              }`}
+              title={
+                periodizationRecommendation.canAutoApply
+                  ? 'Aplicar propuesta a las metas activas'
+                  : 'Completa tu perfil biométrico para aplicar metas personalizadas'
+              }
+            >
+              <span className="material-symbols-outlined text-sm">tune</span>
+              <span>Aplicar a mis Metas</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Insufficient Biometric Data Warning Banner */}
+        {!periodizationRecommendation.hasSufficientData && (
+          <div className="p-space-sm rounded-lg bg-amber-500/10 border border-amber-500/30 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-space-sm">
+            <div className="flex items-start gap-space-xs text-xs text-amber-200">
+              <span className="material-symbols-outlined text-amber-400 text-base shrink-0 mt-0.5">warning</span>
+              <div className="flex flex-col gap-0.5">
+                <span className="font-semibold text-amber-300">Datos Antropométricos Incompletos:</span>
+                <span>{periodizationRecommendation.referenceNotice}</span>
+                <span className="text-[11px] text-amber-300/80">
+                  Parámetros faltantes: <strong>{periodizationRecommendation.missingFields.join(', ')}</strong>. La aplicación automática se encuentra desactivada por seguridad.
+                </span>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => navigate('perfil-atleta')}
+              className="px-3 py-1.5 rounded bg-amber-500 hover:bg-amber-600 text-black text-xs font-semibold shrink-0 cursor-pointer transition-colors self-end sm:self-auto"
+            >
+              Completar Perfil
+            </button>
+          </div>
+        )}
+
+        {/* Voluntary Diet Break Section for Deload in Definition */}
+        {periodizationRecommendation.dietBreakSuggestion && (
+          <div className="p-space-sm rounded-lg bg-surface-container-lowest border border-tertiary/40 flex flex-col gap-space-xs">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div className="flex items-center gap-space-xs">
+                <span className="material-symbols-outlined text-tertiary text-base shrink-0">healing</span>
+                <span className="font-semibold text-on-surface text-xs">
+                  Semana de Descarga: Opción de Pausa Dietética (Diet Break Voluntario)
+                </span>
+              </div>
+              <label className="flex items-center gap-2 cursor-pointer text-xs font-medium text-on-surface bg-surface-container px-2 py-1 rounded">
+                <span>{dietBreakSelectedInUI ? 'Diet Break Activado (TDEE Mantenimiento)' : 'Mantener Déficit de Definición'}</span>
+                <input
+                  type="checkbox"
+                  checked={dietBreakSelectedInUI}
+                  onChange={(e) => setDietBreakSelectedInUI(e.target.checked)}
+                  className="w-4 h-4 rounded text-tertiary focus:ring-tertiary accent-tertiary cursor-pointer"
+                />
+              </label>
+            </div>
+            <p className="text-[11px] text-on-surface-variant">
+              {periodizationRecommendation.dietBreakSuggestion.rationale}
+            </p>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-2 mt-1 text-[11px] text-on-surface-variant">
+              <div className="p-2 rounded bg-surface-container-low border border-surface-container">
+                <span className="font-semibold text-primary block mb-1">Beneficios demostrados:</span>
+                <ul className="list-disc pl-3 space-y-0.5">
+                  {periodizationRecommendation.dietBreakSuggestion.pros.map((p, idx) => (
+                    <li key={idx}>{p}</li>
+                  ))}
+                </ul>
+              </div>
+              <div className="p-2 rounded bg-surface-container-low border border-surface-container">
+                <span className="font-semibold text-secondary block mb-1">Limitaciones reales:</span>
+                <ul className="list-disc pl-3 space-y-0.5">
+                  {periodizationRecommendation.dietBreakSuggestion.limitations.map((l, idx) => (
+                    <li key={idx}>{l}</li>
+                  ))}
+                </ul>
+              </div>
+              <div className="p-2 rounded bg-surface-container-low border border-surface-container">
+                <span className="font-semibold text-tertiary block mb-1">Criterios de aplicación:</span>
+                <ul className="list-disc pl-3 space-y-0.5">
+                  {periodizationRecommendation.dietBreakSuggestion.conditions.map((c, idx) => (
+                    <li key={idx}>{c}</li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Comparison Grid: Actual vs Propuesta */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-space-sm">
+          {/* Calorías */}
+          <div className="bg-surface-container-lowest p-3 rounded-lg border border-surface-container/60 flex flex-col justify-between">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-on-surface-variant">Calorías Diarias</span>
+            <div className="my-1">
+              <div className="flex items-baseline gap-1">
+                <span className="text-xl font-bold font-mono text-on-surface">
+                  {periodizationRecommendation.proposedPlan.targetCalories}
+                </span>
+                <span className="text-xs text-on-surface-variant">kcal</span>
+              </div>
+              <div className="text-[11px] text-on-surface-variant flex items-center gap-1 mt-0.5">
+                <span>Actual: {periodizationRecommendation.currentPlan.targetCalories} kcal</span>
+                {periodizationRecommendation.proposedPlan.targetCalories !== periodizationRecommendation.currentPlan.targetCalories && (
+                  <span className={`font-semibold ${periodizationRecommendation.proposedPlan.targetCalories > periodizationRecommendation.currentPlan.targetCalories ? 'text-primary' : 'text-secondary'}`}>
+                    ({periodizationRecommendation.proposedPlan.targetCalories > periodizationRecommendation.currentPlan.targetCalories ? '+' : ''}
+                    {periodizationRecommendation.proposedPlan.targetCalories - periodizationRecommendation.currentPlan.targetCalories})
+                  </span>
+                )}
+              </div>
+            </div>
+            <span className="text-[10px] text-primary font-medium">
+              Delta: {periodizationRecommendation.proposedPlan.targetDeltaKcal >= 0 ? `+${periodizationRecommendation.proposedPlan.targetDeltaKcal}` : periodizationRecommendation.proposedPlan.targetDeltaKcal} kcal/TDEE
+            </span>
+          </div>
+
+          {/* Proteínas */}
+          <div className="bg-surface-container-lowest p-3 rounded-lg border border-surface-container/60 flex flex-col justify-between">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-on-surface-variant">Proteínas</span>
+              <span className="text-[9px] px-1.5 py-0.5 rounded bg-surface-container-high text-primary font-medium">
+                {periodizationRecommendation.proposedPlan.proteinBasis === 'fat_free_mass'
+                  ? 'Base: FFM (Masa Magra)'
+                  : 'Base: Peso Total'}
+              </span>
+            </div>
+            <div className="my-1">
+              <div className="flex items-baseline gap-1">
+                <span className="text-xl font-bold font-mono text-primary">
+                  {periodizationRecommendation.proposedPlan.targetProteinG}
+                </span>
+                <span className="text-xs text-on-surface-variant">g</span>
+              </div>
+              <div className="text-[11px] text-on-surface-variant flex items-center gap-1 mt-0.5">
+                <span>Actual: {periodizationRecommendation.currentPlan.targetProteinG}g</span>
+                <span className="font-semibold text-primary">
+                  ({periodizationRecommendation.proposedPlan.proteinPerKg} g/kg)
+                </span>
+              </div>
+            </div>
+            <span className="text-[10px] text-on-surface-variant">
+              {Math.round(periodizationRecommendation.proposedPlan.targetProteinG * 4)} kcal ({Math.round((periodizationRecommendation.proposedPlan.targetProteinG * 4 / periodizationRecommendation.proposedPlan.targetCalories) * 100)}%)
+            </span>
+          </div>
+
+          {/* Carbohidratos */}
+          <div className="bg-surface-container-lowest p-3 rounded-lg border border-surface-container/60 flex flex-col justify-between">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-on-surface-variant">Carbohidratos</span>
+            <div className="my-1">
+              <div className="flex items-baseline gap-1">
+                <span className="text-xl font-bold font-mono text-secondary">
+                  {periodizationRecommendation.proposedPlan.targetCarbsG}
+                </span>
+                <span className="text-xs text-on-surface-variant">g</span>
+              </div>
+              <div className="text-[11px] text-on-surface-variant flex items-center gap-1 mt-0.5">
+                <span>Actual: {periodizationRecommendation.currentPlan.targetCarbsG}g</span>
+                {periodizationRecommendation.proposedPlan.targetCarbsG !== periodizationRecommendation.currentPlan.targetCarbsG && (
+                  <span className="font-semibold text-secondary">
+                    ({periodizationRecommendation.proposedPlan.targetCarbsG > periodizationRecommendation.currentPlan.targetCarbsG ? '+' : ''}
+                    {periodizationRecommendation.proposedPlan.targetCarbsG - periodizationRecommendation.currentPlan.targetCarbsG}g)
+                  </span>
+                )}
+              </div>
+            </div>
+            <span className="text-[10px] text-on-surface-variant">
+              {Math.round(periodizationRecommendation.proposedPlan.targetCarbsG * 4)} kcal ({Math.round((periodizationRecommendation.proposedPlan.targetCarbsG * 4 / periodizationRecommendation.proposedPlan.targetCalories) * 100)}%)
+            </span>
+          </div>
+
+          {/* Grasas */}
+          <div className="bg-surface-container-lowest p-3 rounded-lg border border-surface-container/60 flex flex-col justify-between">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-on-surface-variant">Grasas Saludables</span>
+            <div className="my-1">
+              <div className="flex items-baseline gap-1">
+                <span className="text-xl font-bold font-mono text-tertiary">
+                  {periodizationRecommendation.proposedPlan.targetFatG}
+                </span>
+                <span className="text-xs text-on-surface-variant">g</span>
+              </div>
+              <div className="text-[11px] text-on-surface-variant flex items-center gap-1 mt-0.5">
+                <span>Actual: {periodizationRecommendation.currentPlan.targetFatG}g</span>
+                <span className="font-semibold text-tertiary">
+                  ({periodizationRecommendation.proposedPlan.fatPerKg} g/kg)
+                </span>
+              </div>
+            </div>
+            <span className="text-[10px] text-on-surface-variant">
+              {Math.round(periodizationRecommendation.proposedPlan.targetFatG * 9)} kcal ({Math.round((periodizationRecommendation.proposedPlan.targetFatG * 9 / periodizationRecommendation.proposedPlan.targetCalories) * 100)}%)
+            </span>
+          </div>
+        </div>
+
+        {/* Expandable Carb Cycling Section */}
+        {showCarbCyclingDetails && (
+          <div className="bg-surface-container-lowest p-space-md rounded-xl border border-outline-variant/40 flex flex-col gap-space-sm animate-in fade-in duration-200">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+              <div className="flex items-center gap-2">
+                <span className="material-symbols-outlined text-secondary text-lg">cyclist</span>
+                <span className="font-headline-sm text-sm font-bold text-on-surface">
+                  Estrategia de Ciclado de Carbohidratos por Demanda Diaria
+                </span>
+                {periodizationRecommendation.wasCarbCyclingModulated && (
+                  <span className="text-[10px] px-2 py-0.5 rounded bg-tertiary/20 text-tertiary font-medium">
+                    Distribución auto-modulada (seguridad metabólica)
+                  </span>
+                )}
+              </div>
+              <div className="text-left sm:text-right flex flex-col">
+                <span className="text-xs text-on-surface-variant">
+                  Media semanal real: <strong>{periodizationRecommendation.weeklyAverageCalories} kcal/día</strong>
+                </span>
+                <span className="text-[10px] text-primary font-semibold">
+                  Conservación isocalórica semanal exacta (±{Math.abs(periodizationRecommendation.weeklyCalorieDeltaPerDay)} kcal/día vs propuesta)
+                </span>
+              </div>
+            </div>
+
+            {periodizationRecommendation.carbCyclingModulationReason && (
+              <div className="p-2 rounded bg-tertiary/10 border border-tertiary/30 text-xs text-on-surface-variant flex items-start gap-1.5">
+                <span className="material-symbols-outlined text-sm text-tertiary shrink-0 mt-0.5">shield</span>
+                <span>{periodizationRecommendation.carbCyclingModulationReason}</span>
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-space-sm pt-1">
+              {/* High Training Day */}
+              <div className="p-3 rounded-lg bg-surface-container-low border border-surface-container flex flex-col justify-between">
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="font-semibold text-xs text-primary">Día de Alta Demanda</span>
+                    <span className="text-[10px] px-1.5 py-0.2 rounded bg-primary/20 text-primary font-bold">
+                      +{periodizationRecommendation.dayDemandTargets.highTrainingDay.carbShiftPct}% Carbos
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-on-surface-variant">
+                    {periodizationRecommendation.dayDemandTargets.highTrainingDay.description}
+                  </p>
+                </div>
+                <div className="mt-3 pt-2 border-t border-outline-variant/30 flex items-center justify-between text-xs font-mono">
+                  <span><strong>{periodizationRecommendation.dayDemandTargets.highTrainingDay.calories}</strong> kcal</span>
+                  <span>P: {periodizationRecommendation.dayDemandTargets.highTrainingDay.proteinG}g</span>
+                  <span className="text-primary font-bold">C: {periodizationRecommendation.dayDemandTargets.highTrainingDay.carbsG}g</span>
+                  <span>G: {periodizationRecommendation.dayDemandTargets.highTrainingDay.fatG}g</span>
+                </div>
+              </div>
+
+              {/* Moderate Day */}
+              <div className="p-3 rounded-lg bg-surface-container-low border border-surface-container flex flex-col justify-between">
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="font-semibold text-xs text-on-surface">Entrenamiento Estándar</span>
+                    <span className="text-[10px] px-1.5 py-0.2 rounded bg-surface-container-high text-on-surface-variant font-bold">
+                      {periodizationRecommendation.dayDemandTargets.moderateTrainingDay.carbShiftPct !== 0
+                        ? `${periodizationRecommendation.dayDemandTargets.moderateTrainingDay.carbShiftPct}% Carbos`
+                        : 'Base'}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-on-surface-variant">
+                    {periodizationRecommendation.dayDemandTargets.moderateTrainingDay.description}
+                  </p>
+                </div>
+                <div className="mt-3 pt-2 border-t border-outline-variant/30 flex items-center justify-between text-xs font-mono">
+                  <span><strong>{periodizationRecommendation.dayDemandTargets.moderateTrainingDay.calories}</strong> kcal</span>
+                  <span>P: {periodizationRecommendation.dayDemandTargets.moderateTrainingDay.proteinG}g</span>
+                  <span>C: {periodizationRecommendation.dayDemandTargets.moderateTrainingDay.carbsG}g</span>
+                  <span>G: {periodizationRecommendation.dayDemandTargets.moderateTrainingDay.fatG}g</span>
+                </div>
+              </div>
+
+              {/* Rest Day */}
+              <div className="p-3 rounded-lg bg-surface-container-low border border-surface-container flex flex-col justify-between">
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="font-semibold text-xs text-secondary">Descanso / Recuperación</span>
+                    <span className="text-[10px] px-1.5 py-0.2 rounded bg-secondary/20 text-secondary font-bold">
+                      {periodizationRecommendation.dayDemandTargets.restRecoveryDay.carbShiftPct}% Carbos
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-on-surface-variant">
+                    {periodizationRecommendation.dayDemandTargets.restRecoveryDay.description}
+                  </p>
+                </div>
+                <div className="mt-3 pt-2 border-t border-outline-variant/30 flex items-center justify-between text-xs font-mono">
+                  <span><strong>{periodizationRecommendation.dayDemandTargets.restRecoveryDay.calories}</strong> kcal</span>
+                  <span>P: {periodizationRecommendation.dayDemandTargets.restRecoveryDay.proteinG}g</span>
+                  <span className="text-secondary font-bold">C: {periodizationRecommendation.dayDemandTargets.restRecoveryDay.carbsG}g</span>
+                  <span>G: {periodizationRecommendation.dayDemandTargets.restRecoveryDay.fatG}g</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* KPI 5-Card Grid */}
@@ -1080,6 +1522,218 @@ export const NutritionalDashboardView: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* ======================================================== */}
+      {/* MODAL: CONFIRMACIÓN EXPLÍCITA DE PERIODIZACIÓN NUTRICIONAL */}
+      {/* ======================================================== */}
+      {isPeriodizationConfirmModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-surface-container-lowest max-w-lg w-full rounded-2xl p-6 shadow-xl border border-surface-container flex flex-col gap-4 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-start justify-between">
+              <div className="flex items-center gap-2">
+                <div className="w-10 h-10 rounded-full bg-primary/10 text-primary flex items-center justify-center">
+                  <span className="material-symbols-outlined text-xl">tune</span>
+                </div>
+                <div>
+                  <h3 className="font-headline-sm text-base font-bold text-on-surface">
+                    Confirmar Periodización Nutricional
+                  </h3>
+                  <p className="text-xs text-on-surface-variant">
+                    Actualización asistida de metas metabólicas
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsPeriodizationConfirmModalOpen(false)}
+                className="text-on-surface-variant hover:text-on-surface cursor-pointer"
+              >
+                <span className="material-symbols-outlined">close</span>
+              </button>
+            </div>
+
+            <div className="text-xs text-on-surface-variant flex flex-col gap-2">
+              <p>
+                Estás a punto de actualizar tus metas nutricionales oficiales para sincronizarlas con la fase:{' '}
+                <strong className="text-on-surface">{periodizationRecommendation.mesocyclePhase}</strong>.
+              </p>
+              {periodizationRecommendation.rationale.map((r, i) => (
+                <div key={i} className="flex items-start gap-1.5 p-2 rounded bg-surface-container-low text-[11px]">
+                  <span className="material-symbols-outlined text-primary text-sm shrink-0">check_circle</span>
+                  <span>{r}</span>
+                </div>
+              ))}
+            </div>
+
+            {/* Changes table */}
+            <div className="rounded-xl border border-surface-container overflow-hidden text-xs">
+              <div className="grid grid-cols-3 bg-surface-container p-2 font-semibold text-on-surface text-[11px]">
+                <span>Parámetro</span>
+                <span>Actual</span>
+                <span className="text-primary font-bold">Propuesta Periodizada</span>
+              </div>
+              <div className="grid grid-cols-3 p-2 border-t border-surface-container/60">
+                <span>Calorías</span>
+                <span>{periodizationRecommendation.currentPlan.targetCalories} kcal</span>
+                <span className="font-bold text-primary font-mono">{periodizationRecommendation.proposedPlan.targetCalories} kcal</span>
+              </div>
+              <div className="grid grid-cols-3 p-2 border-t border-surface-container/60">
+                <span>Proteínas</span>
+                <span>{periodizationRecommendation.currentPlan.targetProteinG} g ({periodizationRecommendation.currentPlan.proteinPerKg}g/kg)</span>
+                <span className="font-bold text-primary font-mono">{periodizationRecommendation.proposedPlan.targetProteinG} g ({periodizationRecommendation.proposedPlan.proteinPerKg}g/kg)</span>
+              </div>
+              <div className="grid grid-cols-3 p-2 border-t border-surface-container/60">
+                <span>Carbohidratos</span>
+                <span>{periodizationRecommendation.currentPlan.targetCarbsG} g</span>
+                <span className="font-bold text-secondary font-mono">{periodizationRecommendation.proposedPlan.targetCarbsG} g</span>
+              </div>
+              <div className="grid grid-cols-3 p-2 border-t border-surface-container/60">
+                <span>Grasas</span>
+                <span>{periodizationRecommendation.currentPlan.targetFatG} g ({periodizationRecommendation.currentPlan.fatPerKg}g/kg)</span>
+                <span className="font-bold text-tertiary font-mono">{periodizationRecommendation.proposedPlan.targetFatG} g ({periodizationRecommendation.proposedPlan.fatPerKg}g/kg)</span>
+              </div>
+            </div>
+
+            <p className="text-[11px] text-on-surface-variant italic">
+              Nota de seguridad: Esta acción recalcula tus requerimientos en base de datos. Tus comidas ya registradas no se modificarán.
+            </p>
+
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setIsPeriodizationConfirmModalOpen(false)}
+                disabled={isApplyingPeriodization}
+                className="px-4 py-2 rounded-lg text-xs font-medium text-on-surface-variant hover:bg-surface-container cursor-pointer transition-colors"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={handleApplyPeriodization}
+                disabled={isApplyingPeriodization}
+                className="px-4 py-2 rounded-lg bg-primary hover:bg-primary/90 text-on-primary text-xs font-semibold flex items-center gap-1.5 cursor-pointer shadow-xs transition-colors"
+              >
+                {isApplyingPeriodization ? (
+                  <>
+                    <span className="material-symbols-outlined text-sm animate-spin">progress_activity</span>
+                    <span>Actualizando...</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="material-symbols-outlined text-sm">done_all</span>
+                    <span>Confirmar y Actualizar Metas</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ======================================================== */}
+      {/* MODAL: REVERTIR A METAS NUTRICIONALES ANTERIORES         */}
+      {/* ======================================================== */}
+      {isRevertConfirmModalOpen && biometrics.lastAppliedPeriodization?.previousTargets && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-surface-container-lowest max-w-lg w-full rounded-2xl p-6 shadow-xl border border-surface-container flex flex-col gap-4 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-start justify-between">
+              <div className="flex items-center gap-2">
+                <div className="w-10 h-10 rounded-full bg-tertiary/10 text-tertiary flex items-center justify-center">
+                  <span className="material-symbols-outlined text-xl">history</span>
+                </div>
+                <div>
+                  <h3 className="font-headline-sm text-base font-bold text-on-surface">
+                    Revertir a Metas Anteriores
+                  </h3>
+                  <p className="text-xs text-on-surface-variant">
+                    Restaurar valores previos a la última periodización
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsRevertConfirmModalOpen(false)}
+                className="text-on-surface-variant hover:text-on-surface cursor-pointer"
+              >
+                <span className="material-symbols-outlined">close</span>
+              </button>
+            </div>
+
+            <div className="text-xs text-on-surface-variant flex flex-col gap-2">
+              <p>
+                Vas a restaurar las metas nutricionales activas antes de la aplicación de la fase:{' '}
+                <strong className="text-on-surface">{biometrics.lastAppliedPeriodization.phase}</strong> ({new Date(biometrics.lastAppliedPeriodization.appliedAt).toLocaleDateString()}).
+              </p>
+              <div className="p-2 rounded bg-tertiary/10 border border-tertiary/30 text-on-surface-variant text-[11px] flex items-start gap-1.5">
+                <span className="material-symbols-outlined text-xs text-tertiary mt-0.5">info</span>
+                <span><strong>Alcance de reversión:</strong> Esta operación restablece la configuración inmediatamente anterior (1 nivel de deshacer). Una vez ejecutada, el registro previo queda liberado.</span>
+              </div>
+            </div>
+
+            {/* Target comparison table */}
+            <div className="rounded-xl border border-surface-container overflow-hidden text-xs">
+              <div className="grid grid-cols-3 bg-surface-container p-2 font-semibold text-on-surface text-[11px]">
+                <span>Parámetro</span>
+                <span>Meta Activa</span>
+                <span className="text-tertiary font-bold">Meta a Restaurar</span>
+              </div>
+              <div className="grid grid-cols-3 p-2 border-t border-surface-container/60">
+                <span>Calorías</span>
+                <span>{biometrics.targetCalories} kcal</span>
+                <span className="font-bold text-tertiary font-mono">{biometrics.lastAppliedPeriodization.previousTargets.targetCalories} kcal</span>
+              </div>
+              <div className="grid grid-cols-3 p-2 border-t border-surface-container/60">
+                <span>Proteínas</span>
+                <span>{biometrics.targetProteinG} g</span>
+                <span className="font-bold text-tertiary font-mono">{biometrics.lastAppliedPeriodization.previousTargets.targetProteinG} g ({biometrics.lastAppliedPeriodization.previousTargets.proteinPerKg}g/kg)</span>
+              </div>
+              <div className="grid grid-cols-3 p-2 border-t border-surface-container/60">
+                <span>Carbohidratos</span>
+                <span>{biometrics.targetCarbsG} g</span>
+                <span className="font-bold text-tertiary font-mono">{biometrics.lastAppliedPeriodization.previousTargets.targetCarbsG} g</span>
+              </div>
+              <div className="grid grid-cols-3 p-2 border-t border-surface-container/60">
+                <span>Grasas</span>
+                <span>{biometrics.targetFatG} g</span>
+                <span className="font-bold text-tertiary font-mono">{biometrics.lastAppliedPeriodization.previousTargets.targetFatG} g ({biometrics.lastAppliedPeriodization.previousTargets.fatPerKg}g/kg)</span>
+              </div>
+            </div>
+
+            <p className="text-[11px] text-on-surface-variant italic">
+              Tus comidas ya registradas y el menú semanal no se alteran al revertir.
+            </p>
+
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setIsRevertConfirmModalOpen(false)}
+                disabled={isRevertingPeriodization}
+                className="px-4 py-2 rounded-lg text-xs font-medium text-on-surface-variant hover:bg-surface-container cursor-pointer transition-colors"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={handleRevertPeriodization}
+                disabled={isRevertingPeriodization}
+                className="px-4 py-2 rounded-lg bg-tertiary hover:bg-tertiary/90 text-on-tertiary text-xs font-semibold flex items-center gap-1.5 cursor-pointer shadow-xs transition-colors"
+              >
+                {isRevertingPeriodization ? (
+                  <>
+                    <span className="material-symbols-outlined text-sm animate-spin">progress_activity</span>
+                    <span>Revirtiendo...</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="material-symbols-outlined text-sm">history</span>
+                    <span>Confirmar Reversión</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
