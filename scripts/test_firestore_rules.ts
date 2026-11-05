@@ -482,6 +482,18 @@ function runStaticIntegrityAudit(rulesContent: string) {
     { label: 'allow create/update en biometrics con isValidBiometrics', pass: rulesContent.includes('isValidBiometrics(incoming(), userId)') },
     { label: 'Inmutabilidad de userId en update de biometrics (incoming().userId == existing().userId)', pass: rulesContent.includes('incoming().userId == existing().userId') },
     { label: 'Default deny catch-all presente', pass: rulesContent.includes('match /{document=**} {\n      allow read, write: if false;\n    }') },
+    // Incremento 7D, 7D.1 y 7D.2: RBAC, Suspensión, Anti-Stale-Tokens, Versionado Real y Colecciones Administrativas
+    { label: 'isAccountActive definida y verifica accountAccess/{userId}', pass: rulesContent.includes('function isAccountActive(userId)') && rulesContent.includes('documents/accountAccess/$(userId)') },
+    { label: 'isAccountActive valida frescura de sesión con validAfter vs request.auth.token.auth_time', pass: rulesContent.includes('request.auth.token.auth_time >=') && rulesContent.includes('validAfter') },
+    { label: 'isOwner integra comprobación de cuenta activa isAccountActive(userId)', pass: rulesContent.includes('isOwner(userId)') && rulesContent.includes('isAccountActive(userId)') },
+    { label: 'isAuthoritativeRole verifica adminRoleState y previene tokens estancados', pass: rulesContent.includes('function isAuthoritativeRole(role)') && rulesContent.includes('documents/adminRoleState/$(request.auth.uid)') },
+    { label: 'isAuthoritativeRole valida roleVersion numérica e igualdad estricta con token', pass: rulesContent.includes('request.auth.token.roleVersion is int') && rulesContent.includes('data.roleVersion == request.auth.token.roleVersion') },
+    { label: 'isAdmin definida y valida rol autoritativo isAuthoritativeRole en admin o superadmin', pass: rulesContent.includes('function isAdmin()') && rulesContent.includes("isAuthoritativeRole('admin') || isAuthoritativeRole('superadmin')") },
+    { label: 'adminRoleState match con allow read: if owner o admin y allow write: if false', pass: rulesContent.includes('match /adminRoleState/{userId}') && rulesContent.includes('allow write: if false;') },
+    { label: 'adminUserDirectory match con allow read: if isAdmin() y allow write: if false', pass: rulesContent.includes('match /adminUserDirectory/{userId}') && rulesContent.includes('allow read: if isAdmin();') && rulesContent.includes('allow write: if false;') },
+    { label: 'adminInvitations match con allow read: if isAdmin() y allow write: if false', pass: rulesContent.includes('match /adminInvitations/{inviteId}') && rulesContent.includes('allow read: if isAdmin();') && rulesContent.includes('allow write: if false;') },
+    { label: 'accountAccess match con allow read: if owner o admin y allow write: if false', pass: rulesContent.includes('match /accountAccess/{userId}') && rulesContent.includes('allow write: if false;') },
+    { label: 'adminAuditLogs match con allow read: if isAdmin() y allow write: if false (append-only vía backend)', pass: rulesContent.includes('match /adminAuditLogs/{eventId}') && rulesContent.includes('allow read: if isAdmin();') && rulesContent.includes('allow write: if false;') },
   ];
 
   let allPassed = true;
@@ -498,7 +510,7 @@ function runStaticIntegrityAudit(rulesContent: string) {
     console.error('\n[ERROR] Falló una o más comprobaciones estáticas de reglas.');
     process.exit(1);
   }
-  console.log('\n[ÉXITO] Todas las 15 aserciones de reglas estáticas verificadas.');
+  console.log(`\n[ÉXITO] Todas las ${checks.length} aserciones de reglas estáticas verificadas.`);
 }
 
 if (import.meta.url.endsWith(process.argv[1]) || process.argv[1]?.includes('test_firestore_rules')) {

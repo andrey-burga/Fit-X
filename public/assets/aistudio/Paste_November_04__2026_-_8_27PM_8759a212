@@ -1,0 +1,1093 @@
+# VIGORCORE — INCREMENTO 7D
+## IMPLEMENTACIÓN DE GESTIÓN PROFESIONAL DE USUARIOS, ROLES, PERMISOS, INVITACIONES Y AUDITORÍA ADMINISTRATIVA
+
+### 0. IDENTIDAD Y MISIÓN
+
+Actúa como un equipo senior multidisciplinario compuesto por:
+
+- Arquitecto de software especializado en aplicaciones SaaS.
+- Ingeniero senior React y TypeScript.
+- Especialista en Firebase Authentication y Cloud Firestore.
+- Ingeniero backend especializado en Firebase Admin SDK y Cloud Functions.
+- Especialista en ciberseguridad, control de acceso RBAC y protección de información personal.
+- Diseñador UX/UI especializado en paneles administrativos SaaS.
+
+Tu misión es desarrollar el incremento 7D de VigorCore: un módulo completo y profesional de gestión administrativa de usuarios.
+
+No debes reconstruir el proyecto ni reemplazar módulos existentes.
+
+Debes trabajar sobre el repositorio actual, preservar la identidad visual generada con Stitch y mantener la compatibilidad con las funcionalidades existentes.
+
+**El objetivo es convertir VigorCore en una plataforma preparada para administrar usuarios de forma profesional, segura, escalable y trazable.**
+
+---
+
+# 1. CONTEXTO TÉCNICO Y RESTRICCIONES DEL PROYECTO
+
+Antes de implementar cualquier funcionalidad, inspecciona el repositorio y confirma la arquitectura real.
+
+Stack conocido:
+
+- React 19.
+- TypeScript.
+- Vite.
+- Tailwind CSS.
+- Firebase Authentication.
+- Cloud Firestore.
+- Google Authentication.
+- Email/Password Authentication.
+- Arquitectura existente de persistencia y gestión de sesiones.
+- Diseño visual generado mediante Stitch.
+
+Identificadores del proyecto:
+
+Firebase Project ID:
+`gen-lang-client-0041212770`
+
+Named Firestore Database ID:
+`ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c`
+
+Dominio público existente:
+`https://fit-x-bhnatsxl.onslate.com`
+
+Rutas actuales importantes:
+
+- Perfil: `users/{uid}`
+- Biometrías: `users/{uid}/biometrics/current`
+- Preferencias: `users/{uid}/preferences/settings`
+- Rutinas: `users/{uid}/workoutRoutines/{id}`
+- Entrenamientos: `users/{uid}/executedWorkouts/{id}`
+- Series ejecutadas: `users/{uid}/workoutSessions/{id}`
+
+La arquitectura real debe verificarse antes de utilizar cualquier ruta.
+
+**IMPORTANTE SOBRE FIRESTORE CON NOMBRE:**
+
+El proyecto utiliza una base de datos Firestore identificada por un ID distinto de `(default)`.
+
+Todas las operaciones del backend que utilicen Firestore deben conectarse explícitamente a:
+
+`ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c`
+
+No permitas que Cloud Functions o Firebase Admin SDK terminen utilizando accidentalmente la base `(default)`.
+
+Inspecciona la versión instalada de Firebase Admin SDK y utiliza la forma de inicialización compatible con ella.
+
+No cambies la base de datos existente ni crees otra base de datos como solución alternativa.
+
+---
+
+# 2. PRINCIPIO ARQUITECTÓNICO: SEPARACIÓN ENTRE CLIENTE Y SERVIDOR
+
+Este incremento requiere funcionalidades administrativas privilegiadas.
+
+Si el proyecto todavía no tiene un backend de Cloud Functions, evalúa e implementa una estructura `functions/` compatible con el repositorio actual, preferentemente Cloud Functions v2 con TypeScript, siempre que la infraestructura instalada lo permita.
+
+El frontend NUNCA debe utilizar Firebase Admin SDK.
+
+Está absolutamente prohibido:
+
+- Exponer credenciales de cuentas de servicio.
+- Colocar claves privadas en archivos `src/`.
+- Asignar roles administrativos desde React.
+- Conceder privilegios mediante campos editables en Firestore.
+- Permitir que un usuario modifique sus propios Custom Claims.
+- Confiar en un `isAdmin` recibido desde el frontend.
+- Exponer contraseñas, tokens privados o hashes de credenciales.
+
+Toda operación administrativa privilegiada debe ejecutarse en un entorno de servidor autenticado y autorizado.
+
+Utiliza funciones callable de Firebase cuando resulten adecuadas.
+
+Cada función privilegiada debe validar expresamente:
+
+1. Existencia del usuario autenticado.
+2. UID del actor.
+3. Rol administrativo obtenido de los Custom Claims verificados.
+4. Permiso específico para ejecutar la operación.
+5. Identidad y estado de la cuenta objetivo.
+6. Parámetros recibidos y sus restricciones.
+7. Condiciones de seguridad que eviten la escalada de privilegios.
+
+Cuando App Check ya esté configurado, intégralo en las operaciones administrativas conforme a la configuración existente. No actives una configuración de producción que requiera cambios externos sin documentarlos.
+
+Recuerda que las bibliotecas de servidor de Firestore operan con privilegios IAM y no están protegidas por las reglas de Firestore de la misma manera que los clientes. Por ello, cada endpoint administrativo necesita autorización propia.
+
+---
+
+# 3. SISTEMA PROFESIONAL DE ROLES Y PERMISOS
+
+Implementa un sistema RBAC con tres roles iniciales.
+
+## 3.1 SUPERADMIN
+
+Representa al propietario o responsable principal de la plataforma.
+
+Permisos:
+
+- Acceder a todo el panel administrativo.
+- Consultar el directorio de usuarios.
+- Consultar estadísticas administrativas.
+- Invitar usuarios.
+- Invitar administradores.
+- Cambiar roles autorizados.
+- Suspender cuentas.
+- Reactivar cuentas.
+- Revocar invitaciones.
+- Consultar auditorías administrativas.
+- Administrar otros administradores.
+- Gestionar la configuración de acceso.
+
+Restricciones:
+
+- No puede desactivar su propia cuenta.
+- No puede eliminar su propio rol mientras sea el último superadministrador activo.
+- No puede dejar el sistema sin ningún superadministrador.
+- Las operaciones de privilegio elevado requieren confirmación explícita.
+- Los cambios de roles administrativos deben quedar auditados.
+
+## 3.2 ADMIN
+
+Representa al personal autorizado para administrar la comunidad.
+
+Permisos:
+
+- Acceder al panel administrativo.
+- Consultar el directorio de usuarios.
+- Buscar y filtrar atletas.
+- Consultar metadatos básicos de cuentas.
+- Invitar nuevos atletas.
+- Revocar invitaciones pendientes.
+- Suspender atletas.
+- Reactivar atletas.
+- Solicitar el envío de recuperación de contraseña.
+- Consultar el historial administrativo permitido.
+
+Restricciones:
+
+- No puede crear superadministradores.
+- No puede promover usuarios a superadministrador.
+- No puede promover usuarios a administrador.
+- No puede modificar los permisos de otros administradores.
+- No puede desactivarse a sí mismo.
+- No puede consultar automáticamente los datos biométricos o nutricionales privados de todos los atletas.
+
+## 3.3 ATHLETE
+
+Representa al usuario normal de VigorCore.
+
+Permisos:
+
+- Acceder a su propia cuenta.
+- Consultar y modificar su perfil según las reglas existentes.
+- Utilizar sus módulos de entrenamiento y nutrición.
+- Gestionar sus preferencias permitidas.
+- Consultar sus propios datos.
+
+Restricciones:
+
+- No puede acceder al panel administrativo.
+- No puede consultar otros usuarios.
+- No puede crear invitaciones administrativas.
+- No puede modificar Custom Claims.
+- No puede acceder a colecciones internas de administración.
+- No puede modificar su propio rol o estado de cuenta.
+
+## 3.4 Preparación para el rol COACH
+
+Diseña la arquitectura para permitir agregar el rol `coach` posteriormente.
+
+No lo habilites como rol operativo en esta fase si no existe un modelo implementado de asignación entrenador-atleta, autorización explícita y alcance de acceso.
+
+En particular, no concedas al futuro rol coach acceso global a los datos de todos los atletas.
+
+## 3.5 Fuente de verdad para roles
+
+Utiliza Firebase Authentication Custom Claims como fuente de verdad para el control de acceso.
+
+Esquema conceptual:
+
+`role: "athlete" | "admin" | "superadmin"`
+
+El atleta es el rol predeterminado.
+
+Los roles privilegiados únicamente pueden modificarse desde backend utilizando Firebase Admin SDK.
+
+Cuando se actualicen Custom Claims:
+
+- Conserva los claims existentes que no deban modificarse.
+- No sobrescribas accidentalmente atributos de otros módulos.
+- Actualiza únicamente el atributo de rol correspondiente.
+- Registra la operación.
+- Fuerza la actualización del ID token cuando sea necesario.
+- No confundas el rol mostrado en el directorio con un permiso confiable.
+
+La interfaz puede utilizar los claims para decidir qué elementos visualizar, pero el servidor y las reglas deben volver a validar el permiso.
+
+---
+
+# 4. BOOTSTRAP DEL PRIMER SUPERADMINISTRADOR
+
+El sistema necesita una manera segura de establecer el primer superadministrador.
+
+Crea un script administrativo controlado, por ejemplo:
+
+`scripts/bootstrap_superadmin.ts`
+
+Este procedimiento debe:
+
+1. Recibir un UID explícito.
+2. Conectarse al proyecto Firebase correcto.
+3. Consultar el usuario real mediante Firebase Admin SDK.
+4. Mostrar su correo electrónico y UID para confirmar la identidad.
+5. Verificar que la cuenta exista.
+6. Verificar que el correo se encuentre verificado.
+7. Asignar el Custom Claim `role: "superadmin"`.
+8. Registrar el bootstrap si la infraestructura de auditoría ya está preparada.
+9. Ser idempotente y evitar operaciones duplicadas.
+10. Exigir confirmación explícita del proyecto y del UID.
+
+Debe incluir un modo de simulación o `--dry-run`.
+
+No debe ejecutarse automáticamente durante la compilación, el inicio de la aplicación o las pruebas.
+
+No asignes privilegios automáticamente por utilizar Gmail, por pertenecer a un dominio o por ser el primer usuario registrado.
+
+No inventes el UID del propietario de VigorCore.
+
+Prepara el script para que el propietario pueda ejecutar posteriormente el bootstrap desde un entorno local seguro, sin introducir claves privadas en el frontend.
+
+---
+
+# 5. DIRECTORIO CENTRAL DE USUARIOS
+
+Crea una vista administrativa profesional:
+
+`AdminUsersView.tsx`
+
+Integra la nueva vista en la navegación existente únicamente para roles autorizados.
+
+## 5.1 Encabezado
+
+Mostrar:
+
+- Título: Gestión de usuarios.
+- Descripción breve del módulo.
+- Botón para invitar usuario.
+- Indicador de sincronización.
+- Acceso al historial administrativo.
+
+## 5.2 Tarjetas estadísticas
+
+Implementa indicadores dinámicos:
+
+1. Total de usuarios.
+2. Usuarios activos.
+3. Usuarios suspendidos.
+4. Usuarios pendientes de verificar correo.
+5. Invitaciones pendientes.
+6. Usuarios registrados recientemente.
+
+Los valores deben proceder del backend. No utilices cifras inventadas ni arreglos estáticos.
+
+## 5.3 Tabla de usuarios
+
+Columnas:
+
+- Usuario.
+- Correo electrónico.
+- Rol.
+- Estado de la cuenta.
+- Correo verificado.
+- Fecha de registro.
+- Último acceso.
+- Acciones.
+
+Cada fila debe permitir acceder a una vista de detalles administrativos.
+
+## 5.4 Búsqueda y filtros
+
+Implementa:
+
+- Búsqueda por UID.
+- Búsqueda por correo electrónico.
+- Búsqueda por nombre.
+- Filtro por rol.
+- Filtro por estado.
+- Filtro por verificación de correo.
+- Filtro por intervalo de registro.
+- Ordenamiento por fecha de creación.
+- Ordenamiento por último acceso.
+
+La consulta debe estar paginada desde backend.
+
+Nunca descargues todos los documentos de usuarios en el navegador para filtrarlos localmente.
+
+Si la implementación necesita un índice administrativo, utiliza una colección separada y controlada por backend.
+
+Esquema propuesto:
+
+`adminUserDirectory/{uid}`
+
+Campos mínimos:
+
+- uid
+- email
+- normalizedEmail
+- displayName
+- role
+- accountStatus
+- emailVerified
+- createdAt
+- lastSignInAt
+- updatedAt
+
+La colección debe escribirse exclusivamente desde backend.
+
+El cliente no debe poder modificar su propio rol, estado administrativo ni información de esta colección.
+
+Implementa una estrategia de sincronización para:
+
+- Usuarios nuevos.
+- Usuarios existentes.
+- Actualizaciones de perfil.
+- Cambios de rol.
+- Suspensiones.
+- Reactivaciones.
+- Cambios en metadatos de autenticación.
+
+Puedes implementar una función autenticada de sincronización del usuario actual. Esta función debe identificar el UID exclusivamente desde el contexto autenticado y obtener la información desde Firebase Admin SDK, sin confiar en los datos enviados por el navegador.
+
+Prepara un proceso de migración de cuentas existentes con modo `dry-run` antes de modificar cualquier registro.
+
+No elimines perfiles antiguos ni recrees cuentas.
+
+---
+
+# 6. VISTA DE DETALLES DEL USUARIO
+
+Desarrolla una vista o panel lateral de detalles administrativos.
+
+Debe mostrar información estrictamente necesaria para administrar la cuenta:
+
+- Nombre.
+- UID.
+- Correo electrónico.
+- Estado de verificación.
+- Rol.
+- Estado de acceso.
+- Proveedor de autenticación.
+- Fecha de creación.
+- Último acceso.
+- Fecha de actualización.
+- Estado de invitación, si corresponde.
+
+Incluye una sección de actividad administrativa relevante.
+
+Acciones disponibles conforme al rol del administrador:
+
+- Cambiar rol, cuando esté autorizado.
+- Suspender cuenta.
+- Reactivar cuenta.
+- Enviar recuperación de contraseña.
+- Consultar actividad administrativa relacionada.
+
+No muestres:
+
+- Contraseñas.
+- Tokens de autenticación.
+- Hashes de credenciales.
+- Secretos.
+- Datos biométricos innecesarios.
+- Historial alimenticio completo.
+- Informes nutricionales privados.
+- Historial de entrenamiento completo.
+
+No implementes impersonación ni inicies sesión como otro usuario.
+
+No concedas acceso general al perfil privado del atleta por el simple hecho de ser administrador.
+
+---
+
+# 7. SISTEMA DE INVITACIONES SEGURAS
+
+Desarrolla un flujo profesional de invitaciones.
+
+## 7.1 Crear invitación
+
+Permitir:
+
+- Introducir correo electrónico.
+- Seleccionar el rol permitido.
+- Confirmar la creación.
+- Generar un enlace de invitación.
+- Copiar el enlace para compartirlo.
+
+Reglas:
+
+- Un administrador únicamente puede invitar atletas.
+- Un superadministrador puede invitar atletas y administradores.
+- Nadie puede invitar superadministradores por el flujo ordinario.
+- No aceptar roles enviados arbitrariamente por el frontend.
+- Validar correos electrónicos y normalizarlos.
+- Evitar invitaciones duplicadas activas al mismo correo y rol.
+
+## 7.2 Modelo de persistencia
+
+Colección propuesta:
+
+`adminInvitations/{inviteId}`
+
+Campos:
+
+- inviteId.
+- emailNormalized.
+- targetRole.
+- status.
+- tokenHash.
+- createdBy.
+- createdAt.
+- expiresAt.
+- redeemedBy.
+- redeemedAt.
+- revokedAt.
+
+El token de invitación debe generarse utilizando criptografía segura en backend.
+
+Guarda únicamente su hash.
+
+El token original:
+
+- Se devuelve una sola vez al administrador autorizado.
+- Se utiliza para construir un enlace de invitación.
+- No se almacena en texto plano.
+- No debe aparecer en registros de auditoría.
+- Debe invalidarse después de utilizarse o caducar.
+
+Vigencia predeterminada: siete días.
+
+## 7.3 Aceptar invitación
+
+Implementa una ruta apropiada, por ejemplo:
+
+`/accept-invitation`
+
+Flujo:
+
+1. El usuario abre el enlace.
+2. Si no tiene sesión, se le permite iniciar sesión o registrarse.
+3. Se conserva el contexto de la invitación durante la autenticación.
+4. Se exige un correo verificado.
+5. El correo del usuario autenticado debe coincidir exactamente con el correo de destino normalizado.
+6. El backend valida el hash del token.
+7. Comprueba la fecha de vencimiento.
+8. Comprueba que no haya sido revocado ni utilizado.
+9. Asigna el rol exclusivamente desde servidor.
+10. Registra la aceptación.
+11. Actualiza el directorio.
+12. Envía al usuario a su destino correspondiente.
+
+Si la persona todavía no verificó su correo, muestra una explicación clara y evita aceptar la invitación.
+
+La invitación nunca debe convertirse en una vía de escalada de privilegios.
+
+## 7.4 Revocar invitaciones
+
+El administrador autorizado puede revocar invitaciones pendientes.
+
+Una invitación revocada no puede volver a aceptarse.
+
+Registra cada operación.
+
+**IMPORTANTE:** No presupongas que hay un proveedor externo de envío de correos configurado. Utiliza la generación de enlace para copiar y compartir manualmente, salvo que ya exista una integración de correo segura y funcional.
+
+No simules el envío de emails.
+
+---
+
+# 8. SUSPENSIÓN Y REACTIVACIÓN DE CUENTAS
+
+Desarrolla una gestión profesional del estado de las cuentas.
+
+Estados principales:
+
+- active.
+- suspended.
+- pending_verification.
+- pending_invitation.
+
+La clasificación debe derivarse de la información real de Firebase Authentication y los registros de administración.
+
+## 8.1 Suspender cuenta
+
+Cuando un administrador autorizado suspende una cuenta:
+
+1. Mostrar un diálogo de confirmación.
+2. Solicitar un motivo de suspensión.
+3. Validar que no sea su propia cuenta.
+4. Verificar las restricciones de rol.
+5. Cambiar el estado de control de acceso.
+6. Deshabilitar la cuenta mediante Firebase Admin SDK.
+7. Revocar los refresh tokens.
+8. Actualizar el directorio administrativo.
+9. Registrar el evento.
+
+No confundas revocar refresh tokens con garantizar por sí solo la revocación instantánea de todos los permisos de Firestore.
+
+Para conseguir protección efectiva, inspecciona las reglas actuales e implementa un control de cuenta activo en el que se pueda comprobar el estado de acceso del UID.
+
+Colección propuesta:
+
+`accountAccess/{uid}`
+
+Campos:
+
+- uid.
+- status.
+- updatedAt.
+- suspendedAt.
+- suspendedBy.
+- validAfter.
+- reasonCode.
+
+La colección debe ser administrada exclusivamente desde backend.
+
+El control de acceso debe integrarse cuidadosamente con las funciones de propiedad existentes en `firestore.rules`, incluyendo `isOwner(userId)` cuando corresponda.
+
+El objetivo es que una cuenta suspendida no pueda seguir leyendo ni escribiendo los datos privados mediante un ID token antiguo mientras sus credenciales anteriores sigan vigentes.
+
+Si modificas las reglas:
+
+- Revisa todos los bloques `match`.
+- Comprueba que todas las colecciones privadas estén cubiertas.
+- Gestiona correctamente los usuarios existentes que todavía no tengan el documento `accountAccess`.
+- Prepara una estrategia de migración.
+- No bloquees accidentalmente todas las cuentas existentes.
+- Prueba cada ruta en el emulador.
+
+La transición debe ser segura también frente a errores parciales entre Firestore y Firebase Authentication.
+
+## 8.2 Reactivar cuenta
+
+Al reactivar:
+
+1. Validar el permiso.
+2. Confirmar que la cuenta no está eliminada.
+3. Habilitarla en Firebase Authentication.
+4. Establecer un nuevo estado de acceso.
+5. Controlar la validez de sesiones anteriores.
+6. Actualizar el directorio.
+7. Registrar el evento.
+
+No restablezcas credenciales ni cambies contraseñas automáticamente.
+
+No alteres los datos de entrenamiento o nutrición al suspender o reactivar.
+
+---
+
+# 9. RECUPERACIÓN DE CONTRASEÑA
+
+Integra una acción administrativa para solicitar recuperación de contraseña.
+
+Utiliza los mecanismos estándar disponibles de Firebase Authentication.
+
+El administrador únicamente debe poder solicitar que se envíe el correo de recuperación a la dirección registrada.
+
+No permitas:
+
+- Consultar contraseñas.
+- Establecer una contraseña directamente desde el panel.
+- Mostrar enlaces privados de recuperación en el directorio.
+- Alterar contraseñas sin un flujo de recuperación apropiado.
+
+Utiliza las plantillas y dominios de acción de correo configurados para el proyecto.
+
+Presenta mensajes claros cuando la solicitud falle.
+
+No reveles información sensible en mensajes de error.
+
+---
+
+# 10. HISTORIAL Y AUDITORÍA ADMINISTRATIVA
+
+Implementa una auditoría append-only.
+
+Colección propuesta:
+
+`adminAuditLogs/{eventId}`
+
+Registrar como mínimo:
+
+- Invitación creada.
+- Invitación revocada.
+- Invitación aceptada.
+- Rol modificado.
+- Cuenta suspendida.
+- Cuenta reactivada.
+- Solicitud de recuperación de contraseña.
+- Bootstrap de superadministrador.
+- Acceso administrativo denegado cuando exista un motivo relevante.
+
+Cada registro debe incluir:
+
+- eventId.
+- action.
+- actorUid.
+- actorRole.
+- targetUid cuando corresponda.
+- timestamp del servidor.
+- motivo cuando corresponda.
+- cambios mínimos antes/después.
+- identificador de correlación, cuando resulte útil.
+
+No registres:
+
+- Contraseñas.
+- Tokens de autenticación.
+- Tokens de invitación.
+- Credenciales.
+- Información biométrica.
+- Historial nutricional.
+- Información privada irrelevante.
+
+Ningún cliente puede crear, modificar o borrar estos documentos.
+
+La consulta de auditoría debe ejecutarse mediante backend con permisos autorizados.
+
+La interfaz debe ofrecer:
+
+- Filtros por tipo de evento.
+- Filtros por administrador.
+- Filtros por usuario afectado.
+- Intervalo de fechas.
+- Paginación.
+- Vista detallada del evento.
+
+No permitas eliminar registros desde la interfaz administrativa.
+
+---
+
+# 11. EXPERIENCIA VISUAL Y DISEÑO
+
+El módulo debe sentirse como una consola SaaS profesional y pertenecer visualmente a VigorCore.
+
+Referencias de calidad:
+
+- Interfaces de administración modernas.
+- Dashboard SaaS.
+- Tablas limpias y legibles.
+- Jerarquía tipográfica clara.
+- Estados de cuenta fácilmente distinguibles.
+- Menús contextuales discretos.
+- Diálogos de confirmación.
+- Navegación coherente.
+
+Implementa:
+
+1. Panel general administrativo.
+2. Directorio de usuarios.
+3. Detalles de usuario.
+4. Gestión de invitaciones.
+5. Historial de auditoría.
+6. Sección de permisos y roles si resulta conveniente.
+
+Requisitos UX:
+
+- Diseño responsive.
+- Adaptación a escritorio, tablet y móvil.
+- Estados de carga.
+- Estados vacíos.
+- Mensajes de error.
+- Feedback de acciones completadas.
+- Confirmaciones para acciones destructivas o sensibles.
+- Accesibilidad de controles.
+- Navegación por teclado.
+- Etiquetas y textos en español.
+
+No utilices datos estáticos para simular estadísticas.
+
+No inventes usuarios para completar visualmente las tablas.
+
+Conserva las clases, tipografía, colores, componentes y lenguaje visual existentes.
+
+El panel administrativo debe integrarse con el sistema visual actual sin rediseñar el resto de VigorCore.
+
+---
+
+# 12. INTEGRACIÓN CON EL SISTEMA DE AUTENTICACIÓN EXISTENTE
+
+Inspecciona especialmente:
+
+- AppContext.tsx.
+- ProtectedRoute.
+- LoginView.
+- Estado authStatus.
+- ensureUserProfile.
+- Flujo Google.
+- Flujo Email/Password.
+- Verificación de correo.
+- Renovación forzada del ID token.
+- Logout y limpieza de estado.
+- Persistencia de sesiones.
+
+Integra el rol sin deteriorar ninguna funcionalidad existente.
+
+Asegura que:
+
+- Los usuarios normales no puedan abrir rutas administrativas.
+- Los usuarios no autenticados sean redirigidos al acceso.
+- Los administradores carguen primero sus claims verificados.
+- Un cambio de rol invalide o actualice correctamente la visualización del menú y los permisos.
+- La sesión nunca utilice un rol antiguo como autorización definitiva.
+- Los errores de validación de permisos bloqueen la vista.
+- El modo demo nunca reciba permisos administrativos.
+- La recuperación de una sesión no introduzca privilegios por defecto.
+
+No conviertas a un usuario autenticado en administrador por el simple hecho de tener un documento `users/{uid}`.
+
+---
+
+# 13. FIRESTORE: SEGURIDAD Y ESQUEMA
+
+Inspecciona primero el archivo `firestore.rules` completo.
+
+Colecciones administrativas propuestas:
+
+- `adminUserDirectory/{uid}`
+- `adminInvitations/{inviteId}`
+- `adminAuditLogs/{eventId}`
+- `accountAccess/{uid}`
+
+No permitas escrituras desde clientes a estas colecciones, salvo una autorización expresamente diseñada y estrictamente limitada, si fuera realmente necesaria.
+
+Las operaciones administrativas deben realizarse desde backend.
+
+No otorgues permisos administrativos generales a todos los documentos bajo `/users/{uid}`.
+
+La administración de cuentas NO significa que un administrador pueda leer indiscriminadamente:
+
+- `/biometrics/`
+- `/preferences/`
+- `/mealLogs/`
+- `/recipes/`
+- `/mealPlans/`
+- `/executedWorkouts/`
+- `/workoutSessions/`
+- cualquier otra colección privada.
+
+Conserva el aislamiento por UID.
+
+Si modificas las reglas, agrega pruebas específicas en `@firebase/rules-unit-testing`.
+
+Comprueba que un administrador tampoco pueda saltarse el aislamiento de datos privados utilizando directamente el SDK cliente.
+
+Verifica que cualquier acceso privilegiado desde funciones tenga autorización propia porque Admin SDK no utiliza las reglas como mecanismo de autorización del servidor.
+
+---
+
+# 14. PRUEBAS AUTOMATIZADAS OBLIGATORIAS
+
+Crea las suites que correspondan y agrega cobertura sin eliminar pruebas anteriores.
+
+## A. RBAC
+
+- Usuario no autenticado: denegado.
+- Atleta: denegado en endpoints administrativos.
+- Administrador: permisos operativos limitados.
+- Superadministrador: permisos elevados.
+- Rol falsificado desde el frontend: denegado.
+- Documento Firestore que contiene `role: admin` sin Custom Claim válido: denegado.
+- Acceso directo a rutas administrativas: protegido.
+
+## B. Escalada de privilegios
+
+- Administrador intentando crear otro administrador: denegado.
+- Administrador intentando crear superadministrador: denegado.
+- Atleta intentando cambiar su rol: denegado.
+- Intento de modificar Custom Claims desde cliente: imposible.
+- Superadministrador intentando deshabilitarse a sí mismo: denegado.
+- Intento de eliminar o degradar al último superadministrador: denegado.
+
+## C. Invitaciones
+
+- Creación autorizada.
+- Correo normalizado.
+- Token válido.
+- Token inválido.
+- Token expirado.
+- Token reutilizado.
+- Token revocado.
+- Correo de destino diferente.
+- Correo sin verificar.
+- Rol no autorizado.
+- Invitación duplicada.
+- Aceptación concurrente de la misma invitación.
+- Imposibilidad de cambiar el rol mediante modificación del cliente.
+
+## D. Cuentas
+
+- Suspensión autorizada.
+- Suspensión no autorizada.
+- Reactivación autorizada.
+- Rechazo de operaciones sobre otra cuenta sin permisos.
+- Rechazo de autodesactivación.
+- Acceso a Firestore denegado después de suspender.
+- Rechazo de sesiones antiguas según el mecanismo de revocación implementado.
+- Conservación de datos durante la suspensión.
+
+## E. Auditoría
+
+- Cada acción sensible genera un evento.
+- El actor queda correctamente identificado.
+- Los timestamps se generan en servidor.
+- No se escriben tokens ni secretos.
+- Los usuarios normales no pueden consultar logs.
+- Los registros no pueden modificarse desde clientes.
+
+## F. Integridad del sistema
+
+Ejecuta también las pruebas anteriores:
+
+- Periodización.
+- Mesociclos.
+- Autenticación.
+- Onboarding.
+- Nutrición.
+- Registro de comidas.
+- Recetas.
+- Menú semanal.
+- Despensa.
+- Ciclo nutricional.
+- Exportación.
+- Analítica.
+- Autorregulación.
+- Rutinas.
+- Dashboard.
+- Verificación global.
+
+No sustituyas pruebas existentes por simulaciones.
+
+---
+
+# 15. MIGRACIÓN Y COMPATIBILIDAD
+
+VigorCore ya dispone de usuarios registrados y datos persistentes.
+
+No debes iniciar el sistema como si fuera una instalación nueva.
+
+Prepara:
+
+- Sincronización de usuarios existentes.
+- Backfill del directorio administrativo.
+- Backfill del estado de acceso.
+- Asignación predeterminada segura de rol atleta cuando corresponda.
+- Script de migración con dry-run.
+- Validación de cuentas existentes.
+- Comprobación de duplicados.
+- Reversibilidad razonable de cambios de estructura.
+
+No modifiques usuarios reales en producción durante la implementación.
+
+No ejecutes automáticamente una migración contra producción.
+
+No elimines registros antiguos.
+
+No cambies UID de ningún usuario.
+
+No alteres datos de nutrición o entrenamiento.
+
+No cambies la ruta biométrica canónica.
+
+---
+
+# 16. DESEMPEÑO Y ESCALABILIDAD
+
+El sistema debe prepararse para crecer.
+
+Requisitos:
+
+- Paginación de servidor.
+- Búsqueda eficiente.
+- Índices Firestore necesarios.
+- Consultas acotadas.
+- Evitar cargar todos los usuarios.
+- Evitar listeners innecesarios.
+- Evitar operaciones duplicadas.
+- Evitar consultas repetidas para comprobar los permisos en React.
+- Errores recuperables.
+- Manejo de concurrencia en invitaciones y cambios administrativos.
+
+No introduzcas una arquitectura innecesariamente compleja.
+
+Prioriza claridad, mantenimiento y seguridad.
+
+---
+
+# 17. RESTRICCIONES ABSOLUTAS DE IMPLEMENTACIÓN
+
+No realizar:
+
+- Despliegue de Firebase.
+- Despliegue de Hosting.
+- Despliegue de Cloud Functions.
+- Despliegue de reglas.
+- Modificación de cuentas reales.
+- Asignación automática de superadministradores.
+- Borrado masivo de usuarios.
+- Borrado masivo de documentos.
+- Recreación del proyecto Firebase.
+- Cambio de base de datos.
+- Reescritura de AppContext.
+- Reconstrucción de la autenticación.
+- Modificación innecesaria de módulos nutricionales.
+- Cambios innecesarios en las funcionalidades de entrenamiento.
+- Sustitución del diseño de Stitch.
+
+Si una configuración externa o un despliegue resulta necesario, deja preparado el código y explica exactamente qué falta. No declares esa parte operativa hasta verificarla.
+
+---
+
+# 18. EJECUCIÓN DE VALIDACIONES
+
+Inspecciona `package.json`, `firebase.json` y la estructura de funciones antes de crear comandos.
+
+Ejecuta los scripts reales disponibles.
+
+Como mínimo:
+
+- TypeScript.
+- Lint.
+- Build.
+- Pruebas de roles.
+- Pruebas de invitaciones.
+- Pruebas de suspensión.
+- Pruebas de auditoría.
+- Pruebas de reglas.
+- Pruebas de autenticación.
+- Suites de regresión existentes.
+
+Cuando los emuladores estén disponibles, ejecuta pruebas de integración reales.
+
+Si el contenedor no dispone de Java, identifica claramente las pruebas de reglas que no pudieron ejecutarse en el emulador. No presentes comprobaciones estáticas como pruebas reales del emulador.
+
+El usuario ya ha confirmado anteriormente que el emulador local de Firestore funciona en su equipo Windows. Conserva el procedimiento local y explica qué comandos deberá ejecutar si se modifican las reglas o se agregan nuevas funciones.
+
+---
+
+# 19. INFORME TÉCNICO FINAL OBLIGATORIO
+
+Entrega un informe estructurado con las siguientes secciones:
+
+### A. Auditoría inicial
+- Arquitectura detectada.
+- Estructura de autenticación.
+- Estado de Firestore.
+- Existencia o ausencia de Cloud Functions.
+- Riesgos detectados antes de implementar.
+
+### B. Arquitectura implementada
+- Componentes React.
+- Servicios frontend.
+- Cloud Functions.
+- Esquema Firestore.
+- Custom Claims.
+- Control de acceso.
+- Estrategia de sincronización.
+
+### C. Gestión de roles
+- Matriz real de permisos.
+- Validación backend.
+- Validación en reglas.
+- Restricciones contra escalada de privilegios.
+
+### D. Gestión de usuarios
+- Directorio.
+- Búsqueda.
+- Filtros.
+- Paginación.
+- Detalles.
+- Invitaciones.
+- Suspensión.
+- Reactivación.
+- Recuperación de contraseña.
+
+### E. Auditoría
+- Eventos implementados.
+- Campos registrados.
+- Protección de la colección.
+- Consultas administrativas.
+
+### F. Seguridad
+- Comprobación de aislamiento por UID.
+- Protección de datos biométricos.
+- Protección de datos nutricionales.
+- Protección de Custom Claims.
+- Protección de funciones administrativas.
+- Manejo de sesiones suspendidas.
+
+### G. Archivos modificados
+Enumera rutas y explica brevemente la responsabilidad de cada archivo.
+
+### H. Pruebas
+Indica:
+- Comando.
+- Suite.
+- Casos ejecutados.
+- Resultado.
+- Errores.
+- Pruebas pendientes.
+
+Distingue casos, aserciones y grupos funcionales. No inventes porcentajes ni conteos.
+
+### I. Configuración externa pendiente
+Informa si se necesitan:
+- Activación de Cloud Functions.
+- Configuración de IAM.
+- Plan de facturación compatible.
+- Parámetros.
+- Secretos.
+- Configuración adicional de Authentication.
+- Bootstrap del superadministrador.
+- Migración inicial.
+
+Nunca incluyas secretos en el informe.
+
+### J. Integridad
+Confirma expresamente:
+- Cero despliegues.
+- Cero mutaciones de producción.
+- Conservación de usuarios existentes.
+- Conservación de datos nutricionales y entrenamientos.
+- Conservación de la ruta biométrica.
+- Conservación de la identidad visual de Stitch.
+
+### K. Estado final
+
+Clasifica el incremento como:
+
+- APROBADO: funcionalidades implementadas y verificadas con las pruebas correspondientes.
+- APROBADO CON CONFIGURACIÓN PENDIENTE: código funcional y pruebas ejecutadas, pero faltan tareas externas imprescindibles.
+- PENDIENTE: existen defectos o riesgos de seguridad sin resolver.
+
+No marques el incremento como completamente operativo si sus funciones administrativas todavía no pueden desplegarse o utilizarse por falta de infraestructura.
+
+---
+
+# 20. CRITERIO FINAL DE CALIDAD
+
+Este incremento debe dejar a VigorCore preparado para gestionar una comunidad de usuarios reales, no solamente para mostrar un panel administrativo atractivo.
+
+La prioridad es:
+
+1. Seguridad real de los privilegios.
+2. Protección de los datos privados de los atletas.
+3. Gestión confiable de cuentas.
+4. Control de invitaciones.
+5. Trazabilidad administrativa.
+6. Integración limpia con la autenticación existente.
+7. Experiencia visual profesional.
+8. Escalabilidad y facilidad de mantenimiento.
+
+Trabaja incrementalmente, inspecciona el código antes de modificarlo, ejecuta las pruebas reales y documenta las limitaciones.
+
+**No avances al incremento 7E hasta cerrar la aceptación técnica de 7D.**

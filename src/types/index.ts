@@ -18,7 +18,9 @@ export type NavigationPath =
   | 'registro-de-entrenamiento'
   | 'cardio-y-hiit'
   | 'progreso-del-entrenamiento'
-  | 'planificador-mesociclo';
+  | 'planificador-mesociclo'
+  | 'admin-usuarios'
+  | 'aceptar-invitacion';
 
 export const PRIVATE_NAVIGATION_PATHS: NavigationPath[] = [
   'onboarding',
@@ -36,12 +38,14 @@ export const PRIVATE_NAVIGATION_PATHS: NavigationPath[] = [
   'cardio-y-hiit',
   'progreso-del-entrenamiento',
   'planificador-mesociclo',
+  'admin-usuarios',
 ];
 
 export const PUBLIC_NAVIGATION_PATHS: NavigationPath[] = [
   'login',
   'registro',
   'recuperar-password',
+  'aceptar-invitacion',
 ];
 
 export function isPrivatePath(path: string): path is NavigationPath {

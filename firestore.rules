@@ -16,8 +16,34 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    function isAccountActive(userId) {
+      return !exists(/databases/$(database)/documents/accountAccess/$(userId)) ||
+             (get(/databases/$(database)/documents/accountAccess/$(userId)).data.status != 'suspended' &&
+              (!('validAfter' in get(/databases/$(database)/documents/accountAccess/$(userId)).data) ||
+               (request.auth.token.auth_time is int &&
+                request.auth.token.auth_time >= get(/databases/$(database)/documents/accountAccess/$(userId)).data.validAfter)));
+    }
+
+    function isAuthoritativeRole(role) {
+      return isSignedIn() &&
+             request.auth.token.role == role &&
+             (request.auth.token.roleVersion is int) &&
+             isAccountActive(request.auth.uid) &&
+             exists(/databases/$(database)/documents/adminRoleState/$(request.auth.uid)) &&
+             get(/databases/$(database)/documents/adminRoleState/$(request.auth.uid)).data.role == role &&
+             get(/databases/$(database)/documents/adminRoleState/$(request.auth.uid)).data.roleVersion == request.auth.token.roleVersion;
+    }
+
+    function isAdmin() {
+      return isAuthoritativeRole('admin') || isAuthoritativeRole('superadmin');
+    }
+
+    function isSuperadmin() {
+      return isAuthoritativeRole('superadmin');
+    }
+
     function isOwner(userId) {
-      return isSignedIn() && request.auth.uid == userId;
+      return isSignedIn() && request.auth.uid == userId && isAccountActive(userId);
     }
 
     function isValidId(id) {
@@ -275,5 +301,41 @@ service cloud.firestore {
         allow delete: if false;
       }
     }
+
+    // =========================================================================
+    // COLECCIONES ADMINISTRATIVAS PRIVILEGIADAS (INCREMENTO 7D)
+    // Escritura cliente estrictamente prohibida (allow write: if false)
+    // =========================================================================
+
+    // Estado Autoritativo de Roles Administrativos (Anti-Stale-Token)
+    match /adminRoleState/{userId} {
+      allow read: if (isSignedIn() && request.auth.uid == userId) || isAdmin();
+      allow write: if false;
+    }
+
+    // Directorio Administrativo Centralizado
+    match /adminUserDirectory/{userId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    // Invitaciones Administrativas Seguras
+    match /adminInvitations/{inviteId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    // Control de Estado y Suspensión de Cuentas
+    match /accountAccess/{userId} {
+      allow read: if (isSignedIn() && request.auth.uid == userId) || isAdmin();
+      allow write: if false;
+    }
+
+    // Trazabilidad y Auditoría Administrativa Append-Only
+    match /adminAuditLogs/{eventId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
   }
 }
+

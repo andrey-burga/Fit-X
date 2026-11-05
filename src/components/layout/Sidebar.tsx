@@ -38,6 +38,7 @@ export const Sidebar: React.FC = () => {
     isMobileSidebarOpen,
     closeMobileSidebar,
     currentUser,
+    currentUserRole,
     isAuthenticated,
     isDemoMode,
     openAuthModal,
@@ -171,6 +172,28 @@ export const Sidebar: React.FC = () => {
               </button>
             );
           })}
+
+          {(currentUserRole === 'admin' || currentUserRole === 'superadmin') && (
+            <>
+              <div className="px-space-sm pt-space-md pb-space-xs font-label-sm text-label-sm uppercase tracking-wider text-primary font-semibold flex items-center gap-1.5">
+                <span className="material-symbols-outlined text-sm">shield_person</span>
+                Administración
+              </div>
+              <button
+                onClick={() => handleNavClick('admin-usuarios')}
+                className={`w-full text-left px-space-sm py-2 rounded-lg font-body-md text-body-md transition-all flex items-center gap-space-sm ${
+                  currentPath === 'admin-usuarios'
+                    ? 'bg-primary text-on-primary font-medium shadow-sm'
+                    : 'text-on-surface-variant hover:bg-surface-container hover:text-on-surface'
+                }`}
+              >
+                <span className={`material-symbols-outlined text-lg ${currentPath === 'admin-usuarios' ? 'text-on-primary' : 'text-primary'}`}>
+                  manage_accounts
+                </span>
+                <span>Gestión de Usuarios</span>
+              </button>
+            </>
+          )}
         </nav>
       </div>
 

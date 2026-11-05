@@ -26,6 +26,8 @@ import { TrainingProgressView } from './views/TrainingProgressView';
 import { OnboardingView } from './views/OnboardingView';
 import { AthleteProfileView } from './views/AthleteProfileView';
 import { MesocyclePlanningView } from './views/MesocyclePlanningView';
+import { AdminUsersView } from './views/AdminUsersView';
+import { AcceptInvitationView } from './views/AcceptInvitationView';
 
 // Modals
 import { RegisterMealDrawer } from './components/modals/RegisterMealDrawer';
@@ -38,8 +40,18 @@ import { RecipeModal } from './components/modals/RecipeModal';
 import { AssignRecipeModal } from './components/modals/AssignRecipeModal';
 
 const AppContent: React.FC = () => {
-  const { currentPath, authStatus, isAuthenticated, currentUser } = useApp();
+  const { currentPath, authStatus, isAuthenticated, currentUser, currentUserRole } = useApp();
   const [isSearchOpen, setIsSearchOpen] = useState(false);
+
+  // Public route for invitation acceptance
+  if (currentPath === 'aceptar-invitacion') {
+    return (
+      <div className="min-h-screen bg-surface text-on-surface antialiased font-body-md selection:bg-primary-fixed selection:text-on-primary-fixed">
+        <AcceptInvitationView />
+        <ToastNotification />
+      </div>
+    );
+  }
 
   // 1. Initializing state: ProtectedRoute displays the secure branded loader (Zero data leakage)
   if (authStatus === 'initializing') {
@@ -126,6 +138,19 @@ const AppContent: React.FC = () => {
         return <TrainingProgressView />;
       case 'planificador-mesociclo':
         return <MesocyclePlanningView />;
+      case 'admin-usuarios':
+        if (currentUserRole !== 'admin' && currentUserRole !== 'superadmin') {
+          return (
+            <div className="p-space-xl text-center max-w-md mx-auto my-16">
+              <span className="material-symbols-outlined text-5xl text-rose-500 mb-2">gpp_bad</span>
+              <h2 className="text-xl font-bold">Acceso Denegado</h2>
+              <p className="text-sm text-on-surface-variant mt-2">
+                Esta sección está reservada exclusivamente para personal administrativo con Custom Claims autorizados.
+              </p>
+            </div>
+          );
+        }
+        return <AdminUsersView />;
       default:
         return <NutritionalDashboardView />;
     }

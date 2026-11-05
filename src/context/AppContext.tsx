@@ -98,13 +98,16 @@ import {
   getOfflinePendingSets,
   migrateLegacyPendingSets,
 } from '../services/workoutSyncQueue';
+import { UserRole } from '../types/admin';
 
 interface AppContextType {
   currentPath: NavigationPath;
   navigate: (path: NavigationPath) => void;
 
-  // Auth System
+  // Auth System & RBAC (Increment 7D)
   currentUser: UserProfile | null;
+  currentUserRole: UserRole;
+  refreshUserClaims: () => Promise<UserRole>;
   isAuthenticated: boolean;
   isDemoMode: boolean;
   authStatus: AuthStatus;
@@ -605,6 +608,24 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
     return null;
   });
+
+  const [currentUserRole, setCurrentUserRole] = useState<UserRole>('athlete');
+
+  const refreshUserClaims = async (): Promise<UserRole> => {
+    if (!auth.currentUser || isDemoMode) {
+      setCurrentUserRole('athlete');
+      return 'athlete';
+    }
+    try {
+      const tokenResult = await auth.currentUser.getIdTokenResult(true);
+      const roleClaim = tokenResult.claims.role;
+      const verifiedRole: UserRole = (roleClaim === 'superadmin' || roleClaim === 'admin') ? roleClaim : 'athlete';
+      setCurrentUserRole(verifiedRole);
+      return verifiedRole;
+    } catch {
+      return 'athlete';
+    }
+  };
 
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
 
@@ -1134,9 +1155,16 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             if (tokenResult.claims.email_verified !== true) {
               setUnverifiedEmail(user.email || null);
               setCurrentUser(null);
+              setCurrentUserRole('athlete');
               setAuthStatus('email_verification_required');
               setAuthError(null);
               return;
+            }
+
+            const roleClaim = tokenResult.claims.role;
+            const verifiedRole: UserRole = (roleClaim === 'superadmin' || roleClaim === 'admin') ? roleClaim : 'athlete';
+            if (isMounted) {
+              setCurrentUserRole(verifiedRole);
             }
           } catch (tokenErr) {
             console.warn('ID token claims inspection warning:', tokenErr);
@@ -1168,6 +1196,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
               const parsed = JSON.parse(savedDemo);
               if (parsed?.id) {
                 setCurrentUser(parsed);
+                setCurrentUserRole('athlete');
                 setIsDemoMode(true);
                 setAuthStatus('authenticated');
                 setAuthError(null);
@@ -1179,6 +1208,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           // Genuine unauthenticated state
           setFbUser(null);
           setCurrentUser(null);
+          setCurrentUserRole('athlete');
           setIsDemoMode(false);
           localStorage.removeItem('vigor_is_demo');
           localStorage.removeItem('vigor_auth_user');
@@ -1792,6 +1822,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       // 2. Clear authentication and session flags
       setFbUser(null);
       setCurrentUser(null);
+      setCurrentUserRole('athlete');
       setUnverifiedEmail(null);
       setIsDemoMode(false);
       setAuthStatus('unauthenticated');
@@ -3967,8 +3998,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         currentPath,
         navigate,
 
-        // Auth
+        // Auth & RBAC (Increment 7D)
         currentUser,
+        currentUserRole,
+        refreshUserClaims,
         isAuthenticated: authStatus === 'authenticated' && !!currentUser,
         isDemoMode,
         authStatus,
