@@ -8,11 +8,9 @@
  * Connects exclusively to named database: ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c
  */
 
-import * as admin from 'firebase-admin';
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import {
   getNamedFirestore,
-  getActorRoleFromClaims,
   listAdminUsers as listUsersLogic,
   getAdminUserDetail as getUserDetailLogic,
   createAdminInvitation as createInviteLogic,

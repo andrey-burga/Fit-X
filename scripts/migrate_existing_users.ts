@@ -150,12 +150,22 @@ export async function executeUserMigration(
           { merge: true }
         );
 
+        // Fetch existing accountAccess to prevent accidental reactivation of previously suspended accounts
+        const existingAccountAccessSnap = await db.collection('accountAccess').doc(user.uid).get();
+        const existingAccountData = existingAccountAccessSnap.exists ? existingAccountAccessSnap.data() : null;
+        const existingStatus = existingAccountData?.status;
+
+        // If previously suspended or disabled, preserve it. Otherwise use calculated status
+        const finalStatus = (existingStatus === 'suspended' || existingStatus === 'disabled')
+          ? existingStatus
+          : status;
+
         await db.collection('accountAccess').doc(user.uid).set(
           {
             uid: user.uid,
-            status: user.disabled ? 'suspended' : 'active',
+            status: finalStatus,
             updatedAt: nowIso,
-            validAfter: nowEpochSeconds,
+            validAfter: existingAccountData?.validAfter || nowEpochSeconds,
           },
           { merge: true }
         );

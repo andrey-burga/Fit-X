@@ -29,6 +29,7 @@
     "test:verify": "tsx scripts/verify_implementation.ts",
     "test:rules": "tsx scripts/test_firestore_rules.ts",
     "test:rules:static": "tsx scripts/test_firestore_rules.ts --static",
+    "test:backend-db": "tsx scripts/test_backend_firestore_database.ts",
     "test:emulator": "firebase --config firebase.rules-test.json emulators:exec --project demo-vigorcore-rules --only firestore \"npm run test:rules\""
   },
   "dependencies": {

@@ -11,9 +11,8 @@
  */
 
 import * as crypto from 'crypto';
-import type { App } from 'firebase-admin/app';
-import { getFirestore, Firestore, Query, FieldValue } from 'firebase-admin/firestore';
-import type { Auth, UserRecord } from 'firebase-admin/auth';
+import { Firestore, Query, FieldValue } from '@google-cloud/firestore';
+import type { Auth } from 'firebase-admin/auth';
 import {
   UserRole,
   AccountAccessStatus,
@@ -24,25 +23,38 @@ import {
   AdminInvitation,
   AdminRoleStateRecord,
   AccountAccessRecord,
-  AdminAuditAction,
   AdminAuditLog,
   AdminAuditLogFilter,
 } from './types';
-import { requireAdminAuthorization } from './authGuard';
 
+export const VIGORCORE_PROJECT_ID = 'gen-lang-client-0041212770';
 export const VIGORCORE_DATABASE_ID = 'ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c';
 
 /**
  * Returns a Firestore instance explicitly configured with the named database.
+ * In Cloud Functions v2, uses the official public constructor from @google-cloud/firestore
+ * with Application Default Credentials (ADC), explicit projectId, and explicit databaseId.
+ * Cero monkey-patching y cero mutación de propiedades privadas.
  */
-export function getNamedFirestore(app?: App): Firestore {
-  try {
-    return app ? getFirestore(app, VIGORCORE_DATABASE_ID) : getFirestore(VIGORCORE_DATABASE_ID);
-  } catch {
-    const defaultFs = app ? getFirestore(app) : getFirestore();
-    (defaultFs as any).databaseId = VIGORCORE_DATABASE_ID;
-    return defaultFs;
+export function getNamedFirestore(appOrCustomDb?: any): Firestore {
+  if (appOrCustomDb) {
+    if (typeof appOrCustomDb.firestore === 'function') {
+      return appOrCustomDb.firestore();
+    }
+    if (typeof appOrCustomDb.collection === 'function') {
+      return appOrCustomDb as Firestore;
+    }
+    if (appOrCustomDb.options?.projectId) {
+      return new Firestore({
+        projectId: appOrCustomDb.options.projectId,
+        databaseId: VIGORCORE_DATABASE_ID,
+      });
+    }
   }
+  return new Firestore({
+    projectId: process.env.GCLOUD_PROJECT || process.env.GOOGLE_CLOUD_PROJECT || VIGORCORE_PROJECT_ID,
+    databaseId: VIGORCORE_DATABASE_ID,
+  });
 }
 
 /**
