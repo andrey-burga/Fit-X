@@ -12,7 +12,7 @@
  * 5. Granular Permission Matrix & Hierarchy Restrictions.
  */
 
-import { Firestore } from 'firebase-admin/firestore';
+import { Firestore } from '@google-cloud/firestore';
 import { UserRole, AdminRoleStateRecord, AccountAccessRecord } from './types';
 
 export type AdminPermission =
