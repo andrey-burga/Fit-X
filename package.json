@@ -29,7 +29,7 @@
     "test:verify": "tsx scripts/verify_implementation.ts",
     "test:rules": "tsx scripts/test_firestore_rules.ts",
     "test:rules:static": "tsx scripts/test_firestore_rules.ts --static",
-    "test:emulator": "firebase emulators:exec --only firestore 'npm run test:rules'"
+    "test:emulator": "firebase --config firebase.rules-test.json emulators:exec --project demo-vigorcore-rules --only firestore \"npm run test:rules\""
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

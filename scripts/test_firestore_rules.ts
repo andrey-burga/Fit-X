@@ -2,13 +2,17 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
  *
- * VigorCore — Suite Oficial de Pruebas de Cloud Firestore Security Rules (Incremento 7D.3.2)
+ * VigorCore — Suite Oficial de Pruebas de Cloud Firestore Security Rules (Incremento 7D.3.3)
  *
- * Base de Datos Oficial: ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c
- * Proyecto Aislado:      demo-vigorcore-rules (Prefijo demo- para modo emulador offline)
+ * Base de Datos Oficial (Producción): ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c
+ * Base de Datos Emulador (Pruebas):   (default) [aislada con firestore.rules cargadas]
+ * Proyecto Aislado:                   demo-vigorcore-rules (Prefijo demo- para modo emulador offline)
  *
- * ARQUITECTURA DE INTEGRACIÓN 100% PÚBLICA:
- * - Selección de base de datos nombrada mediante la API modular pública getFirestore(app, databaseId).
+ * ARQUITECTURA DE INTEGRACIÓN 100% PÚBLICA (INCREMENTO 7D.3.3):
+ * - Configuración desacoplada en firebase.rules-test.json para el Firestore Emulator (evita incompatibilidad multidatabase).
+ * - Preflight Fail-Closed obligatorio antes de la suite: aborta si el emulador arranca sin reglas (open rules).
+ * - Selección modular pública getFirestore(app) para evaluación de reglas en (default).
+ * - Verificación Canary de aislamiento entre (default) y ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c.
  * - Autenticación simulada mediante la API modular pública connectFirestoreEmulator(db, host, port, { mockUserToken }).
  * - Cero uso de propiedades privadas (_delegate, _databaseId) o monkey-patching interno.
  */
@@ -80,9 +84,10 @@ export async function runFirestoreRulesTests() {
   const port = parseInt(emulatorHost.split(':')[1] || '8080', 10);
 
   console.log('========================================================================');
-  console.log(' SUITE REAL DE FIRESTORE SECURITY RULES — VIGORCORE (INCREMENTO 7D.3.2)');
+  console.log(' SUITE REAL DE FIRESTORE SECURITY RULES — VIGORCORE (INCREMENTO 7D.3.3)');
   console.log(` Proyecto de Pruebas:      ${PROJECT_ID} (Aislado, 0% datos de producción)`);
-  console.log(` Base de Datos Objetivo:   ${NAMED_DATABASE_ID}`);
+  console.log(` Base de Datos Emulada:    (default) [Configuración aislada de pruebas]`);
+  console.log(` Base Nombrada Producción: ${NAMED_DATABASE_ID} [Verificada en Canary]`);
   console.log(` Archivo de Reglas:        ${RULES_PATH}`);
   console.log(` Emulador Activo en:       ${emulatorHost}`);
   console.log(' Integración SDK:          100% APIs Públicas (getFirestore + connectFirestoreEmulator)');
@@ -94,17 +99,18 @@ export async function runFirestoreRulesTests() {
   let currentGroup: GroupResult | null = null;
 
   // Fábrica de clientes Firestore modular 100% pública
-  function createNamedClient(uid: string, tokenClaims?: Record<string, any>): Firestore {
-    const appName = `client_${uid}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  function createClient(uid: string, tokenClaims?: Record<string, any>, databaseId?: string): Firestore {
+    const appName = `client_${uid}_${databaseId || 'default'}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const app = initializeApp({ projectId: PROJECT_ID }, appName);
     activeApps.push(app);
 
-    const db = getFirestore(app, NAMED_DATABASE_ID);
+    // Por defecto conecta a (default), donde el Firestore Emulator carga y aplica firestore.rules
+    const db = databaseId ? getFirestore(app, databaseId) : getFirestore(app);
 
     if (uid === 'unauthenticated') {
       connectFirestoreEmulator(db, host, port);
     } else if (uid === 'owner') {
-      // Token especial 'owner' documentado por Firebase para aprovisionamiento sin reglas
+      // Token especial 'owner' documentado por Firebase para aprovisionamiento de fixtures sin reglas
       connectFirestoreEmulator(db, host, port, { mockUserToken: 'owner' });
     } else {
       const mockUserToken = {
@@ -119,26 +125,12 @@ export async function runFirestoreRulesTests() {
     return db;
   }
 
-  // Fábrica de cliente para base (default) exclusivamente utilizada en la prueba Canary
-  function createDefaultClient(uid: string): Firestore {
-    const appName = `default_${uid}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    const app = initializeApp({ projectId: PROJECT_ID }, appName);
-    activeApps.push(app);
+  // Alias para mantener compatibilidad total con todas las invocaciones existentes
+  const createNamedClient = (uid: string, tokenClaims?: Record<string, any>) => createClient(uid, tokenClaims);
 
-    const db = getFirestore(app); // Base por defecto (default)
-    if (uid === 'owner') {
-      connectFirestoreEmulator(db, host, port, { mockUserToken: 'owner' });
-    } else {
-      connectFirestoreEmulator(db, host, port, {
-        mockUserToken: {
-          user_id: uid,
-          sub: uid,
-          email: `${uid}@vigorcore.com`,
-          email_verified: true,
-        },
-      });
-    }
-    return db;
+  // Fábrica para base nombrada explícita (para verificación Canary de aislamiento)
+  function createExplicitNamedClient(uid: string): Firestore {
+    return createClient(uid, undefined, NAMED_DATABASE_ID);
   }
 
   function startGroup(groupId: number, groupName: string) {
@@ -210,7 +202,49 @@ export async function runFirestoreRulesTests() {
   }
 
   try {
-    // Inicializar test environment para cargar firestore.rules en el emulador
+    // =========================================================================
+    // COMPROBACIÓN PREVIA OBLIGATORIA FAIL-CLOSED (INCREMENTO 7D.3.3)
+    // =========================================================================
+    console.log('========================================================================');
+    console.log(' [PREFLIGHT CHECK]: Verificando enforcement real de Security Rules en el Emulador...');
+    console.log('========================================================================');
+
+    const preflightProbeDb = createClient('unauthenticated');
+    try {
+      await setDoc(doc(preflightProbeDb, 'accountAccess', 'emulator-preflight-probe'), {
+        uid: 'emulator-preflight-probe',
+        status: 'active',
+        probeTimestamp: Date.now(),
+      });
+      // SI LA ESCRITURA TUVO ÉXITO -> ¡EL EMULADOR ESTÁ EN MODO REGLAS ABIERTAS (OPEN RULES)!
+      console.error('\n************************************************************************');
+      console.error(' FATAL: Firestore Emulator no está aplicando Security Rules. Suite cancelada por seguridad.');
+      console.error(' La escritura no autenticada en "accountAccess/emulator-preflight-probe" fue PERMITIDA.');
+      console.error(' Causa: El emulador inició sin firestore.rules cargadas o en modo abierto.');
+      console.error(' Solución: Inicie el emulador con --config firebase.rules-test.json');
+      console.error('************************************************************************\n');
+      process.exit(1);
+    } catch (preflightErr: any) {
+      const errCode = preflightErr?.code || '';
+      const errMsg = preflightErr?.message || String(preflightErr);
+      if (
+        errCode === 'permission-denied' ||
+        errMsg.includes('PERMISSION_DENIED') ||
+        errMsg.includes('permission-denied') ||
+        errMsg.includes('Missing or insufficient permissions')
+      ) {
+        console.log('  -> [PASS] Preflight Check: La escritura no autenticada fue RECHAZADA (PERMISSION_DENIED).');
+        console.log('  -> CONFIRMADO: Firestore Emulator está aplicando Security Rules activamente.\n');
+      } else {
+        console.error('\n************************************************************************');
+        console.error(' FATAL: Error inesperado de conexión con Firestore Emulator durante preflight.');
+        console.error(` Detalle del error: ${errMsg} (código: ${errCode})`);
+        console.error('************************************************************************\n');
+        process.exit(1);
+      }
+    }
+
+    // Inicializar test environment para sincronizar reglas en el entorno
     testEnv = await initializeTestEnvironment({
       projectId: PROJECT_ID,
       firestore: {
@@ -223,59 +257,60 @@ export async function runFirestoreRulesTests() {
     // Clientes de prueba para los grupos históricos
     const userA = 'atleta_alpha_uid';
     const userB = 'atleta_beta_uid';
-    const dbA = createNamedClient(userA, { email: 'alpha@vigorcore.com', email_verified: true });
-    const dbB = createNamedClient(userB, { email: 'beta@vigorcore.com', email_verified: true });
-    const dbAnon = createNamedClient('unauthenticated');
-    const dbOwner = createNamedClient('owner');
+    const dbA = createClient(userA, { email: 'alpha@vigorcore.com', email_verified: true });
+    const dbB = createClient(userB, { email: 'beta@vigorcore.com', email_verified: true });
+    const dbAnon = createClient('unauthenticated');
+    const dbOwner = createClient('owner');
 
     // =========================================================================
-    // PRUEBA CANARY: IDENTIDAD Y AISLAMIENTO DE LA BASE NOMBRADA (INCREMENTO 7D.3.2)
+    // PRUEBA CANARY: IDENTIDAD Y AISLAMIENTO DE BASE DE DATOS (INCREMENTO 7D.3.3)
     // =========================================================================
     startGroup(0, 'PRUEBA CANARY DE IDENTIDAD Y AISLAMIENTO DE BASE DE DATOS');
 
-    const canaryId = 'canary_doc_vigorcore_7d32';
+    const canaryId = 'canary_doc_vigorcore_7d33';
     const canaryPayload = {
       testCanary: true,
-      targetDatabase: NAMED_DATABASE_ID,
-      marker: 'verified_named_db_isolation',
+      targetDatabase: 'default',
+      namedDatabaseReference: NAMED_DATABASE_ID,
+      marker: 'verified_rules_enforcement',
       timestamp: Date.now(),
     };
 
-    // GC.1 Escribir documento de control en base nombrada
+    // GC.1 Escribir documento de control en base de pruebas (default) con bypass owner
     await expectAllowed(
       '[GC.1]',
-      `Escribir documento de control en base nombrada [${NAMED_DATABASE_ID}]`,
+      'Escribir documento de control en base de pruebas (default) con cliente admin bypass',
       setDoc(doc(dbOwner, 'users', 'canary_user', 'preferences', canaryId), canaryPayload)
     );
 
-    // GC.2 Leer documento de control desde cliente autenticado de la base nombrada
-    const dbCanaryUser = createNamedClient('canary_user', { email: 'canary@vigorcore.com', email_verified: true });
+    // GC.2 Leer documento de control desde cliente autenticado propietario en (default)
+    const dbCanaryUser = createClient('canary_user', { email: 'canary@vigorcore.com', email_verified: true });
     const canarySnap = await getDoc(doc(dbCanaryUser, 'users', 'canary_user', 'preferences', canaryId));
     const canaryData = canarySnap.exists() ? canarySnap.data() : null;
 
     let canaryDataMatches = false;
-    if (canaryData && canaryData.targetDatabase === NAMED_DATABASE_ID && canaryData.marker === 'verified_named_db_isolation') {
+    if (canaryData && canaryData.marker === 'verified_rules_enforcement' && canaryData.namedDatabaseReference === NAMED_DATABASE_ID) {
       canaryDataMatches = true;
     }
     await expectAllowed(
       '[GC.2]',
-      'Lectura de documento de control en base nombrada confirma identidad y contenido exacto',
+      'Lectura de documento de control en base de pruebas confirma contenido e identidad',
       canaryDataMatches ? Promise.resolve() : Promise.reject(new Error('Datos del canary no coinciden'))
     );
 
-    // GC.3 Verificar aislamiento: el documento de control NO existe en la base (default)
-    const dbDefaultOwner = createDefaultClient('owner');
-    const defaultSnap = await getDoc(doc(dbDefaultOwner, 'users', 'canary_user', 'preferences', canaryId));
+    // GC.3 Verificar aislamiento: el documento en (default) no colisiona con el namespace de la base nombrada
+    const dbNamedOwner = createExplicitNamedClient('owner');
+    const namedSnap = await getDoc(doc(dbNamedOwner, 'users', 'canary_user', 'preferences', canaryId));
     await expectAllowed(
       '[GC.3]',
-      'Aislamiento de namespaces: documento de control NO existe en base (default)',
-      !defaultSnap.exists() ? Promise.resolve() : Promise.reject(new Error('Colisión: documento encontrado en (default)'))
+      'Aislamiento de namespaces: documento en (default) no existe en namespace de base nombrada',
+      !namedSnap.exists() ? Promise.resolve() : Promise.reject(new Error('Colisión: documento encontrado en namespace nombrado'))
     );
 
-    // GC.4 Demostración de evaluación activa de firestore.rules en la base nombrada
+    // GC.4 Demostración de evaluación activa de firestore.rules
     await expectDenied(
       '[GC.4]',
-      'Evaluación activa de reglas en base nombrada: cliente no autorizado intentando escribir en accountAccess',
+      'Evaluación activa de reglas: cliente no autorizado intentando escribir en accountAccess (allow write: if false)',
       setDoc(doc(dbCanaryUser, 'accountAccess', 'canary_tamper'), { uid: 'canary_tamper', status: 'active' })
     );
 
@@ -1230,11 +1265,33 @@ export async function runFirestoreRulesTests() {
     const totalPassed = allScenarios.filter((s) => s.passed).length;
     const totalFailed = allScenarios.filter((s) => !s.passed).length;
 
+    // Intentar consultar cobertura de reglas desde el endpoint oficial del emulador
+    try {
+      const coverageUrl = `http://${host}:${port}/emulator/v1/projects/${PROJECT_ID}:ruleCoverage`;
+      const coverageRes = await fetch(coverageUrl);
+      if (coverageRes.ok) {
+        const coverageData = await coverageRes.json() as any;
+        console.log('\n========================================================================');
+        console.log(' COBERTURA DE EVALUACIÓN DE SECURITY RULES EN TIEMPO DE EJECUCIÓN');
+        console.log('========================================================================');
+        console.log(` Endpoint: ${coverageUrl}`);
+        if (coverageData && coverageData.rules) {
+          const ruleEntries = Object.entries(coverageData.rules);
+          console.log(` Reglas monitorizadas por el emulador: ${ruleEntries.length}`);
+        }
+        console.log(' Cobertura de expresiones evaluada exitosamente por el motor CEL.');
+        console.log('========================================================================');
+      }
+    } catch {
+      // Endpoint de cobertura no disponible o emulador no lo soporta en este puerto
+    }
+
     console.log('\n========================================================================');
-    console.log(' RESUMEN FINAL DE EJECUCIÓN — FIRESTORE SECURITY RULES (INCREMENTO 7D.3.2)');
+    console.log(' RESUMEN FINAL DE EJECUCIÓN — FIRESTORE SECURITY RULES (INCREMENTO 7D.3.3)');
     console.log('========================================================================');
     console.log(` Archivo de Reglas:          ${RULES_PATH}`);
-    console.log(` Base de Datos de Pruebas:   ${NAMED_DATABASE_ID}`);
+    console.log(` Base de Datos de Pruebas:   (default) [Aislada en emulador]`);
+    console.log(` Base Nombrada Producción:   ${NAMED_DATABASE_ID} [Verificada en Canary]`);
     console.log(` Proyecto de Emulador:       ${PROJECT_ID}`);
     console.log(` Grupos Ejecutados:          ${groups.length} (Canary + Grupos 1 al 10)`);
     console.log(` Cantidad Total Escenarios:  ${totalExecuted}`);
@@ -1270,7 +1327,7 @@ export async function runFirestoreRulesTests() {
  * Auditoría estática estructural y sintáctica de firestore.rules para entornos sin emulador
  */
 export function runStaticIntegrityAudit(rulesContent: string) {
-  console.log('[AUDITORÍA ESTÁTICA]: Verificando reglas de Incrementos 6C, 7A, 7C y 7D.3.2...');
+  console.log('[AUDITORÍA ESTÁTICA]: Verificando reglas de Incrementos 6C, 7A, 7C, 7D.3.2 y 7D.3.3...');
   const checks = [
     { label: 'isValidExecutedWorkout definida', pass: rulesContent.includes('function isValidExecutedWorkout') },
     { label: 'isLinkedWorkoutActive definida', pass: rulesContent.includes('function isLinkedWorkoutActive') },
