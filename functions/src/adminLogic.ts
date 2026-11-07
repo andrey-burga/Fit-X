@@ -443,6 +443,7 @@ export async function acceptAdminInvitation(
   const normalizedCallerEmail = normalizeEmail(callerEmail);
   const inviteRef = db.collection('adminInvitations').doc(inviteId);
   const operationId = `op_redeem_${inviteId}_${callerUid}`;
+  const opRef = db.collection('adminInvitationOperations').doc(operationId);
 
   // Phase 1: Atomic validation and state lock ('pending' -> 'redeeming')
   let inviteData: AdminInvitation;
@@ -500,17 +501,28 @@ export async function acceptAdminInvitation(
       }
 
       // Stale lock (> 5 min) by a DIFFERENT user:
-      // Verify if previous locker already received the role in adminRoleState
+      // Exact operation ownership verification:
+      // Verify if previous locker's specific operation completed and matches lastOperationId in adminRoleState
       const previousLockerUid = currentInvite.lockedBy;
       if (previousLockerUid) {
+        const previousOpId = currentInvite.operationId || `op_redeem_${inviteId}_${previousLockerUid}`;
+        const prevOpDoc = await db.collection('adminInvitationOperations').doc(previousOpId).get();
+        const prevOpData = prevOpDoc.exists ? (prevOpDoc.data() as import('./types').AdminInvitationOperation) : null;
+
         const prevRoleDoc = await db.collection('adminRoleState').doc(previousLockerUid).get();
         const prevRoleData = prevRoleDoc.exists ? (prevRoleDoc.data() as AdminRoleStateRecord) : null;
-        if (prevRoleData && prevRoleData.role === currentInvite.targetRole) {
+
+        const opCompleted = !!(prevOpData && (prevOpData.status === 'role_confirmed' || prevOpData.status === 'completed'));
+        const roleMatches = !!(prevRoleData && prevRoleData.role === currentInvite.targetRole && prevRoleData.lastOperationId === previousOpId);
+
+        if (opCompleted && roleMatches) {
           // Reconcile invitation to redeemed by the previous user to prevent double consumption
           const reconcileUpdate = {
             status: 'redeemed' as const,
             redeemedBy: previousLockerUid,
-            redeemedAt: new Date().toISOString(),
+            redeemedAt: prevOpData?.updatedAt || new Date().toISOString(),
+            operationId: previousOpId,
+            roleVersionAssigned: prevRoleData?.roleVersion,
           };
           if (transaction) {
             transaction.update(inviteRef, reconcileUpdate);
@@ -521,7 +533,7 @@ export async function acceptAdminInvitation(
         }
       }
 
-      // If previous locker did not receive the role or indeterminate, fail-closed security block
+      // If previous locker did not complete the operation or state is indeterminate, fail-closed security block
       throw new Error('Bloqueo de seguridad: La invitación quedó en estado de reserva indeterminado y requiere intervención administrativa.');
     }
 
@@ -536,11 +548,13 @@ export async function acceptAdminInvitation(
       throw new Error('El token de invitación no es válido.');
     }
 
+    const nowIso = new Date().toISOString();
+
     // Atomic reservation lock
     const lockUpdate = {
       status: 'redeeming' as const,
       lockedBy: callerUid,
-      lockedAt: new Date().toISOString(),
+      lockedAt: nowIso,
       operationId,
     };
 
@@ -548,6 +562,22 @@ export async function acceptAdminInvitation(
       transaction.update(inviteRef, lockUpdate);
     } else {
       await inviteRef.update(lockUpdate);
+    }
+
+    // Record initial operation state: reserved
+    const opRecord: import('./types').AdminInvitationOperation = {
+      operationId,
+      inviteId,
+      callerUid,
+      targetRole: currentInvite.targetRole,
+      status: 'reserved',
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    };
+    if (transaction) {
+      transaction.set(opRef, opRecord);
+    } else {
+      await opRef.set(opRecord);
     }
 
     return currentInvite;
@@ -568,9 +598,12 @@ export async function acceptAdminInvitation(
     };
   }
 
-  // Phase 2: Role provisioning with monotonic roleVersion, live adminRoleState and claim assignment
+  // Phase 2: Role provisioning with monotonic roleVersion, live adminRoleState, operation lifecycle and claim assignment
   const redeemedAt = new Date().toISOString();
   try {
+    // 2.1 Mark operation in_progress
+    await opRef.set({ status: 'in_progress', updatedAt: new Date().toISOString() }, { merge: true });
+
     const userRecord = await auth.getUser(callerUid);
     const currentClaims = userRecord.customClaims || {};
 
@@ -588,17 +621,21 @@ export async function acceptAdminInvitation(
       roleVersion: assignedRoleVersion,
     };
 
+    // 2.2 Assign claims and track claims_assigned
     await auth.setCustomUserClaims(callerUid, updatedClaims);
+    await opRef.set({ status: 'claims_assigned', updatedAt: new Date().toISOString() }, { merge: true });
 
-    // Write live authoritative role state in adminRoleState/{callerUid}
+    // 2.3 Write live authoritative role state in adminRoleState/{callerUid} with lastOperationId
     const roleStateDoc: AdminRoleStateRecord = {
       uid: callerUid,
       role: inviteData.targetRole,
       roleVersion: assignedRoleVersion,
       updatedAt: redeemedAt,
       updatedBy: 'invitation',
+      lastOperationId: operationId,
     };
     await roleStateRef.set(roleStateDoc);
+    await opRef.set({ status: 'role_confirmed', updatedAt: new Date().toISOString() }, { merge: true });
 
     // Invalidate refresh tokens to force fresh ID token with new roleVersion
     try {
@@ -642,6 +679,9 @@ export async function acceptAdminInvitation(
       validAfter: nowEpochSeconds,
     }, { merge: true });
 
+    // 2.4 Mark operation completed
+    await opRef.set({ status: 'completed', updatedAt: new Date().toISOString() }, { merge: true });
+
     await writeAuditLog(db, {
       action: 'invitation_redeemed',
       status: 'completed',
@@ -660,7 +700,20 @@ export async function acceptAdminInvitation(
       message: `¡Bienvenido! Se te ha asignado el rol [${inviteData.targetRole}].`,
     };
   } catch (err: any) {
-    // If provisioning failed, rollback reservation lock to pending so user can retry safely
+    // Record operation failure
+    try {
+      await opRef.set({
+        operationId,
+        inviteId,
+        callerUid,
+        targetRole: inviteData.targetRole,
+        status: 'failed',
+        failureCode: err.message || 'unknown_error',
+        updatedAt: new Date().toISOString(),
+      }, { merge: true });
+    } catch {}
+
+    // Rollback reservation lock to pending so user can retry safely
     try {
       const rollbackFields: Record<string, any> = {
         status: 'pending',
@@ -896,7 +949,6 @@ export async function setAdminUserStatus(
       },
     });
   } else {
-    // SAFE REACTIVATION SEQUENCE:
     // Step 1: Enable user in Firebase Auth FIRST to ensure Auth account is ready
     await auth.updateUser(targetUid, { disabled: false });
 
@@ -905,12 +957,23 @@ export async function setAdminUserStatus(
       await auth.revokeRefreshTokens(targetUid);
     } catch {}
 
-    // Step 3: Only after Auth succeeds, set accountAccess to active with validAfter epoch seconds
+    // Step 3: Retrieve updated UserRecord to read tokensValidAfterTime set by Firebase Auth
+    const updatedUser = await auth.getUser(targetUid);
+    let validAfterEpoch = nowEpochSeconds;
+    const metadataAny = updatedUser.metadata as any;
+    if (metadataAny && metadataAny.tokensValidAfterTime) {
+      const parsedTime = Math.floor(Date.parse(metadataAny.tokensValidAfterTime) / 1000);
+      if (!isNaN(parsedTime) && parsedTime > 0) {
+        validAfterEpoch = parsedTime;
+      }
+    }
+
+    // Step 4: Only after Auth succeeds and tokens are revoked, set accountAccess to active with validAfter epoch seconds
     const accessDoc: AccountAccessRecord = {
       uid: targetUid,
       status: 'active',
       updatedAt: nowIso,
-      validAfter: nowEpochSeconds,
+      validAfter: validAfterEpoch,
     };
     await db.collection('accountAccess').doc(targetUid).set(accessDoc);
 
@@ -940,7 +1003,7 @@ export async function setAdminUserStatus(
         before: { status: 'suspended', disabled: true },
         after: { status: 'active', disabled: false },
       },
-      metadata: { validAfter: nowEpochSeconds },
+      metadata: { validAfter: validAfterEpoch },
     });
   }
 }

@@ -227,7 +227,50 @@ async function runSuspensionAndAuditTests() {
   }
   assert('D.9 Sesión emitida antes de la reactivación (auth_time < validAfter) es rechazada', staleSessionBlocked);
 
-  // D.10: Sesión fresca emitida tras la reactivación (auth_time >= validAfter) es AUTORIZADA
+  // D.9B: Caso límite estricto: token emitido en el mismo segundo exacto (auth_time == validAfter) es RECHAZADO (se exige estrictamente auth_time > validAfter)
+  const boundarySessionToken = {
+    uid: reactivatedUid,
+    token: {
+      email: 'reactivated@vigorcore.com',
+      email_verified: true,
+      role: 'admin',
+      roleVersion: 1,
+      auth_time: reactivationEpoch, // Same exact second
+    },
+  };
+  let boundarySessionBlocked = false;
+  try {
+    const { requireAdminAuthorization } = await import('../functions/src/authGuard');
+    await requireAdminAuthorization(fakeFirestore, boundarySessionToken, 'users:list');
+  } catch (err: any) {
+    if (err.message.includes('Sesión invalidada') || err.message.includes('auth_time')) {
+      boundarySessionBlocked = true;
+    }
+  }
+  assert('D.9B Token en el mismo segundo exacto (auth_time == validAfter) es rechazado por comparación estricta >', boundarySessionBlocked);
+
+  // D.9C: Token con auth_time faltante o inválido con validAfter activo es RECHAZADO
+  const missingAuthTimeToken = {
+    uid: reactivatedUid,
+    token: {
+      email: 'reactivated@vigorcore.com',
+      email_verified: true,
+      role: 'admin',
+      roleVersion: 1,
+    },
+  };
+  let missingAuthTimeBlocked = false;
+  try {
+    const { requireAdminAuthorization } = await import('../functions/src/authGuard');
+    await requireAdminAuthorization(fakeFirestore, missingAuthTimeToken, 'users:list');
+  } catch (err: any) {
+    if (err.message.includes('Sesión invalidada') || err.message.includes('auth_time')) {
+      missingAuthTimeBlocked = true;
+    }
+  }
+  assert('D.9C Token sin auth_time con validAfter presente es rechazado por falta de prueba de frescura', missingAuthTimeBlocked);
+
+  // D.10: Sesión fresca emitida tras la reactivación (auth_time > validAfter) es AUTORIZADA
   const freshSessionToken = {
     uid: reactivatedUid,
     token: {
@@ -235,12 +278,12 @@ async function runSuspensionAndAuditTests() {
       email_verified: true,
       role: 'admin',
       roleVersion: 1,
-      auth_time: reactivationEpoch + 10, // Fresh login after reactivation
+      auth_time: reactivationEpoch + 10, // Fresh login strictly after reactivation
     },
   };
   const { requireAdminAuthorization: requireAdminAuthFresh } = await import('../functions/src/authGuard');
   const freshRes = await requireAdminAuthFresh(fakeFirestore, freshSessionToken, 'users:list');
-  assert('D.10 Sesión fresca re-autenticada (auth_time >= validAfter) es autorizada válidamente', freshRes.authoritativeRole === 'admin');
+  assert('D.10 Sesión fresca re-autenticada (auth_time > validAfter) es autorizada válidamente', freshRes.authoritativeRole === 'admin');
 
   console.log('\n--- SECCIÓN D.3: BLOQUEO HERMÉTICO DE ACTOR SUSPENDIDO EN TODOS LOS 8 ENDPOINTS ---');
 

@@ -8,7 +8,15 @@
 export type UserRole = 'athlete' | 'admin' | 'superadmin';
 export type FutureUserRole = UserRole | 'coach';
 
-export type AccountAccessStatus = 'active' | 'suspended' | 'pending_verification' | 'pending_invitation';
+export type AccountAccessStatus =
+  | 'active'
+  | 'suspended'
+  | 'pending'
+  | 'disabled'
+  | 'provisioning'
+  | 'partially_completed'
+  | 'pending_verification'
+  | 'pending_invitation';
 
 export interface AdminUserSummary {
   uid: string;
@@ -79,17 +87,41 @@ export interface AdminInvitation {
   roleVersionAssigned?: number; // Monotonic roleVersion applied
 }
 
+export type InvitationOperationStatus =
+  | 'reserved'
+  | 'in_progress'
+  | 'claims_assigned'
+  | 'role_confirmed'
+  | 'completed'
+  | 'failed';
+
+export interface AdminInvitationOperation {
+  operationId: string;
+  inviteId: string;
+  callerUid: string;
+  targetRole: 'athlete' | 'admin';
+  status: InvitationOperationStatus;
+  roleVersionAssigned?: number;
+  startedAt?: string; // ISO
+  createdAt?: string; // ISO
+  completedAt?: string; // ISO
+  updatedAt: string; // ISO
+  failureCode?: string;
+  failureMessage?: string;
+}
+
 export interface AdminRoleStateRecord {
   uid: string;
   role: UserRole;
   roleVersion: number;
   updatedAt: string; // ISO
   updatedBy: string; // Actor UID
+  lastOperationId?: string; // Last executed operationId (e.g. invitation redemption saga)
 }
 
 export interface AccountAccessRecord {
   uid: string;
-  status: 'active' | 'suspended';
+  status: AccountAccessStatus;
   updatedAt: string; // ISO
   suspendedAt?: string; // ISO
   suspendedBy?: string; // Actor UID

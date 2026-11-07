@@ -39,6 +39,7 @@ async function runInvitationsTests() {
     adminUserDirectory: {},
     accountAccess: {},
     adminRoleState: {},
+    adminInvitationOperations: {},
   };
 
   const fakeFirestore: any = {
@@ -439,8 +440,24 @@ async function runInvitationsTests() {
   memoryDb.adminInvitations[inv5.inviteId].lockedBy = 'ghost_user_1';
   memoryDb.adminInvitations[inv5.inviteId].lockedAt = new Date(Date.now() - 10 * 60 * 1000).toISOString(); // 10 min ago
 
-  // Simulamos que ghost_user_1 sí tiene el rol asignado en adminRoleState
-  memoryDb.adminRoleState['ghost_user_1'] = { uid: 'ghost_user_1', role: 'admin', roleVersion: 1 };
+  const ghostOpId = `op_redeem_${inv5.inviteId}_ghost_user_1`;
+  memoryDb.adminInvitations[inv5.inviteId].operationId = ghostOpId;
+  memoryDb.adminInvitationOperations[ghostOpId] = {
+    operationId: ghostOpId,
+    inviteId: inv5.inviteId,
+    callerUid: 'ghost_user_1',
+    targetRole: 'admin',
+    status: 'role_confirmed',
+    updatedAt: new Date().toISOString(),
+  };
+
+  // Simulamos que ghost_user_1 sí completó la operación y tiene lastOperationId coincidente
+  memoryDb.adminRoleState['ghost_user_1'] = {
+    uid: 'ghost_user_1',
+    role: 'admin',
+    roleVersion: 1,
+    lastOperationId: ghostOpId,
+  };
 
   fakeAuth.users['second_user_uid'] = {
     uid: 'second_user_uid',
@@ -468,6 +485,53 @@ async function runInvitationsTests() {
     }
   }
   assert('C.21 Lock estancado reconcilia invitación a redeemed por usuario previo y bloquea al segundo usuario', staleReconciledBlocked && memoryDb.adminInvitations[inv5.inviteId].status === 'redeemed' && memoryDb.adminInvitations[inv5.inviteId].redeemedBy === 'ghost_user_1');
+
+  // C.21B: Usuario previo ya tenía el rol ANTES de la invitación pero NO completó la operación (lastOperationId diferente)
+  const inv5B = await createAdminInvitation(
+    fakeFirestore,
+    'sa_actor_uid',
+    'superadmin',
+    'owner@vigorcore.com',
+    'stale_prior_role@vigorcore.com',
+    'athlete'
+  );
+  memoryDb.adminInvitations[inv5B.inviteId].status = 'redeeming';
+  memoryDb.adminInvitations[inv5B.inviteId].lockedBy = 'prior_athlete_uid';
+  memoryDb.adminInvitations[inv5B.inviteId].lockedAt = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+  // El usuario ya era athlete antes por una operación previa no relacionada
+  memoryDb.adminRoleState['prior_athlete_uid'] = {
+    uid: 'prior_athlete_uid',
+    role: 'athlete',
+    roleVersion: 1,
+    lastOperationId: 'op_old_other_thing',
+  };
+
+  fakeAuth.users['competitor_user_uid'] = {
+    uid: 'competitor_user_uid',
+    email: 'stale_prior_role@vigorcore.com',
+    emailVerified: true,
+    providerData: [{ providerId: 'password' }],
+    metadata: {},
+    customClaims: {},
+  };
+
+  let priorRoleIndeterminateBlocked = false;
+  try {
+    await acceptAdminInvitation(
+      fakeFirestore,
+      fakeAuth,
+      'competitor_user_uid',
+      'stale_prior_role@vigorcore.com',
+      true,
+      inv5B.inviteId,
+      inv5B.rawToken
+    );
+  } catch (err: any) {
+    if (err.message.includes('Bloqueo de seguridad: La invitación quedó en estado de reserva indeterminado')) {
+      priorRoleIndeterminateBlocked = true;
+    }
+  }
+  assert('C.21B Usuario previo con rol preexistente pero sin operación confirmada no se confunde con canje y activa bloqueo de seguridad', priorRoleIndeterminateBlocked);
 
   // C.22: Lock estancado (> 5 min) indeterminado (usuario previo NO tiene el rol) activa bloqueo de seguridad
   const inv6 = await createAdminInvitation(

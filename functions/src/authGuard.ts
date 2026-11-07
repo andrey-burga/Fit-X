@@ -118,12 +118,18 @@ export async function requireAdminAuthorization(
   }
 
   // 4. Session Freshness Validation (validAfter vs auth_time)
+  // Strict comparison: auth_time MUST be strictly greater than validAfter (>).
   // Both timestamps are integer Unix epoch seconds.
-  if (typeof accessData.validAfter === 'number' && typeof token.auth_time === 'number') {
-    if (token.auth_time < accessData.validAfter) {
+  if (typeof accessData.validAfter === 'number') {
+    if (typeof token.auth_time !== 'number') {
       throw new Error(
-        `Sesión invalidada: La sesión fue emitida antes de la última reactivación o revocación de seguridad ` +
-        `(auth_time: ${token.auth_time} < validAfter: ${accessData.validAfter}). Debe iniciar una nueva sesión.`
+        'Sesión invalidada: auth_time ausente o inválido en el token de autenticación. Debe iniciar sesión nuevamente.'
+      );
+    }
+    if (token.auth_time <= accessData.validAfter) {
+      throw new Error(
+        `Sesión invalidada: La sesión fue emitida antes o en el mismo instante de la última reactivación o revocación de seguridad ` +
+        `(auth_time: ${token.auth_time} <= validAfter: ${accessData.validAfter}). Debe iniciar una nueva sesión.`
       );
     }
   }

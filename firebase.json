@@ -3,6 +3,10 @@
     {
       "database": "ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c",
       "rules": "firestore.rules"
+    },
+    {
+      "database": "(default)",
+      "rules": "firestore.rules"
     }
   ],
   "functions": [

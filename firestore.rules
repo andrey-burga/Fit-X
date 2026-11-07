@@ -18,17 +18,27 @@ service cloud.firestore {
 
     function isAccountActive(userId) {
       return !exists(/databases/$(database)/documents/accountAccess/$(userId)) ||
-             (get(/databases/$(database)/documents/accountAccess/$(userId)).data.status != 'suspended' &&
+             (get(/databases/$(database)/documents/accountAccess/$(userId)).data.status == 'active' &&
               (!('validAfter' in get(/databases/$(database)/documents/accountAccess/$(userId)).data) ||
                (request.auth.token.auth_time is int &&
-                request.auth.token.auth_time >= get(/databases/$(database)/documents/accountAccess/$(userId)).data.validAfter)));
+                request.auth.token.auth_time > get(/databases/$(database)/documents/accountAccess/$(userId)).data.validAfter)));
+    }
+
+    function isAdministrativeAccountActive(userId) {
+      return isSignedIn() &&
+             request.auth.uid == userId &&
+             exists(/databases/$(database)/documents/accountAccess/$(userId)) &&
+             get(/databases/$(database)/documents/accountAccess/$(userId)).data.status == 'active' &&
+             (!('validAfter' in get(/databases/$(database)/documents/accountAccess/$(userId)).data) ||
+              (request.auth.token.auth_time is int &&
+               request.auth.token.auth_time > get(/databases/$(database)/documents/accountAccess/$(userId)).data.validAfter));
     }
 
     function isAuthoritativeRole(role) {
       return isSignedIn() &&
              request.auth.token.role == role &&
              (request.auth.token.roleVersion is int) &&
-             isAccountActive(request.auth.uid) &&
+             isAdministrativeAccountActive(request.auth.uid) &&
              exists(/databases/$(database)/documents/adminRoleState/$(request.auth.uid)) &&
              get(/databases/$(database)/documents/adminRoleState/$(request.auth.uid)).data.role == role &&
              get(/databases/$(database)/documents/adminRoleState/$(request.auth.uid)).data.roleVersion == request.auth.token.roleVersion;
@@ -333,6 +343,12 @@ service cloud.firestore {
 
     // Trazabilidad y Auditoría Administrativa Append-Only
     match /adminAuditLogs/{eventId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    // Operaciones de Invitaciones Administrativas (Control de Concurrencia y Sagas)
+    match /adminInvitationOperations/{operationId} {
       allow read: if isAdmin();
       allow write: if false;
     }
