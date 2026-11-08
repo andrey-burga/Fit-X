@@ -4,12 +4,12 @@ import { loadEnvConfig } from '../src/config/env.js';
 
 async function testFirestoreRead() {
   console.log('================================================================');
-  console.log(' PRUEBA 9: AUDITORÍA DE LECTURA FIRESTORE Y ADC (READ-ONLY)     ');
+  console.log(' AUDITORÍA FIRESTORE READ-ONLY CON APPLICATION DEFAULT CREDENTIALS');
   console.log('================================================================');
 
   const env = loadEnvConfig();
-  const projectId = env.GCP_PROJECT_ID;
-  const databaseId = env.FIRESTORE_DATABASE_ID;
+  const projectId = env.GCP_PROJECT_ID || 'gen-lang-client-0041212770';
+  const databaseId = env.FIRESTORE_DATABASE_ID || 'ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c';
   const docPath = process.env.FIRESTORE_AUDIT_DOC_PATH || '_system_/audit_read_probe';
 
   console.log(`- Proyecto GCP Objetivo:   ${projectId}`);
@@ -17,8 +17,11 @@ async function testFirestoreRead() {
   console.log(`- Documento de Sondeo:     ${docPath}`);
   console.log(`- Modo de Operación:       STRICT READ-ONLY (Cero Escrituras / Cero Mutaciones)`);
 
-  // Inspect Application Default Credentials (ADC) source
-  const auth = new GoogleAuth();
+  // Inspect Application Default Credentials (ADC) without requiring a JSON file
+  const auth = new GoogleAuth({
+    scopes: ['https://www.googleapis.com/auth/cloud-platform', 'https://www.googleapis.com/auth/datastore'],
+  });
+
   let adcType = 'UNKNOWN';
   let authenticatedIdentity = 'No disponible';
 
@@ -27,11 +30,11 @@ async function testFirestoreRead() {
     adcType = client.constructor.name;
 
     if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
-      console.log(`- Fuente ADC Detectada:    Archivo GOOGLE_APPLICATION_CREDENTIALS (${process.env.GOOGLE_APPLICATION_CREDENTIALS})`);
+      console.log(`- Fuente ADC Detectada:    Archivo GOOGLE_APPLICATION_CREDENTIALS`);
     } else if (adcType === 'UserRefreshClient' || adcType === 'OAuth2Client') {
       console.log(`- Fuente ADC Detectada:    gcloud auth application-default login (Credencial de Usuario OAuth)`);
     } else if (adcType === 'Compute') {
-      console.log(`- Fuente ADC Detectada:    Servidor de Metadatos / Compute Engine / Cloud Run (Entorno Local Containerizado)`);
+      console.log(`- Fuente ADC Detectada:    Servidor de Metadatos / Compute Engine / Cloud Run`);
     } else {
       console.log(`- Fuente ADC Detectada:    ${adcType}`);
     }
@@ -39,12 +42,12 @@ async function testFirestoreRead() {
     if ('email' in client && (client as any).email) {
       authenticatedIdentity = (client as any).email;
     } else {
-      const defaultProj = await auth.getProjectId().catch(() => 'no-default-project');
-      authenticatedIdentity = `Principal asociado a proyecto default [${defaultProj}] (${adcType})`;
+      const defaultProj = await auth.getProjectId().catch(() => 'desconocido');
+      authenticatedIdentity = `Principal asociado al entorno [proyecto default: ${defaultProj}] (${adcType})`;
     }
     console.log(`- Identidad Autenticada:   ${authenticatedIdentity}`);
   } catch (authErr: any) {
-    console.log(`- Fuente ADC Detectada:    NINGUNA (Error al resolver credenciales: ${authErr.message})`);
+    console.log(`- Fuente ADC Detectada:    ERROR AL RESOLVER ADC (${authErr.message})`);
   }
 
   let firestore: Firestore;
@@ -65,48 +68,65 @@ async function testFirestoreRead() {
     const durationMs = (performance.now() - startTime).toFixed(2);
 
     console.log('\n[RESULTADO DEL SONDEO DE LECTURA]:');
-    console.log(` - Estado de Autorización:    AUTORIZADO (Lectura concedida por IAM y Security Rules)`);
-    console.log(` - Existencia del Documento:  ${snapshot.exists ? 'DOCUMENTO EXISTE' : 'NO EXISTE (404 pero lectura fue autorizada)'}`);
+    console.log(` - Estado de Autorización:    AUTORIZADO (Lectura concedida mediante IAM de Google Cloud)`);
+    console.log(` - Existencia del Documento:  ${snapshot.exists ? 'DOCUMENTO EXISTE' : 'NO EXISTE (404 pero lectura fue autorizada por IAM)'}`);
     console.log(` - Latencia de Respuesta:     ${durationMs} ms`);
-    console.log(` - Diagnóstico de Facturación: DATA PLANE ACTIVO (Lecturas gRPC permitidas a pesar de estado de facturación)`);
+    console.log(` - Diagnóstico de Conexión:   DATA PLANE ACTIVO (Llamada gRPC completada con éxito)`);
     console.log('\nVEREDICTO: La base de datos nombrada responde a lecturas directas del SDK sin requerir exportación.');
   } catch (err: any) {
     const durationMs = (performance.now() - startTime).toFixed(2);
     const code = err.code ?? 'UNKNOWN';
     const message = err.message ?? '';
+    const details = err.details ?? '';
+    const metadata = err.metadata ? err.metadata.getMap() : {};
 
     console.log('\n[RESULTADO DEL SONDEO DE LECTURA]:');
     console.log(` - Estado de Autorización:    DENEGADO / ERROR`);
     console.log(` - Código de Error gRPC:      ${code}`);
+    console.log(` - Detalles gRPC:             ${details}`);
     console.log(` - Latencia de Respuesta:     ${durationMs} ms`);
+    if (metadata['x-debug-tracking-id']) {
+      console.log(` - Tracking ID de Google:     ${metadata['x-debug-tracking-id']}`);
+    }
 
-    // Distinguish all 7 error categories strictly
+    // Distinguish classifications accurately without jumping to unproven conclusions
     let diagnosis = 'ERROR_NO_CLASIFICADO';
-    let explanation = '';
+    let technicalAnalysis = '';
 
-    if (message.toLowerCase().includes('billing') || message.includes('Billing') || message.includes('account has been closed')) {
+    const lowerMsg = message.toLowerCase();
+    const lowerDetails = typeof details === 'string' ? details.toLowerCase() : '';
+
+    if (lowerMsg.includes('billing') || lowerDetails.includes('billing') || lowerMsg.includes('account has been closed')) {
       diagnosis = 'BILLING_DISABLED';
-      explanation = 'La API de Cloud Firestore bloquea el tráfico de lectura debido a facturación deshabilitada o cuenta de facturación cerrada.';
-    } else if (message.includes('API has not been used') || message.includes('has not been enabled')) {
+      technicalAnalysis = 'La respuesta de Google Cloud contiene evidencia explícita de bloqueo por facturación deshabilitada o cuenta cerrada.';
+    } else if (lowerMsg.includes('api has not been used') || lowerMsg.includes('has not been enabled')) {
       diagnosis = 'API_DISABLED';
-      explanation = 'La API de Cloud Firestore / Cloud Datastore no está habilitada en el proyecto destino.';
-    } else if (code === 5 || code === 'NOT_FOUND' || message.includes('database was not found')) {
+      technicalAnalysis = 'La API de Cloud Firestore / Cloud Datastore no se encuentra habilitada en el proyecto de destino.';
+    } else if (code === 5 || code === 'NOT_FOUND' || lowerMsg.includes('database was not found') || lowerDetails.includes('not found')) {
       diagnosis = 'DATABASE_NOT_FOUND';
-      explanation = 'La base de datos nombrada ai-studio-vigorcore-... no existe o el Project ID es incorrecto.';
+      technicalAnalysis = 'La base de datos nombrada no existe en el proyecto especificado o el Project ID es incorrecto.';
     } else if (code === 16 || code === 'UNAUTHENTICATED') {
       diagnosis = 'UNAUTHENTICATED';
-      explanation = 'No se proporcionaron credenciales válidas en ADC ni Service Account Key.';
+      technicalAnalysis = 'No se proporcionaron credenciales válidas en Application Default Credentials (ADC).';
     } else if (code === 7 || code === 'PERMISSION_DENIED') {
       diagnosis = 'PERMISSION_DENIED';
-      explanation = 'La identidad autenticada no posee el rol IAM roles/datastore.viewer (permiso datastore.entities.get) sobre el proyecto gen-lang-client-0041212770.';
+      technicalAnalysis = 'El servidor gRPC rechazó la petición por falta de autorización. ' +
+        'Causas posibles bajo investigación: ' +
+        '(a) La identidad ADC que emite la llamada no coincide con la identidad autorizada en IAM del proyecto destino; ' +
+        '(b) Desajuste de quota_project_id en ADC frente al proyecto del recurso; ' +
+        '(c) Restricción de organización, VPC Service Controls o política de seguridad; ' +
+        '(d) Ausencia de permiso datastore.entities.get para la identidad efectiva.';
     } else if (code === 14 || code === 'UNAVAILABLE' || code === 4 || code === 'DEADLINE_EXCEEDED') {
       diagnosis = 'NETWORK_OR_SERVICE_UNAVAILABLE';
-      explanation = 'Error transitorio de red o servicio de Google Cloud temporalmente inalcanzable.';
+      technicalAnalysis = 'Error de conectividad de red o indisponibilidad temporal del endpoint gRPC de Google Cloud.';
+    } else {
+      diagnosis = 'ERROR_NO_CLASIFICADO';
+      technicalAnalysis = `Error gRPC no catalogado: ${message}`;
     }
 
     console.log(` - Clasificación Diagnóstica: [${diagnosis}]`);
-    console.log(` - Causa Técnica:             ${explanation}`);
-    console.log(` - Detalle Seguro:            ${message.substring(0, 160)}...`);
+    console.log(` - Análisis Técnico:          ${technicalAnalysis}`);
+    console.log(` - Mensaje Sanitizado:        ${message.substring(0, 160)}...`);
   }
 }
 

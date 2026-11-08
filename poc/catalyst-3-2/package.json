@@ -14,10 +14,12 @@
     "test-firestore-read": "tsx scripts/test-firestore-read.ts"
   },
   "dependencies": {
+    "@google-cloud/firestore": "^9.4.0",
     "@zcatalyst/auth": "1.0.0",
     "@zcatalyst/nosql": "1.0.0",
     "dotenv": "^16.4.7",
-    "express": "^4.21.2"
+    "express": "^4.21.2",
+    "google-auth-library": "^11.3.3"
   },
   "devDependencies": {
     "@types/express": "^4.17.21",
