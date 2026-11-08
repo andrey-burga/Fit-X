@@ -1,0 +1,31 @@
+{
+  "name": "vigorcore-catalyst-poc",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc --noEmit",
+    "test": "vitest run",
+    "check-sdk": "tsx scripts/check-sdk.ts",
+    "verify-env": "tsx scripts/verify-env.ts",
+    "test-firestore-read": "tsx scripts/test-firestore-read.ts"
+  },
+  "dependencies": {
+    "@zcatalyst/auth": "1.0.0",
+    "@zcatalyst/nosql": "1.0.0",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.13.0",
+    "@types/supertest": "^6.0.2",
+    "supertest": "^7.0.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^3.0.5"
+  }
+}
