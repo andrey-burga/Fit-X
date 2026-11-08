@@ -334,4 +334,66 @@ export class TestRepository {
       lastUpdated: Date.now(),
     });
   }
+
+  /**
+   * 8. Fencing Token Protection on Business Resource
+   * In Catalyst NoSQL, because cross-document transactions do not exist,
+   * the target business resource must store lastFencingToken and enforce:
+   * (attribute_not_exists(lastFencingToken)) OR (lastFencingToken < fencingToken)
+   */
+  async updateBusinessResourceWithFencingToken(
+    resourceId: string,
+    fencingToken: number,
+    mutationData: Record<string, TNoSQLValues>
+  ): Promise<{ success: boolean; error?: string }> {
+    const pk = `POC#3.2#RESOURCE#${resourceId}`;
+    const sk = 'DATA';
+
+    const current = await this.fetchFictionalItem(pk, sk);
+
+    const condition: INoSQLCondition = {
+      group_operator: NoSQLEnum.NoSQLConditionGroupOperator.OR,
+      group: [
+        {
+          function: {
+            function_name: 'attribute_exists',
+            args: [{ attribute_path: ['lastFencingToken'] }],
+          },
+          negate: true,
+        },
+        {
+          attribute: ['lastFencingToken'],
+          operator: NoSQLEnum.NoSQLOperator.LESS_THAN,
+          value: { N: String(fencingToken) },
+        },
+      ],
+    };
+
+    const updates = Object.entries(mutationData).map(([attribute, val]) => ({
+      attribute,
+      value: val as string | number | boolean,
+    }));
+    updates.push({ attribute: 'lastFencingToken', value: fencingToken });
+
+    if (!current.item) {
+      const insertRes = await this.insertFictionalItem(
+        pk,
+        sk,
+        {
+          ...mutationData,
+          lastFencingToken: fencingToken,
+        },
+        condition
+      );
+      return insertRes;
+    }
+
+    const updateRes = await this.updateFictionalItemConditional(
+      pk,
+      sk,
+      updates,
+      condition
+    );
+    return updateRes;
+  }
 }

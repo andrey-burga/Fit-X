@@ -65,4 +65,42 @@ describe('Prueba 4 — Concurrencia Real, Lease Locks y Fencing Tokens', () => {
     const validRelease = await repository.releaseLeaseLock(resourceId, worker1, token);
     expect(validRelease.success).toBe(true);
   });
+
+  it('debe rechazar escrituras en el recurso de negocio si un worker demorado intenta escribir con un fencing token antiguo (stale lease)', async () => {
+    const resourceId = 'PLAN_WORKOUT_001';
+
+    // 1. Proceso A consigue el token (fencingToken = 100 simulado)
+    const tokenA = 100;
+    const resAInit = await repository.updateBusinessResourceWithFencingToken(resourceId, tokenA, {
+      exerciseCount: 5,
+      versionTag: 'created_by_worker_A',
+    });
+    expect(resAInit.success).toBe(true);
+
+    // 2. Proceso B consigue un token posterior tras la expiración del lease de A (tokenB = 101)
+    const tokenB = 101;
+
+    // 3. B completa la operación en el recurso de negocio con token 101
+    const resB = await repository.updateBusinessResourceWithFencingToken(resourceId, tokenB, {
+      exerciseCount: 8,
+      versionTag: 'updated_by_worker_B',
+    });
+    expect(resB.success).toBe(true);
+
+    // 4. A despierta tras un retraso o GC pause y trata de modificar el recurso usando su antiguo token 100
+    const resAStale = await repository.updateBusinessResourceWithFencingToken(resourceId, tokenA, {
+      exerciseCount: 1, // Modificación corrupta que pisaría el trabajo de B
+      versionTag: 'stale_write_attempt',
+    });
+
+    // 5. El recurso rechaza a A: La condición lastFencingToken < 100 es falsa (101 < 100 = false)
+    expect(resAStale.success).toBe(false);
+    expect(resAStale.error).toContain('CONDITIONAL_CHECK_FAILED');
+
+    // Comprobación final: El estado del recurso se mantiene íntegro con los datos válidos de B
+    const finalResource = await repository.fetchFictionalItem(`POC#3.2#RESOURCE#${resourceId}`, 'DATA');
+    expect(finalResource.item?.exerciseCount).toBe(8);
+    expect(finalResource.item?.lastFencingToken).toBe(101);
+    expect(finalResource.item?.versionTag).toBe('updated_by_worker_B');
+  });
 });
