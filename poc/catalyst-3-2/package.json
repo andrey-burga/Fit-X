@@ -11,7 +11,8 @@
     "test": "vitest run",
     "check-sdk": "tsx scripts/check-sdk.ts",
     "verify-env": "tsx scripts/verify-env.ts",
-    "test-firestore-read": "tsx scripts/test-firestore-read.ts"
+    "test-firestore-read": "tsx scripts/test-firestore-read.ts",
+    "test-firestore-read:ps1": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-firestore-read.ps1"
   },
   "dependencies": {
     "@google-cloud/firestore": "^9.4.0",
