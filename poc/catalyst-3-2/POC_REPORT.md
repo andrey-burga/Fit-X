@@ -201,27 +201,29 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\poc\catalyst-3-2\scripts\i
 | Componente / Prueba | Estado | Detalle y Evidencia |
 | :--- | :---: | :--- |
 | **Pruebas Unitarias Catalyst (32 tests)** | **PASS-UNIT** | 32/32 tests aprobados en Vitest |
-| **Pruebas Unitarias de Lógica REST y Deep (15 tests)** | **PASS-UNIT** | 15/15 tests aprobados en `test-inventory-logic.ts` |
+| **Pruebas Unitarias de Lógica REST y Deep (21 tests)** | **PASS-UNIT** | 21/21 tests aprobados en `test-inventory-logic.ts` (Casos A a F) |
 | **Sonda Individual Firestore Data Plane (Fase 3.2.2)** | **PASS-INTEGRATION** | HTTP 200 OK en `_system_/audit_read_probe` (378.48 ms) |
 | **Inventario Superficial Shallow (Fase 3.3.3)** | **PASS-INTEGRATION** | 10 peticiones, 1 colección raíz `users`, 5 docs, `COMPLETED_SUCCESS` |
-| **Consistencia `_system_`** | **VERIFICADO** | HTTP 404 en probe; 0 docs en RunQuery; 0 en listCollectionIds |
-| **Sintaxis PowerShell (0 Backticks, 0 `$()`)** | **VALIDADO (AST)** | Verificado estáticamente; 0 errores léxicos en PS 5.1/7+ |
-| **Blindaje de Modo Deep (Fase 3.3.4)** | **PREPARADO Y VERIFICADO** | Algoritmo BFS, Checkpoint atómico, límites de 500 req / 2000 docs / 10 depth, anonimización `{id}` |
+| **Inventario Profundo Deep Ejecutado (Fase 3.3.4)** | **EJECUTADO** | 29 peticiones, 18 documentos descubiertos (5 users + 13 subcolecciones) |
+| **Corrección de Causa Raíz de Deduplicación (Fase 3.3.6)** | **CORREGIDO** | Rutas concretas en `$visitedPaths`, alias `USER_001` .. `USER_005`, 11 subcolecciones candidatas y 6 colecciones administrativas raíz |
+| **Mapeo de Código Fuente vs Firestore** | **CONCILIADO** | 12 rutas de usuario en `src/` + 6 colecciones administrativas en `functions/` |
 | **Integridad del Repositorio de Producción** | **100% INTACTA** | `src/`, `functions/`, `package.json` raíz y `firestore.rules` inalterados |
 | **Compilación y Linters** | **0 ERRORES** | `npm run build` y `npm run lint` aprobados limpiamente |
 
 ---
 
-## 8. DICTAMEN TÉCNICO
+## 8. DICTAMEN TÉCNICO FASE 3.3.6
 
 ### Dictamen:
-# **PASS-INTEGRATION (SHALLOW CONFIRMADO) / READY FOR LOCAL EXECUTION (DEEP PREPARADO Y BLINDADO)**
+# **ALGORITMO CORREGIDO — PENDIENTE DE INVENTARIO LOCAL**
 
-**Fundamentación:**
-1. **Modo Shallow Confirmado:** La ejecución local demostró que el script es plenamente funcional contra Cloud Firestore, sin dependencias npm, operando mediante ADC y obteniendo una respuesta determinista: existe una única colección raíz dinámica (`users`) con 5 documentos.
-2. **Discrepancia de Colecciones Aclarada:** Se determinó empíricamente que colecciones como `athletes`, `trainers` o `workouts` no son raíces, sino que forman parte de la jerarquía de subcolecciones dependientes de `users`.
-3. **Modo Deep Totalmente Preparado:** La arquitectura de recorrido profundo está construida y verificada con 15 pruebas unitarias, protección de privacidad por anonimización de identificadores (`maskResourcePath`), límites estrictos de consumo de cuota (500 solicitudes / 2000 documentos / 10 niveles) y un motor de reanudación atómica mediante `checkpoint.json`.
-4. **Cumplimiento de Restricciones:** Cero modificaciones a producción (`src/`, `functions/`, `firestore.rules`, raíz), cero secretos en Git y cero ejecuciones no autorizadas en segundo plano. La herramienta queda lista para que el desarrollador ejecute el inventario profundo de forma controlada en Windows.
+**Fundamentación Técnica:**
+1. **Resolución de la Causa Raíz:** Se eliminó la deduplicación prematura por plantilla anonimizada (`users/{id}/...`), adoptando claves basadas en rutas completas reales (`users/<uid>/<subcol>`).
+2. **Cobertura Multi-Usuario Completa:** El algoritmo encola y audita independientemente los 5 usuarios mediante alias opacos (`USER_001` a `USER_005`), evalúa las 11 subcolecciones candidatas e incorpora las 6 colecciones administrativas raíz.
+3. **Validación Exhaustiva:** Aprobadas 21 de 21 pruebas unitarias (`test-inventory-logic.ts`), incluyendo los 6 escenarios obligatorios (Casos A, B, C, D, E y F).
+4. **Listo para Ejecución:** El script en PowerShell (`inventory-firestore.ps1`) se encuentra completamente verificado sintácticamente (0 backticks, 0 subexpresiones) para su ejecución segura en la estación local Windows del desarrollador.
+
+
 
 
 

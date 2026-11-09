@@ -364,3 +364,198 @@ export function checkDeepLimits(
   return { limitReached: false };
 }
 
+export const CANDIDATE_SUBCOLLECTIONS = [
+  'biometrics',
+  'groceries',
+  'mealLogs',
+  'notifications',
+  'preferences',
+  'workoutSessions',
+  'executedWorkouts',
+  'cardioSessions',
+  'recipes',
+  'mealPlans',
+  'workoutRoutines',
+] as const;
+
+export type CandidateSubcollection = typeof CANDIDATE_SUBCOLLECTIONS[number];
+
+export const ADMINISTRATIVE_COLLECTIONS = [
+  'adminUserDirectory',
+  'adminRoleState',
+  'adminInvitations',
+  'accountAccess',
+  'adminAuditLogs',
+  'adminInvitationOperations',
+] as const;
+
+export type AdministrativeCollection = typeof ADMINISTRATIVE_COLLECTIONS[number];
+
+/**
+ * Registro de alias determinista para usuarios:
+ * Mapea UIDs reales o resource names completos a seudónimos opacos (USER_001, USER_002, ...).
+ * Evita imprimir o persistir UIDs en reportes Markdown o consola.
+ */
+export class UserAliasRegistry {
+  private uidToAlias = new Map<string, string>();
+  private aliasToUid = new Map<string, string>();
+
+  /**
+   * Registra un usuario y le asigna un alias determinista USER_XXX.
+   * Si ya existe, retorna el alias existente.
+   */
+  public register(userResourceNameOrUid: string): string {
+    const uid = this.extractUid(userResourceNameOrUid);
+    const existing = this.uidToAlias.get(uid);
+    if (existing) {
+      return existing;
+    }
+
+    const index = this.uidToAlias.size + 1;
+    const alias = `USER_${String(index).padStart(3, '0')}`;
+    this.uidToAlias.set(uid, alias);
+    this.aliasToUid.set(alias, uid);
+    return alias;
+  }
+
+  public getAlias(userResourceNameOrUid: string): string | undefined {
+    const uid = this.extractUid(userResourceNameOrUid);
+    return this.uidToAlias.get(uid);
+  }
+
+  public getUid(alias: string): string | undefined {
+    return this.aliasToUid.get(alias);
+  }
+
+  public getAllRegistered(): Array<{ uid: string; alias: string }> {
+    const list: Array<{ uid: string; alias: string }> = [];
+    for (const [uid, alias] of this.uidToAlias.entries()) {
+      list.push({ uid, alias });
+    }
+    return list;
+  }
+
+  private extractUid(resourceOrUid: string): string {
+    if (!resourceOrUid) return '';
+    const match = resourceOrUid.match(/\/documents\/users\/([^/]+)$/);
+    if (match) return match[1];
+    const slashIndex = resourceOrUid.lastIndexOf('/');
+    return slashIndex !== -1 ? resourceOrUid.substring(slashIndex + 1) : resourceOrUid;
+  }
+}
+
+/**
+ * Enmascara una ruta concreta sustituyendo el UID del usuario por su alias y los IDs de documentos por {id}.
+ * Ejemplo:
+ *   'projects/.../documents/users/usr_ABC123/workouts/w_987' -> 'users/USER_001/workouts/{id}'
+ */
+export function maskConcretePathWithAlias(concretePath: string, registry: UserAliasRegistry): string {
+  if (!concretePath) return '';
+
+  const docSegmentIndex = concretePath.indexOf('/documents/');
+  const relPath = docSegmentIndex !== -1 ? concretePath.substring(docSegmentIndex + '/documents/'.length) : concretePath;
+
+  const parts = relPath.split('/').filter(Boolean);
+  if (parts.length === 0) return '';
+
+  if (parts[0] === 'users' && parts.length >= 2) {
+    const uid = parts[1];
+    const alias = registry.getAlias(uid) || 'USER_UNKNOWN';
+    const remaining = parts.slice(2);
+
+    const maskedRemaining: string[] = [];
+    for (let i = 0; i < remaining.length; i++) {
+      if (i % 2 === 0) {
+        // Nombre de subcolección (ej. 'biometrics', 'mealLogs')
+        maskedRemaining.push(remaining[i]);
+      } else {
+        // Document ID hijo
+        maskedRemaining.push('{id}');
+      }
+    }
+
+    return ['users', alias, ...maskedRemaining].join('/');
+  }
+
+  return maskResourcePath(concretePath);
+}
+
+export interface ConcreteDeepQueueItem {
+  collectionId: string;
+  parentResourceUrl: string;
+  concretePath: string; // Ruta real y concreta del padre (ej: 'users/uid1/biometrics')
+  depth: number;
+  cursor?: string;
+  userAlias?: string;
+}
+
+/**
+ * Motor de Cola BFS para Recorrido Profundo con Deduplicación por Ruta Concreta:
+ * Resuelve la causa raíz de la Fase 3.3.5 al garantizar que 'users/UID1/biometrics'
+ * y 'users/UID2/biometrics' se traten como instancias completamente separadas.
+ */
+export class BfsQueueEngine {
+  private queue: ConcreteDeepQueueItem[] = [];
+  private visitedConcretePaths = new Set<string>();
+  private completedConcretePaths = new Set<string>();
+
+  constructor(initialItems: ConcreteDeepQueueItem[] = []) {
+    for (const item of initialItems) {
+      this.enqueue(item);
+    }
+  }
+
+  /**
+   * Encola una subcolección utilizando su RUTA CONCRETA (nunca la plantilla anonimizada).
+   * Retorna true si fue encolada, o false si esa instancia concreta ya fue visitada.
+   */
+  public enqueue(item: ConcreteDeepQueueItem): boolean {
+    const concreteKey = item.concretePath.trim();
+    if (this.visitedConcretePaths.has(concreteKey)) {
+      return false; // Ya encolada previamente
+    }
+    this.visitedConcretePaths.add(concreteKey);
+    this.queue.push(item);
+    return true;
+  }
+
+  public dequeue(): ConcreteDeepQueueItem | undefined {
+    return this.queue.shift();
+  }
+
+  public get pendingCount(): number {
+    return this.queue.length;
+  }
+
+  public isVisited(concretePath: string): boolean {
+    return this.visitedConcretePaths.has(concretePath.trim());
+  }
+
+  public markCompleted(concretePath: string): void {
+    this.completedConcretePaths.add(concretePath.trim());
+  }
+
+  public isCompleted(concretePath: string): boolean {
+    return this.completedConcretePaths.has(concretePath.trim());
+  }
+
+  public getSnapshotQueue(): ConcreteDeepQueueItem[] {
+    return [...this.queue];
+  }
+
+  public getVisitedPaths(): string[] {
+    return Array.from(this.visitedConcretePaths);
+  }
+
+  public getCompletedPaths(): string[] {
+    return Array.from(this.completedConcretePaths);
+  }
+}
+
+export interface UserSubcollectionEntry {
+  count: number | null;
+  status: 'DISCOVERED' | 'CHECKED_EMPTY' | 'NOT_VERIFIED' | 'FAILED';
+  hasMore?: boolean;
+}
+
+export type UserSubcollectionMatrix = Record<string, Record<CandidateSubcollection, UserSubcollectionEntry>>;

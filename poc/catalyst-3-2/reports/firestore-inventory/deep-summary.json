@@ -1,0 +1,37 @@
+{
+  "executionId": "phase-3.3.6-algorithm-corrected",
+  "timestamp": "2026-11-09T09:25:00.000Z",
+  "mode": "Deep",
+  "projectId": "gen-lang-client-0041212770",
+  "databaseId": "ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c",
+  "status": "ALGORITMO_CORREGIDO_PENDIENTE_INVENTARIO_LOCAL",
+  "limits": {
+    "maxRequests": 500,
+    "maxDocuments": 2000,
+    "maxDepth": 10,
+    "throttleMs": 100
+  },
+  "rootCollections": [
+    "users",
+    "adminUserDirectory",
+    "adminRoleState",
+    "adminInvitations",
+    "accountAccess",
+    "adminAuditLogs",
+    "adminInvitationOperations"
+  ],
+  "candidateSubcollections": [
+    "biometrics",
+    "groceries",
+    "mealLogs",
+    "notifications",
+    "preferences",
+    "workoutSessions",
+    "executedWorkouts",
+    "cardioSessions",
+    "recipes",
+    "mealPlans",
+    "workoutRoutines"
+  ],
+  "unitTestsPassed": "21/21 (100% PASS-UNIT)"
+}

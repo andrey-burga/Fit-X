@@ -1,0 +1,39 @@
+{
+  "mode": "Deep",
+  "rootTree": {
+    "users": {
+      "type": "ROOT_COLLECTION",
+      "expectedSubcollections": [
+        "biometrics",
+        "groceries",
+        "mealLogs",
+        "notifications",
+        "preferences",
+        "workoutSessions",
+        "executedWorkouts",
+        "cardioSessions",
+        "recipes",
+        "mealPlans",
+        "workoutRoutines"
+      ]
+    },
+    "adminUserDirectory": {
+      "type": "ROOT_ADMIN_COLLECTION"
+    },
+    "adminRoleState": {
+      "type": "ROOT_ADMIN_COLLECTION"
+    },
+    "adminInvitations": {
+      "type": "ROOT_ADMIN_COLLECTION"
+    },
+    "accountAccess": {
+      "type": "ROOT_ADMIN_COLLECTION"
+    },
+    "adminAuditLogs": {
+      "type": "ROOT_ADMIN_COLLECTION"
+    },
+    "adminInvitationOperations": {
+      "type": "ROOT_ADMIN_COLLECTION"
+    }
+  }
+}

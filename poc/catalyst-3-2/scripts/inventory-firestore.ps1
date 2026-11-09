@@ -101,6 +101,7 @@ $deepCollectionsPath = Join-Path $resolvedOutputDir 'deep-collections-tree.json'
 $deepCountsPath      = Join-Path $resolvedOutputDir 'deep-document-counts.json'
 $deepErrorsPath      = Join-Path $resolvedOutputDir 'deep-errors.json'
 $deepReportPath      = Join-Path $resolvedOutputDir 'deep-inventory-report.md'
+$deepValidationPath  = Join-Path $resolvedOutputDir 'deep-validation-3.3.6.md'
 $deepCheckpointPath  = Join-Path $resolvedOutputDir 'checkpoint.json'
 
 # Archivado preventivo de reportes previos
@@ -768,13 +769,40 @@ if ($isShallow) {
     Write-Host '[OK] Reporte Shallow generado en: ' -NoNewline
     Write-Host $reportPath -ForegroundColor Green
 } else {
-    # MODO DEEP: RECORRIDO RECURSIVO CON LIMITES DE SEGURIDAD Y CHECKPOINTS
-    Write-Host 'Iniciando preparacion del recorrido profundo recursivo...' -ForegroundColor Cyan
+    # MODO DEEP: RECORRIDO RECURSIVO CON LIMITES DE SEGURIDAD Y CHECKPOINTS (FASE 3.3.6)
+    Write-Host 'Iniciando preparacion del recorrido profundo recursivo multi-usuario...' -ForegroundColor Cyan
+
+    $candidateSubcollections = @(
+        'biometrics',
+        'groceries',
+        'mealLogs',
+        'notifications',
+        'preferences',
+        'workoutSessions',
+        'executedWorkouts',
+        'cardioSessions',
+        'recipes',
+        'mealPlans',
+        'workoutRoutines'
+    )
+
+    $administrativeCollections = @(
+        'adminUserDirectory',
+        'adminRoleState',
+        'adminInvitations',
+        'accountAccess',
+        'adminAuditLogs',
+        'adminInvitationOperations'
+    )
 
     $deepQueue = [System.Collections.Generic.Queue[object]]::new()
     $completedCollections = [System.Collections.Generic.HashSet[string]]::new()
     $completedDocuments = [System.Collections.Generic.HashSet[string]]::new()
     $visitedPaths = [System.Collections.Generic.HashSet[string]]::new()
+
+    $userAliasMap = [ordered]@{}
+    $userMatrix = [ordered]@{}
+    $adminMatrix = [ordered]@{}
 
     $totalDiscoveredDocuments = 0
     $totalSubcollectionsDiscovered = 0
@@ -782,7 +810,7 @@ if ($isShallow) {
     $limitReason = ''
     $executionId = [System.Guid]::NewGuid().ToString()
 
-    # Reanudación desde checkpoint si se solicita y existe
+    # Reanudacion desde checkpoint si se solicita y existe
     if ($Resume -and (Test-Path -Path $deepCheckpointPath)) {
         try {
             $cpRaw = Get-Content -Path $deepCheckpointPath -Raw | ConvertFrom-Json
@@ -803,6 +831,11 @@ if ($isShallow) {
                     [void]$visitedPaths.Add($item.path)
                 }
             }
+            if ($cpRaw.userAliasMap) {
+                foreach ($prop in $cpRaw.userAliasMap.PSObject.Properties) {
+                    $userAliasMap[$prop.Name] = $prop.Value
+                }
+            }
             $executionId = $cpRaw.executionId
             Write-Host ' [CHECKPOINT]: Reanudando sesion previa con colecciones completadas.' -ForegroundColor Yellow
         } catch {
@@ -810,18 +843,38 @@ if ($isShallow) {
         }
     }
 
-    # Si la cola está vacía, sembrar con las colecciones raíz confirmadas por listCollectionIds
+    # Si la cola esta vacia, sembrar con 'users' y las 6 colecciones administrativas raiz
     if ($deepQueue.Count -eq 0) {
-        foreach ($rCol in $freshRootCols) {
-            $rootItem = [ordered]@{
-                collectionId      = $rCol
+        # 1. Coleccion raiz users
+        $rootUserItem = [ordered]@{
+            collectionId      = 'users'
+            parentResourceUrl = $databaseRootUrl
+            path              = 'users'
+            depth             = 0
+            cursor            = $null
+            itemType          = 'ROOT_USERS'
+            userAlias         = $null
+        }
+        $deepQueue.Enqueue($rootUserItem)
+        [void]$visitedPaths.Add('users')
+
+        # 2. Colecciones administrativas raiz investigadas directamente
+        foreach ($admCol in $administrativeCollections) {
+            $admItem = [ordered]@{
+                collectionId      = $admCol
                 parentResourceUrl = $databaseRootUrl
-                path              = $rCol
+                path              = $admCol
                 depth             = 0
                 cursor            = $null
+                itemType          = 'ROOT_ADMIN'
+                userAlias         = $null
             }
-            $deepQueue.Enqueue($rootItem)
-            [void]$visitedPaths.Add($rCol)
+            $deepQueue.Enqueue($admItem)
+            [void]$visitedPaths.Add($admCol)
+            $adminMatrix[$admCol] = [ordered]@{
+                count  = $null
+                status = 'PENDING'
+            }
         }
     }
 
@@ -844,6 +897,7 @@ if ($isShallow) {
             completedCollections = @($completedCollections)
             completedDocuments   = @($completedDocuments)
             pendingQueue         = $queueArray
+            userAliasMap         = $userAliasMap
             stats                = [ordered]@{
                 totalRequests       = $script:requestCount
                 totalDocuments      = $totalDiscoveredDocuments
@@ -859,16 +913,16 @@ if ($isShallow) {
             limitReachedReason   = $Reason
         }
 
-        # Escritura atómica mediante archivo temporal
+        # Escritura atomica mediante archivo temporal
         $tempCp = $deepCheckpointPath + '.tmp'
         $cpObj | ConvertTo-Json -Depth 8 | Set-Content -Path $tempCp -Encoding UTF8
         Move-Item -Path $tempCp -Destination $deepCheckpointPath -Force
     }
 
-    Write-Host ' [DEEP RUNNER]: Procesando cola recursiva con limites de seguridad...' -ForegroundColor Cyan
+    Write-Host ' [DEEP RUNNER]: Procesando cola recursiva con deduplicacion por ruta real...' -ForegroundColor Cyan
 
     while ($deepQueue.Count -gt 0) {
-        # 1. Comprobación de límites de seguridad
+        # 1. Comprobacion de limites de seguridad
         if ($script:requestCount -ge $MaxRequests) {
             $limitReached = $true
             $limitReason = 'MaxRequests alcanzado ({0} >= {1})' -f $script:requestCount, $MaxRequests
@@ -888,24 +942,30 @@ if ($isShallow) {
         $currentPath = $currentItem.path
         $currentDepth = [int]$currentItem.depth
         $currentCursor = $currentItem.cursor
+        $itemType = $currentItem.itemType
+        $uAlias = $currentItem.userAlias
 
         if ($currentDepth -gt $MaxDepth) {
-            Write-Host (' [LIMITE MAXDEPTH]: Omitiendo subcoleccion que supera profundidad ' + $MaxDepth + ': ' + (Get-MaskedResourcePath $currentPath)) -ForegroundColor Yellow
+            Write-Host (' [LIMITE MAXDEPTH]: Omitiendo subcoleccion que supera profundidad ' + $MaxDepth) -ForegroundColor Yellow
             continue
         }
 
-        $maskedDisplayPath = Get-MaskedResourcePath $currentPath
-        $iterMsg = ' -> Explorando [{0}] (Nivel {1})...' -f $maskedDisplayPath, $currentDepth
+        $displayPath = if ($uAlias) { 'users/' + $uAlias + '/' + $currentColId } else { Get-MaskedResourcePath $currentPath }
+        $iterMsg = ' -> Explorando [{0}] (Nivel {1})...' -f $displayPath, $currentDepth
         Write-Host $iterMsg -ForegroundColor Gray
 
-        # Consultar lote de documentos
+        # Consultar lote de documentos con proyeccion exclusiva __name__
         $queryRes = Run-FirestoreQuery -CollectionId $currentColId -Limit $PageSize -StartAfterDocName $currentCursor -ParentResourceUrl $currentParent
         if ($queryRes.StatusCode -ne 200 -or $queryRes.Body -eq $null) {
             $errEntry = if ($queryRes.Error) { $queryRes.Error } else { @{ StatusCode = $queryRes.StatusCode; Message = 'Error en runQuery' } }
-            $deepCountsMap[$maskedDisplayPath] = [ordered]@{
+            $deepCountsMap[$displayPath] = [ordered]@{
                 DocumentsEnumerated = $null
                 Status              = 'FAILED'
                 Error               = $errEntry
+            }
+            if ($uAlias -and $userMatrix.Contains($uAlias) -and $userMatrix[$uAlias].Contains($currentColId)) {
+                $userMatrix[$uAlias][$currentColId].count = $null
+                $userMatrix[$uAlias][$currentColId].status = 'FAILED'
             }
             Write-Host '   [!] Error consultando coleccion; se marca en estado FAILED.' -ForegroundColor Red
             Save-DeepCheckpoint -Status 'PAUSED_ON_ERROR' -Reason 'Error en consulta de coleccion'
@@ -942,39 +1002,130 @@ if ($isShallow) {
         $totalDiscoveredDocuments += $batchDocs.Count
         Write-Host ('   + Documentos descubiertos en lote: ' + $batchDocs.Count) -ForegroundColor Green
 
-        # Descubrimiento de subcolecciones en cada documento devuelto
-        foreach ($doc in $batchDocs) {
-            $docResourceName = $doc.Name
-            if ($completedDocuments.Contains($docResourceName)) {
-                continue
+        # Registro de conteos en matrices
+        if ($itemType -eq 'ROOT_ADMIN') {
+            $adminMatrix[$currentColId] = [ordered]@{
+                count  = $batchDocs.Count
+                status = if ($batchDocs.Count -gt 0) { 'DISCOVERED' } else { 'CHECKED_EMPTY' }
             }
-
-            # Comprobar límite de peticiones antes de cada llamada
-            if ($script:requestCount -ge $MaxRequests) {
-                $limitReached = $true
-                $limitReason = 'MaxRequests alcanzado ({0} >= {1})' -f $script:requestCount, $MaxRequests
-                break
+            $deepCountsMap['admin/' + $currentColId] = [ordered]@{
+                DocumentsEnumerated = $batchDocs.Count
+                Status              = if ($batchDocs.Count -gt 0) { 'SUCCESS' } else { 'EMPTY' }
             }
+        } elseif ($uAlias) {
+            if (-not $userMatrix.Contains($uAlias)) {
+                $userMatrix[$uAlias] = [ordered]@{}
+            }
+            $userMatrix[$uAlias][$currentColId] = [ordered]@{
+                count  = $batchDocs.Count
+                status = if ($batchDocs.Count -gt 0) { 'DISCOVERED' } else { 'CHECKED_EMPTY' }
+            }
+            $deepCountsMap['users/' + $uAlias + '/' + $currentColId] = [ordered]@{
+                DocumentsEnumerated = $batchDocs.Count
+                Status              = if ($batchDocs.Count -gt 0) { 'SUCCESS' } else { 'EMPTY' }
+            }
+        }
 
-            $docParentUrl = 'https://firestore.googleapis.com/v1/' + $docResourceName
-            $subCols = Get-FirestoreCollectionIds -ParentResourceUrl $docParentUrl
-            [void]$completedDocuments.Add($docResourceName)
+        # PROCESAMIENTO ESPECIAL DE USUARIOS RAIZ:
+        if ($itemType -eq 'ROOT_USERS') {
+            # Ordenar deterministamente los usuarios por Name
+            $batchDocs = $batchDocs | Sort-Object -Property Name
+            $userIndex = 0
+            foreach ($uDoc in $batchDocs) {
+                $userIndex++
+                $assignedAlias = 'USER_' + $userIndex.ToString('D3')
+                $userAliasMap[$uDoc.Name] = $assignedAlias
+                Write-Host ('   [USUARIO ASIGNADO]: ' + $assignedAlias) -ForegroundColor Cyan
 
-            if ($subCols.Count -gt 0) {
-                foreach ($subId in $subCols) {
-                    $subPath = $currentPath + '/{id}/' + $subId
-                    if (-not $visitedPaths.Contains($subPath)) {
+                # Inicializar matriz para este usuario
+                $userMatrix[$assignedAlias] = [ordered]@{}
+                foreach ($cand in $candidateSubcollections) {
+                    $userMatrix[$assignedAlias][$cand] = [ordered]@{
+                        count  = $null
+                        status = 'PENDING'
+                    }
+                }
+
+                # Descubrir subcolecciones dinamicas para este usuario
+                $uDocParentUrl = 'https://firestore.googleapis.com/v1/' + $uDoc.Name
+                $uSubCols = Get-FirestoreCollectionIds -ParentResourceUrl $uDocParentUrl
+                [void]$completedDocuments.Add($uDoc.Name)
+
+                # Encolar cada subcoleccion descubierta con su RUTA CONCRETA INDIVIDUAL
+                foreach ($subId in $uSubCols) {
+                    $concreteUserSubPath = $uDoc.Name + '/' + $subId
+                    if (-not $visitedPaths.Contains($concreteUserSubPath)) {
                         $totalSubcollectionsDiscovered++
-                        [void]$visitedPaths.Add($subPath)
-                        $subQueueItem = [ordered]@{
+                        [void]$visitedPaths.Add($concreteUserSubPath)
+                        $deepQueue.Enqueue([ordered]@{
                             collectionId      = $subId
-                            parentResourceUrl = $docParentUrl
-                            path              = $subPath
-                            depth             = ($currentDepth + 1)
+                            parentResourceUrl = $uDocParentUrl
+                            path              = $concreteUserSubPath
+                            depth             = 1
                             cursor            = $null
+                            itemType          = 'USER_SUBCOLLECTION'
+                            userAlias         = $assignedAlias
+                            isCandidateCheck  = $false
+                        })
+                        Write-Host ('     [SUBCOLECCION DETECTADA]: ' + $assignedAlias + '/' + $subId) -ForegroundColor Magenta
+                    }
+                }
+
+                # Encolar candidatos no detectados por listCollectionIds para verificacion exhaustiva
+                foreach ($candId in $candidateSubcollections) {
+                    if ($uSubCols -notcontains $candId) {
+                        $concreteCandPath = $uDoc.Name + '/' + $candId
+                        if (-not $visitedPaths.Contains($concreteCandPath)) {
+                            [void]$visitedPaths.Add($concreteCandPath)
+                            $deepQueue.Enqueue([ordered]@{
+                                collectionId      = $candId
+                                parentResourceUrl = $uDocParentUrl
+                                path              = $concreteCandPath
+                                depth             = 1
+                                cursor            = $null
+                                itemType          = 'USER_SUBCOLLECTION'
+                                userAlias         = $assignedAlias
+                                isCandidateCheck  = $true
+                            })
                         }
-                        $deepQueue.Enqueue($subQueueItem)
-                        Write-Host ('     [SUBCOLECCION DETECTADA]: ' + (Get-MaskedResourcePath $subPath)) -ForegroundColor Magenta
+                    }
+                }
+            }
+        } else {
+            # Descubrimiento de subcolecciones para documentos hijos (L2 / L3)
+            foreach ($doc in $batchDocs) {
+                $docResourceName = $doc.Name
+                if ($completedDocuments.Contains($docResourceName)) {
+                    continue
+                }
+
+                if ($script:requestCount -ge $MaxRequests) {
+                    $limitReached = $true
+                    $limitReason = 'MaxRequests alcanzado ({0} >= {1})' -f $script:requestCount, $MaxRequests
+                    break
+                }
+
+                $childParentUrl = 'https://firestore.googleapis.com/v1/' + $docResourceName
+                $childSubCols = Get-FirestoreCollectionIds -ParentResourceUrl $childParentUrl
+                [void]$completedDocuments.Add($docResourceName)
+
+                if ($childSubCols.Count -gt 0) {
+                    foreach ($subId in $childSubCols) {
+                        $childConcretePath = $docResourceName + '/' + $subId
+                        if (-not $visitedPaths.Contains($childConcretePath)) {
+                            $totalSubcollectionsDiscovered++
+                            [void]$visitedPaths.Add($childConcretePath)
+                            $deepQueue.Enqueue([ordered]@{
+                                collectionId      = $subId
+                                parentResourceUrl = $childParentUrl
+                                path              = $childConcretePath
+                                depth             = ($currentDepth + 1)
+                                cursor            = $null
+                                itemType          = 'CHILD_SUBCOLLECTION'
+                                userAlias         = $uAlias
+                            })
+                            Write-Host ('     [SUBCOLECCION L2 DETECTADA]: ' + $subId) -ForegroundColor DarkMagenta
+                        }
                     }
                 }
             }
@@ -984,7 +1135,7 @@ if ($isShallow) {
             break
         }
 
-        # Manejo de paginación si hay más documentos en la colección actual
+        # Manejo de paginacion si hay mas documentos en la coleccion actual
         if ($batchDocs.Count -ge $PageSize) {
             $lastDocName = $batchDocs[-1].Name
             $currentItem.cursor = $lastDocName
@@ -994,7 +1145,7 @@ if ($isShallow) {
             [void]$completedCollections.Add($currentPath)
         }
 
-        # Guardar checkpoint periódico
+        # Guardar checkpoint periodico
         Save-DeepCheckpoint -Status 'IN_PROGRESS'
     }
 
@@ -1025,15 +1176,17 @@ if ($isShallow) {
         LimitReached                 = $limitReached
         LimitReachedReason           = $limitReason
         Status                       = $deepStatus
+        UserMatrix                   = $userMatrix
+        AdminMatrix                  = $adminMatrix
     }
 
-    $deepSummaryObj | ConvertTo-Json -Depth 6 | Set-Content -Path $deepSummaryPath -Encoding UTF8
+    $deepSummaryObj | ConvertTo-Json -Depth 8 | Set-Content -Path $deepSummaryPath -Encoding UTF8
     $deepCountsMap | ConvertTo-Json -Depth 6 | Set-Content -Path $deepCountsPath -Encoding UTF8
     $script:recordedErrors | ConvertTo-Json -Depth 6 | Set-Content -Path $deepErrorsPath -Encoding UTF8
 
     $deepMd = New-Object System.Text.StringBuilder
     $currentTimeUtc = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
-    [void]$deepMd.AppendLine('# VIGORCORE -- REPORTE DE INVENTARIO PROFUNDO CLOUD FIRESTORE (DEEP INVENTORY)')
+    [void]$deepMd.AppendLine('# VIGORCORE -- REPORTE DE INVENTARIO PROFUNDO CLOUD FIRESTORE (FASE 3.3.6)')
     [void]$deepMd.AppendLine(('Generado el {0} (UTC)' -f $currentTimeUtc))
     [void]$deepMd.AppendLine('')
     [void]$deepMd.AppendLine('## 1. RESUMEN DE EJECUCION DEEP')
@@ -1052,7 +1205,36 @@ if ($isShallow) {
         [void]$deepMd.AppendLine('| **Accion de Reanudacion** | Ejecutar con flag [-Resume] para continuar |')
     }
     [void]$deepMd.AppendLine('')
-    [void]$deepMd.AppendLine('## 2. ARBOL DE ESQUEMAS DESCUBIERTOS (ANONIMIZADO)')
+    [void]$deepMd.AppendLine('## 2. MATRIZ DE COBERTURA INDIVIDUAL POR USUARIO')
+    [void]$deepMd.AppendLine('')
+    [void]$deepMd.AppendLine('| Usuario | biometrics | groceries | mealLogs | notifications | preferences | workoutSessions | executedWorkouts | cardioSessions | recipes | mealPlans | workoutRoutines |')
+    [void]$deepMd.AppendLine('| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |')
+
+    foreach ($uKey in $userMatrix.Keys) {
+        $uRow = '| ' + $uKey
+        foreach ($cKey in $candidateSubcollections) {
+            $cell = $userMatrix[$uKey][$cKey]
+            $cellStr = if ($cell -and $cell.count -ne $null) { [string]$cell.count } elseif ($cell -and $cell.status -eq 'CHECKED_EMPTY') { '0' } else { 'NO VERIFICADO' }
+            $uRow = $uRow + ' | ' + $cellStr
+        }
+        $uRow = $uRow + ' |'
+        [void]$deepMd.AppendLine($uRow)
+    }
+
+    [void]$deepMd.AppendLine('')
+    [void]$deepMd.AppendLine('## 3. INVENTARIO DE COLECCIONES ADMINISTRATIVAS')
+    [void]$deepMd.AppendLine('')
+    [void]$deepMd.AppendLine('| Coleccion Administrativa | Documentos Enumerados | Estado |')
+    [void]$deepMd.AppendLine('| :--- | :---: | :--- |')
+    foreach ($aKey in $adminMatrix.Keys) {
+        $aCell = $adminMatrix[$aKey]
+        $aCountStr = if ($aCell -and $aCell.count -ne $null) { [string]$aCell.count } else { 'null (Error)' }
+        $aStatusStr = if ($aCell) { $aCell.status } else { 'NO VERIFICADO' }
+        [void]$deepMd.AppendLine(('| ' + $aKey + ' | ' + $aCountStr + ' | ' + $aStatusStr + ' |'))
+    }
+
+    [void]$deepMd.AppendLine('')
+    [void]$deepMd.AppendLine('## 4. ARBOL DE ESQUEMAS DESCUBIERTOS (ANONIMIZADO)')
     [void]$deepMd.AppendLine('')
     [void]$deepMd.AppendLine('| Ruta de Esquema Mascarada | Nivel de Profundidad |')
     [void]$deepMd.AppendLine('| :--- | :--- |')
@@ -1062,9 +1244,12 @@ if ($isShallow) {
         [void]$deepMd.AppendLine(('| ' + $mPath + ' | L' + [Math]::Floor($pDepth) + ' |'))
     }
 
-    Set-Content -Path $deepReportPath -Value ($deepMd.ToString()) -Encoding UTF8
+    $mdContent = $deepMd.ToString()
+    Set-Content -Path $deepReportPath -Value $mdContent -Encoding UTF8
+    Set-Content -Path $deepValidationPath -Value $mdContent -Encoding UTF8
     Write-Host ''
     Write-Host ('[OK] Reporte Deep generado en: ' + $deepReportPath) -ForegroundColor Green
+    Write-Host ('[OK] Reporte de Validacion generado en: ' + $deepValidationPath) -ForegroundColor Green
 }
 
 # -----------------------------------------------------------------------------

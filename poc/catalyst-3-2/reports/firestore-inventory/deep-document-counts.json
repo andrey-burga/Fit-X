@@ -1,0 +1,27 @@
+{
+  "users": {
+    "count": 5,
+    "status": "VERIFIED_SHALLOW"
+  },
+  "subcollectionsSummary": {
+    "biometrics": "Pendiente de conteo desglosado por usuario (USER_001 a USER_005)",
+    "groceries": "Pendiente de conteo desglosado por usuario (USER_001 a USER_005)",
+    "mealLogs": "Pendiente de conteo desglosado por usuario (USER_001 a USER_005)",
+    "notifications": "Pendiente de conteo desglosado por usuario (USER_001 a USER_005)",
+    "preferences": "Pendiente de conteo desglosado por usuario (USER_001 a USER_005)",
+    "workoutSessions": "Pendiente de conteo desglosado por usuario (USER_001 a USER_005)",
+    "executedWorkouts": "Pendiente de conteo desglosado por usuario (USER_001 a USER_005)",
+    "cardioSessions": "Pendiente de inspección directa",
+    "recipes": "Pendiente de inspección directa",
+    "mealPlans": "Pendiente de inspección directa",
+    "workoutRoutines": "Pendiente de inspección directa"
+  },
+  "adminCollections": {
+    "adminUserDirectory": "Pendiente de consulta REST directa",
+    "adminRoleState": "Pendiente de consulta REST directa",
+    "adminInvitations": "Pendiente de consulta REST directa",
+    "accountAccess": "Pendiente de consulta REST directa",
+    "adminAuditLogs": "Pendiente de consulta REST directa",
+    "adminInvitationOperations": "Pendiente de consulta REST directa"
+  }
+}

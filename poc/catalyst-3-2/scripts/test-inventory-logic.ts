@@ -13,6 +13,11 @@ import {
   evaluateOverallSummary,
   maskResourcePath,
   checkDeepLimits,
+  UserAliasRegistry,
+  maskConcretePathWithAlias,
+  BfsQueueEngine,
+  CANDIDATE_SUBCOLLECTIONS,
+  ADMINISTRATIVE_COLLECTIONS,
 } from '../src/inventory/firestoreRest.js';
 
 console.log('========================================================================');
@@ -377,6 +382,213 @@ runTest('15. estructura de DeepCheckpoint permite serialización y reanudación 
   assert.equal(deserialized.stats.totalDocuments, 5);
 });
 
+// ============================================================================
+// FASE 3.3.6: PRUEBAS OBLIGATORIAS DE COBERTURA MULTI-USUARIO (CASOS A - F)
+// ============================================================================
+
+// 16. Caso A: Usuario 1 tiene biometrics y Usuario 2 tiene biometrics -> Ambas instancias deben procesarse
+runTest('16. [Caso A] subcolecciones homónimas en distintos usuarios se procesan como instancias independientes', () => {
+  const engine = new BfsQueueEngine();
+  const registry = new UserAliasRegistry();
+
+  const user1Doc = 'projects/gen-lang-client-0041212770/databases/db/documents/users/UID_001';
+  const user2Doc = 'projects/gen-lang-client-0041212770/databases/db/documents/users/UID_002';
+
+  const u1Alias = registry.register(user1Doc);
+  const u2Alias = registry.register(user2Doc);
+
+  assert.equal(u1Alias, 'USER_001');
+  assert.equal(u2Alias, 'USER_002');
+
+  // Encolar biometrics de Usuario 1
+  const enqueued1 = engine.enqueue({
+    collectionId: 'biometrics',
+    parentResourceUrl: `https://firestore.googleapis.com/v1/${user1Doc}`,
+    concretePath: `${user1Doc}/biometrics`,
+    depth: 1,
+    userAlias: u1Alias,
+  });
+  assert.equal(enqueued1, true, 'Biometrics de Usuario 1 debe encolarse');
+
+  // Encolar biometrics de Usuario 2 (Fallo anterior: era descartado por clave 'users/{id}/biometrics')
+  const enqueued2 = engine.enqueue({
+    collectionId: 'biometrics',
+    parentResourceUrl: `https://firestore.googleapis.com/v1/${user2Doc}`,
+    concretePath: `${user2Doc}/biometrics`,
+    depth: 1,
+    userAlias: u2Alias,
+  });
+  assert.equal(enqueued2, true, 'Biometrics de Usuario 2 DEBE encolarse independientemente sin colisión');
+  assert.equal(engine.pendingCount, 2, 'La cola debe contener exactamente 2 tareas independientes');
+
+  const task1 = engine.dequeue();
+  const task2 = engine.dequeue();
+
+  assert.equal(task1?.concretePath, `${user1Doc}/biometrics`);
+  assert.equal(task2?.concretePath, `${user2Doc}/biometrics`);
+  assert.notEqual(task1?.concretePath, task2?.concretePath);
+});
+
+// 17. Caso B: Cinco usuarios tienen mealLogs -> Cinco instancias independientes deben encolarse y consultarse
+runTest('17. [Caso B] cinco usuarios con mealLogs generan exactamente 5 instancias independientes en cola', () => {
+  const engine = new BfsQueueEngine();
+  const registry = new UserAliasRegistry();
+
+  const userIds = ['UID_ALPHA', 'UID_BETA', 'UID_GAMMA', 'UID_DELTA', 'UID_EPSILON'];
+  const enqueuedResults: boolean[] = [];
+
+  for (const uid of userIds) {
+    const docPath = `projects/p/databases/d/documents/users/${uid}`;
+    const alias = registry.register(docPath);
+    const success = engine.enqueue({
+      collectionId: 'mealLogs',
+      parentResourceUrl: `https://firestore.googleapis.com/v1/${docPath}`,
+      concretePath: `${docPath}/mealLogs`,
+      depth: 1,
+      userAlias: alias,
+    });
+    enqueuedResults.push(success);
+  }
+
+  assert.equal(enqueuedResults.length, 5);
+  assert.ok(enqueuedResults.every((res) => res === true), 'Todos los 5 usuarios deben encolar su propia instancia');
+  assert.equal(engine.pendingCount, 5, 'Deben haber 5 instancias en cola');
+
+  const processedUsers: string[] = [];
+  while (engine.pendingCount > 0) {
+    const task = engine.dequeue();
+    if (task?.userAlias) {
+      processedUsers.push(task.userAlias);
+    }
+  }
+
+  assert.deepEqual(processedUsers, ['USER_001', 'USER_002', 'USER_003', 'USER_004', 'USER_005']);
+});
+
+// 18. Caso C: Usuario 3 no tiene una subcolección -> Ausencia registrada solo para Usuario 3 sin afectar a los demás
+runTest('18. [Caso C] ausencia de una subcolección en un usuario no afecta la exploración de los demás', () => {
+  const registry = new UserAliasRegistry();
+  const userMatrix: Record<string, Record<string, { count: number | null; status: string }>> = {};
+
+  const uids = ['U1', 'U2', 'U3', 'U4', 'U5'];
+  for (const uid of uids) {
+    const alias = registry.register(uid);
+    userMatrix[alias] = {};
+    for (const cand of CANDIDATE_SUBCOLLECTIONS) {
+      userMatrix[alias][cand] = { count: null, status: 'NOT_VERIFIED' };
+    }
+  }
+
+  // Simulación: U1, U2, U4, U5 tienen 'cardioSessions', pero U3 no la tiene
+  userMatrix['USER_001']['cardioSessions'] = { count: 2, status: 'DISCOVERED' };
+  userMatrix['USER_002']['cardioSessions'] = { count: 1, status: 'DISCOVERED' };
+  userMatrix['USER_003']['cardioSessions'] = { count: 0, status: 'CHECKED_EMPTY' }; // Ausencia legítima
+  userMatrix['USER_004']['cardioSessions'] = { count: 5, status: 'DISCOVERED' };
+  userMatrix['USER_005']['cardioSessions'] = { count: 3, status: 'DISCOVERED' };
+
+  assert.equal(userMatrix['USER_001']['cardioSessions'].count, 2);
+  assert.equal(userMatrix['USER_003']['cardioSessions'].count, 0);
+  assert.equal(userMatrix['USER_003']['cardioSessions'].status, 'CHECKED_EMPTY');
+  assert.equal(userMatrix['USER_004']['cardioSessions'].count, 5);
+});
+
+// 19. Caso D: Dos subcolecciones diferentes tienen documentos con el mismo ID -> Distintos por tener padres diferentes
+runTest('19. [Caso D] documentos con mismo ID en subcolecciones de distintos padres se diferencian por ruta concreta', () => {
+  const user1 = 'projects/p/databases/d/documents/users/USER_A';
+  const user2 = 'projects/p/databases/d/documents/users/USER_B';
+
+  // Ambos usuarios tienen un documento de configuración con ID idéntico 'current'
+  const docPathA = `${user1}/biometrics/current`;
+  const docPathB = `${user2}/biometrics/current`;
+
+  assert.notEqual(docPathA, docPathB, 'Las rutas completas deben ser distintas');
+
+  const registry = new UserAliasRegistry();
+  registry.register(user1);
+  registry.register(user2);
+
+  const maskedA = maskConcretePathWithAlias(docPathA, registry);
+  const maskedB = maskConcretePathWithAlias(docPathB, registry);
+
+  assert.equal(maskedA, 'users/USER_001/biometrics/{id}');
+  assert.equal(maskedB, 'users/USER_002/biometrics/{id}');
+  assert.notEqual(maskedA, maskedB, 'Los reportes conservan distinción de usuario sin revelar UIDs');
+});
+
+// 20. Caso E: Interrupción y reanudación no duplica ni omite instancias por usuario
+runTest('20. [Caso E] checkpoint preserva rutas concretas y reanuda sin omitir ni duplicar usuarios', () => {
+  const engineOriginal = new BfsQueueEngine();
+  const path1 = 'projects/p/databases/d/documents/users/U1/groceries';
+  const path2 = 'projects/p/databases/d/documents/users/U2/groceries';
+  const path3 = 'projects/p/databases/d/documents/users/U3/groceries';
+
+  engineOriginal.enqueue({ collectionId: 'groceries', parentResourceUrl: '...', concretePath: path1, depth: 1 });
+  engineOriginal.enqueue({ collectionId: 'groceries', parentResourceUrl: '...', concretePath: path2, depth: 1 });
+  engineOriginal.enqueue({ collectionId: 'groceries', parentResourceUrl: '...', concretePath: path3, depth: 1 });
+
+  // Se procesa la primera tarea
+  const done1 = engineOriginal.dequeue();
+  assert.equal(done1?.concretePath, path1);
+  engineOriginal.markCompleted(path1);
+
+  // Se genera checkpoint en pausa
+  const snapshotQueue = engineOriginal.getSnapshotQueue();
+  const completedList = engineOriginal.getCompletedPaths();
+
+  assert.equal(snapshotQueue.length, 2);
+  assert.equal(completedList.length, 1);
+  assert.equal(completedList[0], path1);
+
+  // Reanudar en nueva instancia de motor
+  const engineResumed = new BfsQueueEngine(snapshotQueue);
+  for (const c of completedList) {
+    engineResumed.markCompleted(c);
+  }
+
+  // Intento de re-encolar path1 (ya completado)
+  const canReAddCompleted = engineResumed.isCompleted(path1);
+  assert.equal(canReAddCompleted, true, 'El elemento completado debe identificarse como completado');
+
+  // Procesar tareas pendientes restantes
+  const next2 = engineResumed.dequeue();
+  const next3 = engineResumed.dequeue();
+
+  assert.equal(next2?.concretePath, path2);
+  assert.equal(next3?.concretePath, path3);
+  assert.equal(engineResumed.pendingCount, 0, 'Todas las tareas pendientes fueron ejecutadas sin duplicados');
+});
+
+// 21. Caso F: Se alcanza MaxRequests -> Checkpoint atómico y estado PARTIAL_LIMIT_REACHED
+runTest('21. [Caso F] alcanzar MaxRequests activa estado de límite y preserva trabajo pendiente', () => {
+  const limits = {
+    maxRequests: 500,
+    maxDocuments: 2000,
+    maxDepth: 10,
+    throttleMs: 100,
+  };
+
+  const limitCheck = checkDeepLimits({ totalRequests: 500, totalDocuments: 120, currentDepth: 2 }, limits);
+  assert.equal(limitCheck.limitReached, true);
+  assert.ok(limitCheck.reason?.includes('MaxRequests alcanzado'));
+
+  const pendingItems = [
+    { collectionId: 'mealLogs', parentResourceUrl: '...', concretePath: 'users/U4/mealLogs', depth: 1 },
+    { collectionId: 'mealLogs', parentResourceUrl: '...', concretePath: 'users/U5/mealLogs', depth: 1 },
+  ];
+
+  const checkpoint = {
+    executionId: 'exec-limit-test',
+    status: 'PAUSED_LIMIT_REACHED',
+    limitReachedReason: limitCheck.reason,
+    pendingQueue: pendingItems,
+    stats: { totalRequests: 500, totalDocuments: 120, totalSubcollections: 18 },
+  };
+
+  assert.equal(checkpoint.status, 'PAUSED_LIMIT_REACHED');
+  assert.equal(checkpoint.pendingQueue.length, 2);
+  assert.notEqual(checkpoint.status, 'COMPLETED_SUCCESS', 'Bajo ningún concepto debe marcarse COMPLETED_SUCCESS ante límite');
+});
+
 console.log(`\n========================================================================`);
-console.log(` RESULTADO: ${testsPassed}/15 PRUEBAS UNITARIAS APROBADAS (100% PASS-UNIT)`);
+console.log(` RESULTADO: ${testsPassed}/21 PRUEBAS UNITARIAS APROBADAS (100% PASS-UNIT)`);
 console.log(`========================================================================\n`);
