@@ -270,3 +270,97 @@ export function evaluateOverallSummary(params: {
     timestamp: new Date().toISOString(),
   };
 }
+
+/**
+ * Enmascara rutas completas de documentos para evitar la exposición de UIDs o seudónimos en Markdown.
+ * Ejemplo:
+ *   'projects/.../documents/users/usr_12345/workouts/w_987' -> 'users/{id}/workouts/{id}'
+ *   'users/usr_12345' -> 'users/{id}'
+ */
+export function maskResourcePath(fullPath: string): string {
+  if (!fullPath) return '';
+
+  // Extraer la ruta relativa a partir del segmento '/documents/' si es un resourceName completo
+  const docSegmentIndex = fullPath.indexOf('/documents/');
+  const relativePath = docSegmentIndex !== -1 ? fullPath.substring(docSegmentIndex + '/documents/'.length) : fullPath;
+
+  const segments = relativePath.split('/').filter(Boolean);
+  if (segments.length === 0) return '';
+
+  const maskedSegments: string[] = [];
+  for (let i = 0; i < segments.length; i++) {
+    if (i % 2 === 0) {
+      // Colección (ej. 'users', 'workouts')
+      maskedSegments.push(segments[i]);
+    } else {
+      // Document ID (ej. UID del atleta o id de documento) -> anonimizado
+      maskedSegments.push('{id}');
+    }
+  }
+
+  return maskedSegments.join('/');
+}
+
+export interface DeepLimits {
+  maxRequests: number;
+  maxDocuments: number;
+  maxDepth: number;
+  throttleMs: number;
+}
+
+export interface DeepQueueItem {
+  collectionId: string;
+  parentResourceUrl: string;
+  path: string;
+  depth: number;
+  cursor?: string;
+}
+
+export interface DeepCheckpoint {
+  executionId: string;
+  timestamp: string;
+  mode: 'Deep';
+  completedCollections: string[];
+  completedDocuments: string[];
+  pendingQueue: DeepQueueItem[];
+  stats: {
+    totalRequests: number;
+    totalDocuments: number;
+    totalSubcollections: number;
+  };
+  limits: DeepLimits;
+  status: 'IN_PROGRESS' | 'PAUSED_LIMIT_REACHED' | 'COMPLETED' | 'FAILED';
+  limitReachedReason?: string;
+}
+
+/**
+ * Verifica si se ha alcanzado algún límite de seguridad durante el recorrido profundo.
+ */
+export function checkDeepLimits(
+  stats: { totalRequests: number; totalDocuments: number; currentDepth: number },
+  limits: DeepLimits
+): { limitReached: boolean; reason?: string } {
+  if (stats.totalRequests >= limits.maxRequests) {
+    return {
+      limitReached: true,
+      reason: `MaxRequests alcanzado (${stats.totalRequests} >= ${limits.maxRequests})`,
+    };
+  }
+
+  if (stats.totalDocuments >= limits.maxDocuments) {
+    return {
+      limitReached: true,
+      reason: `MaxDocuments alcanzado (${stats.totalDocuments} >= ${limits.maxDocuments})`,
+    };
+  }
+
+  if (stats.currentDepth > limits.maxDepth) {
+    return {
+      limitReached: true,
+      reason: `MaxDepth alcanzado (${stats.currentDepth} > ${limits.maxDepth})`,
+    };
+  }
+
+  return { limitReached: false };
+}
+

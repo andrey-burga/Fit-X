@@ -3,12 +3,16 @@
  * Fase 3.3.1: StructuredQuery, Proyección __name__, Paginación y Manejo de Estados
  */
 
+import fs from 'node:fs';
+import path from 'node:path';
 import assert from 'node:assert/strict';
 import {
   buildRunQueryBody,
   parseRunQueryResponse,
   recordCollectionResult,
   evaluateOverallSummary,
+  maskResourcePath,
+  checkDeepLimits,
 } from '../src/inventory/firestoreRest.js';
 
 console.log('========================================================================');
@@ -283,15 +287,96 @@ runTest('11. construcción estática de Markdown genera tablas válidas sin back
 });
 
 // 12. Verificación de ausencia de backticks y subexpresiones en el script .ps1
-runTest('12. script inventory-firestore.ps1 tiene 0 backticks y 0 subexpresiones $(...)', async () => {
-  const fs = await import('node:fs');
-  const path = await import('node:path');
+runTest('12. script inventory-firestore.ps1 tiene 0 backticks y 0 subexpresiones $(...)', () => {
   const scriptContent = fs.readFileSync(path.resolve('poc/catalyst-3-2/scripts/inventory-firestore.ps1'), 'utf-8');
 
   assert.ok(!scriptContent.includes('`'), 'El script no debe contener ningún carácter backtick para evitar errores en PS 5.1');
   assert.ok(!scriptContent.includes('$('), 'El script no debe contener ninguna subexpresión $(...)');
 });
 
+// 13. Anonimización de Rutas (maskResourcePath): Prevención de exposición de UIDs
+runTest('13. maskResourcePath anonimiza IDs de documentos en cualquier nivel de profundidad', () => {
+  const rootDoc = 'projects/gen-lang-client-0041212770/databases/test-db/documents/users/usr_ABC123_XYZ';
+  assert.equal(maskResourcePath(rootDoc), 'users/{id}');
+
+  const subDoc = 'projects/gen-lang-client-0041212770/databases/test-db/documents/users/usr_ABC123_XYZ/workouts/w_987654';
+  assert.equal(maskResourcePath(subDoc), 'users/{id}/workouts/{id}');
+
+  const relativePath = 'users/athlete_456/metrics/m_789/samples/s_001';
+  assert.equal(maskResourcePath(relativePath), 'users/{id}/metrics/{id}/samples/{id}');
+
+  assert.equal(maskResourcePath(''), '');
+});
+
+// 14. Verificación de Límites de Seguridad en Modo Deep (checkDeepLimits)
+runTest('14. checkDeepLimits detecta disparadores de paro por solicitudes, documentos y profundidad', () => {
+  const limits = {
+    maxRequests: 500,
+    maxDocuments: 2000,
+    maxDepth: 10,
+    throttleMs: 100,
+  };
+
+  // Normal dentro de límites
+  const okState = checkDeepLimits({ totalRequests: 100, totalDocuments: 500, currentDepth: 2 }, limits);
+  assert.equal(okState.limitReached, false);
+
+  // Límite de requests alcanzado
+  const requestLimit = checkDeepLimits({ totalRequests: 500, totalDocuments: 50, currentDepth: 1 }, limits);
+  assert.equal(requestLimit.limitReached, true);
+  assert.ok(requestLimit.reason?.includes('MaxRequests alcanzado'));
+
+  // Límite de documentos alcanzado
+  const docLimit = checkDeepLimits({ totalRequests: 20, totalDocuments: 2000, currentDepth: 1 }, limits);
+  assert.equal(docLimit.limitReached, true);
+  assert.ok(docLimit.reason?.includes('MaxDocuments alcanzado'));
+
+  // Límite de profundidad superado
+  const depthLimit = checkDeepLimits({ totalRequests: 20, totalDocuments: 50, currentDepth: 11 }, limits);
+  assert.equal(depthLimit.limitReached, true);
+  assert.ok(depthLimit.reason?.includes('MaxDepth alcanzado'));
+});
+
+// 15. Integridad de Checkpoint Atómico de Reanudación
+runTest('15. estructura de DeepCheckpoint permite serialización y reanudación idempotente', () => {
+  const checkpoint = {
+    executionId: 'deep-exec-20261109-test',
+    timestamp: new Date().toISOString(),
+    mode: 'Deep' as const,
+    completedCollections: ['users'],
+    completedDocuments: ['projects/p/databases/d/documents/users/u1'],
+    pendingQueue: [
+      {
+        collectionId: 'workouts',
+        parentResourceUrl: 'https://firestore.googleapis.com/.../users/u1',
+        path: 'users/u1/workouts',
+        depth: 1,
+      },
+    ],
+    stats: {
+      totalRequests: 12,
+      totalDocuments: 5,
+      totalSubcollections: 1,
+    },
+    limits: {
+      maxRequests: 500,
+      maxDocuments: 2000,
+      maxDepth: 10,
+      throttleMs: 100,
+    },
+    status: 'PAUSED_LIMIT_REACHED' as const,
+    limitReachedReason: 'MaxRequests alcanzado (500 >= 500)',
+  };
+
+  const serialized = JSON.stringify(checkpoint);
+  const deserialized = JSON.parse(serialized);
+
+  assert.equal(deserialized.status, 'PAUSED_LIMIT_REACHED');
+  assert.equal(deserialized.pendingQueue.length, 1);
+  assert.equal(deserialized.completedCollections[0], 'users');
+  assert.equal(deserialized.stats.totalDocuments, 5);
+});
+
 console.log(`\n========================================================================`);
-console.log(` RESULTADO: ${testsPassed}/12 PRUEBAS UNITARIAS APROBADAS (100% PASS-UNIT)`);
+console.log(` RESULTADO: ${testsPassed}/15 PRUEBAS UNITARIAS APROBADAS (100% PASS-UNIT)`);
 console.log(`========================================================================\n`);

@@ -1,4 +1,4 @@
-# VigorCore -- Fase 3.3.3: Inventario Estructural y Validacion de Consistencia de Cloud Firestore
+# VigorCore -- Fase 3.3.4: Inventario Estructural, Auditoria y Preparacion de Deep Inventory
 # Compatible al 100% con Windows PowerShell 5.1 y PowerShell 7+.
 # Cero expresiones complejas embebidas, cero backticks y sintaxis plana estricta.
 
@@ -15,7 +15,13 @@ param (
 
     [int]$PageSize = 100,
 
-    [int]$ThrottleMs = 50,
+    [int]$ThrottleMs = 100,
+
+    [int]$MaxRequests = 500,
+
+    [int]$MaxDocuments = 2000,
+
+    [int]$MaxDepth = 10,
 
     [switch]$Resume
 )
@@ -23,7 +29,7 @@ param (
 $ErrorActionPreference = 'Stop'
 
 Write-Host '========================================================================' -ForegroundColor Cyan
-Write-Host ' VIGORCORE -- FASE 3.3.3: INVENTARIO ESTRUCTURAL Y VALIDACION ROBUSTA   ' -ForegroundColor Cyan
+Write-Host ' VIGORCORE -- FASE 3.3.4: AUDITORIA DE RECORRIDO Y PREPARACION DEEP     ' -ForegroundColor Cyan
 $headerSub = ' Modo: {0} | StructuredQuery (__name__) | PS 5.1/7+ | Zero Data       ' -f $Mode
 Write-Host $headerSub -ForegroundColor Cyan
 Write-Host '========================================================================' -ForegroundColor Cyan
@@ -81,16 +87,25 @@ if (-not (Test-Path -Path $resolvedOutputDir)) {
     New-Item -ItemType Directory -Path $resolvedOutputDir -Force | Out-Null
 }
 
+# Rutas de artefactos para modo Shallow
 $summaryPath     = Join-Path $resolvedOutputDir 'inventory-summary.json'
 $collectionsPath = Join-Path $resolvedOutputDir 'collections-tree.json'
 $countsPath      = Join-Path $resolvedOutputDir 'document-counts.json'
 $errorsPath      = Join-Path $resolvedOutputDir 'inventory-errors.json'
 $consistencyPath = Join-Path $resolvedOutputDir 'consistency-check.json'
 $reportPath      = Join-Path $resolvedOutputDir 'inventory-report.md'
-$checkpointPath  = Join-Path $resolvedOutputDir 'checkpoint.json'
 
-# Archivado de reportes previos para evitar sobreescritura silenciosa
-if (Test-Path -Path $summaryPath) {
+# Rutas de artefactos para modo Deep
+$deepSummaryPath     = Join-Path $resolvedOutputDir 'deep-summary.json'
+$deepCollectionsPath = Join-Path $resolvedOutputDir 'deep-collections-tree.json'
+$deepCountsPath      = Join-Path $resolvedOutputDir 'deep-document-counts.json'
+$deepErrorsPath      = Join-Path $resolvedOutputDir 'deep-errors.json'
+$deepReportPath      = Join-Path $resolvedOutputDir 'deep-inventory-report.md'
+$deepCheckpointPath  = Join-Path $resolvedOutputDir 'checkpoint.json'
+
+# Archivado preventivo de reportes previos
+$targetSummaryCheck = if ($Mode -eq 'Deep') { $deepSummaryPath } else { $summaryPath }
+if (Test-Path -Path $targetSummaryCheck) {
     try {
         $archiveBase = Join-Path $resolvedOutputDir 'archive'
         if (-not (Test-Path -Path $archiveBase)) {
@@ -149,6 +164,11 @@ Write-Host $destProjMsg
 Write-Host $destDbMsg
 Write-Host $quotaMsg
 Write-Host $outDirMsg
+
+if ($Mode -eq 'Deep') {
+    $limMsg1 = ' - Limites de Seguridad:      MaxRequests={0}, MaxDocuments={1}, MaxDepth={2}, Throttle={3}ms' -f $MaxRequests, $MaxDocuments, $MaxDepth, $ThrottleMs
+    Write-Host $limMsg1 -ForegroundColor Magenta
+}
 
 Write-Host ''
 Write-Host ' - Adquiriendo Access Token en memoria...' -NoNewline
@@ -467,6 +487,22 @@ function Query-CollectionDocumentsSafe {
     }
 }
 
+# Función auxiliar para enmascarar rutas de recursos eliminando UIDs en reportes Markdown
+function Get-MaskedResourcePath {
+    param ([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return '' }
+    $parts = $Path.Split('/')
+    $masked = [System.Collections.Generic.List[string]]::new()
+    for ($i = 0; $i -lt $parts.Length; $i++) {
+        if ($i % 2 -eq 0) {
+            $masked.Add($parts[$i])
+        } else {
+            $masked.Add('{id}')
+        }
+    }
+    return ($masked -join '/')
+}
+
 # -----------------------------------------------------------------------------
 # 5. Comprobación de Consistencia: '_system_' vs 'users'
 # -----------------------------------------------------------------------------
@@ -548,25 +584,26 @@ if ($systemQueryStatus -eq 200 -and ($systemQueryRes.Body -is [System.Array])) {
 $systemInListCols = ($freshRootCols -contains '_system_')
 $usersInListCols  = ($freshRootCols -contains 'users')
 
-if ($probeExists -and (-not $systemInListCols)) {
-    $consistencyReport.ComparisonVerdict = 'DIVERGENCE_OBSERVED'
-    $divergenceExplanation = 'El documento _system_/audit_read_probe responde HTTP 200 via GET (recurso existente), y RunQuery sobre _system_ responde HTTP {0} con {1} documentos. Sin embargo, listCollectionIds devolvio: [{2}]. Se observa una divergencia real entre la lista de colecciones y el acceso directo a documentos. No se asume ninguna hipotesis de prefijo; se auditan ambas fuentes de forma transparente.' -f $systemQueryStatus, $systemDocsCount, $rootColsJoined
-    $consistencyReport.TechnicalExplanation = $divergenceExplanation
-    Write-Host ''
-    Write-Host ' [HALLAZGO EMPIRICO]: _system_/audit_read_probe EXISTE (HTTP 200), pero listCollectionIds no enumero _system_. Ambas fuentes seran incorporadas al inventario.' -ForegroundColor Magenta
+if ($probeExists) {
+    if (-not $systemInListCols) {
+        $consistencyReport.ComparisonVerdict = 'DIVERGENCE_OBSERVED'
+        $divergenceExplanation = 'El documento _system_/audit_read_probe respondio HTTP 200 via GET, pero listCollectionIds no devolvio _system_ en la raiz.'
+        $consistencyReport.TechnicalExplanation = $divergenceExplanation
+    } else {
+        $consistencyReport.ComparisonVerdict = 'CONSISTENT_EXISTING'
+        $consistencyReport.TechnicalExplanation = 'El documento _system_ existe y listCollectionIds lo incluye.'
+    }
 } else {
-    $consistencyReport.ComparisonVerdict = 'CONSISTENT'
-    $consistencyReport.TechnicalExplanation = 'Los resultados de listCollectionIds, GET y RunQuery son consistentes entre si.'
+    $consistencyReport.ComparisonVerdict = 'CONSISTENT_NOT_FOUND'
+    $consistencyReport.TechnicalExplanation = 'GET sobre _system_/audit_read_probe respondio HTTP 404 (documento no existe) y RunQuery devolvio 0 documentos. listCollectionIds devolvio unicamente: [' + $rootColsJoined + '].'
+    Write-Host ' [RESULTADO CONSISTENCIA]: _system_ no contiene documentos y no aparece en la raiz. users es el unico punto de entrada confirmado.' -ForegroundColor Green
 }
 
-# Guardar consistency-check.json
 $consistencyJson = $consistencyReport | ConvertTo-Json -Depth 6
 Set-Content -Path $consistencyPath -Value $consistencyJson -Encoding UTF8
-$consSavedMsg = ' [OK] Consistencia registrada en: {0}' -f $consistencyPath
-Write-Host $consSavedMsg -ForegroundColor Green
 
 # -----------------------------------------------------------------------------
-# 6. Descubrimiento de Colecciones y Estructura
+# 6. Descubrimiento de Colecciones y Estructura (Shallow vs Deep)
 # -----------------------------------------------------------------------------
 Write-Host ''
 $discHeader = ' [3/5] EJECUTANDO INVENTARIO CON PROYECCION SEGURA ({0} Mode)' -f $Mode
@@ -574,222 +611,461 @@ Write-Host $discHeader -ForegroundColor Cyan
 Write-Host '------------------------------------------------------------------------'
 
 $stopwatchTotal = [System.Diagnostics.Stopwatch]::StartNew()
-
-# Conjunto de colecciones a inspeccionar: descubiertas dinámicamente + colecciones del modelo de datos
-$allCollectionsToInspect = [System.Collections.Generic.List[string]]::new()
-foreach ($col in $freshRootCols) {
-    if (-not $allCollectionsToInspect.Contains($col)) { $allCollectionsToInspect.Add($col) }
-}
-foreach ($expectedCol in @('_system_', 'users', 'athletes', 'trainers', 'invitations', 'security_audit', 'locks')) {
-    if (-not $allCollectionsToInspect.Contains($expectedCol)) { $allCollectionsToInspect.Add($expectedCol) }
-}
-
-$collectionsTree = @()
-$documentCountsMap = [ordered]@{}
-$hasAnyFailure = $false
-$totalDiscoveredDocuments = 0
-
 $isShallow = ($Mode -eq 'Shallow')
 
-foreach ($colId in $allCollectionsToInspect) {
-    Write-Host ''
-    $colHeaderMsg = " [Coleccion] '{0}'" -f $colId
-    Write-Host $colHeaderMsg -ForegroundColor White
-
-    $colNode = [ordered]@{
-        Id                   = $colId
-        Path                 = $colId
-        Type                 = 'root_collection'
-        Level                = 0
-        DocumentsEnumerated  = $null
-        HasMore              = $null
-        EnumerationComplete  = $false
-        Subcollections       = @()
-        Error                = $null
+if ($isShallow) {
+    # MODO SHALLOW:
+    # Punto de entrada obligatorio: colecciones descubiertas dinámicamente por listCollectionIds en raíz
+    $collectionsToInspect = [System.Collections.Generic.List[string]]::new()
+    foreach ($col in $freshRootCols) {
+        if (-not $collectionsToInspect.Contains($col)) { $collectionsToInspect.Add($col) }
+    }
+    # Si listCollectionIds devolvió vacío (failsafe), incluir 'users' como punto de partida
+    if ($collectionsToInspect.Count -eq 0 -and $usersInListCols) {
+        $collectionsToInspect.Add('users')
     }
 
-    $docResult = Query-CollectionDocumentsSafe -CollectionId $colId -ParentResourceUrl $databaseRootUrl -SampleOnly $isShallow
+    $collectionsTree = @()
+    $documentCountsMap = [ordered]@{}
+    $hasAnyFailure = $false
+    $totalDiscoveredDocuments = 0
 
-    if ($docResult.Success) {
-        $docs = $docResult.Documents
-        $hasMore = $docResult.HasMore
-        $count = $docs.Count
+    foreach ($colId in $collectionsToInspect) {
+        Write-Host ''
+        $colHeaderMsg = " [Coleccion Raiz Confirmada] '{0}'" -f $colId
+        Write-Host $colHeaderMsg -ForegroundColor White
 
-        $colNode.DocumentsEnumerated = $count
-        $colNode.HasMore             = $hasMore
-        $colNode.EnumerationComplete = (-not $hasMore)
-
-        if ($totalDiscoveredDocuments -ne $null) {
-            $totalDiscoveredDocuments += $count
+        $colNode = [ordered]@{
+            Id                   = $colId
+            Path                 = $colId
+            Type                 = 'root_collection'
+            Level                = 0
+            DocumentsEnumerated  = $null
+            HasMore              = $null
+            EnumerationComplete  = $false
+            Subcollections       = @()
+            Error                = $null
         }
 
-        $documentCountsMap[$colId] = [ordered]@{
-            DocumentsEnumerated = $count
-            HasMore             = $hasMore
-            SampledOnly         = $isShallow
-            Status              = 'SUCCESS'
+        $docResult = Query-CollectionDocumentsSafe -CollectionId $colId -ParentResourceUrl $databaseRootUrl -SampleOnly $true
+
+        if ($docResult.Success) {
+            $docs = $docResult.Documents
+            $hasMore = $docResult.HasMore
+            $count = $docs.Count
+
+            $colNode.DocumentsEnumerated = $count
+            $colNode.HasMore             = $hasMore
+            $colNode.EnumerationComplete = (-not $hasMore)
+
+            if ($totalDiscoveredDocuments -ne $null) {
+                $totalDiscoveredDocuments += $count
+            }
+
+            $documentCountsMap[$colId] = [ordered]@{
+                DocumentsEnumerated = $count
+                HasMore             = $hasMore
+                SampledOnly         = $true
+                Status              = 'SUCCESS'
+            }
+
+            $moreSuffix = if ($hasMore) { ' (+ mas disponibles)' } else { '' }
+            $colSuccessMsg = '   - Documentos enumerados: {0}{1}' -f $count, $moreSuffix
+            Write-Host $colSuccessMsg -ForegroundColor Green
+        } else {
+            $hasAnyFailure = $true
+            $colNode.DocumentsEnumerated = $null
+            $colNode.HasMore             = $null
+            $colNode.EnumerationComplete = $false
+            $colNode.Error               = $docResult.Error
+            $totalDiscoveredDocuments    = $null
+
+            $documentCountsMap[$colId] = [ordered]@{
+                DocumentsEnumerated = $null
+                HasMore             = $null
+                SampledOnly         = $true
+                Status              = 'FAILED'
+                Error               = $docResult.Error
+            }
+
+            $errReason = if ($docResult.Error -and $docResult.Error.Message) { $docResult.Error.Message } else { 'Error en consulta' }
+            $colErrMsg = '   - [ERROR EN CONSULTA]: {0}' -f $errReason
+            Write-Host $colErrMsg -ForegroundColor Red
         }
 
-        $moreSuffix = if ($hasMore) { ' (+ mas disponibles)' } else { '' }
-        $colSuccessMsg = '   - Documentos enumerados: {0}{1}' -f $count, $moreSuffix
-        Write-Host $colSuccessMsg -ForegroundColor Green
+        $collectionsTree += $colNode
+    }
+
+    $stopwatchTotal.Stop()
+    $totalElapsedMs = $stopwatchTotal.ElapsedMilliseconds
+
+    $overallStatus = if ($hasAnyFailure) { 'PARTIAL_FAILURE' } else { 'COMPLETED_SUCCESS' }
+
+    $totalDocsValue = if ($totalDiscoveredDocuments -eq $null) {
+        'UNKNOWN (Partial failure in 1 or more collections)'
     } else {
-        $hasAnyFailure = $true
-        $colNode.DocumentsEnumerated = $null
-        $colNode.HasMore             = $null
-        $colNode.EnumerationComplete = $false
-        $colNode.Error               = $docResult.Error
-        $totalDiscoveredDocuments    = $null
-
-        $documentCountsMap[$colId] = [ordered]@{
-            DocumentsEnumerated = $null
-            HasMore             = $null
-            SampledOnly         = $isShallow
-            Status              = 'FAILED'
-            Error               = $docResult.Error
-        }
-
-        $errReason = if ($docResult.Error -and $docResult.Error.Message) { $docResult.Error.Message } else { 'Error en consulta' }
-        $colErrMsg = '   - [ERROR EN CONSULTA]: {0}' -f $errReason
-        Write-Host $colErrMsg -ForegroundColor Red
-        Write-Host '     Estado registrado como: DocumentsEnumerated = null, EnumerationComplete = false' -ForegroundColor Yellow
+        $totalDiscoveredDocuments
     }
 
-    $collectionsTree += $colNode
-}
+    $summaryObj = [ordered]@{
+        Timestamp                  = (Get-Date).ToString('o')
+        Mode                       = 'Shallow'
+        ProjectId                  = $ProjectId
+        DatabaseId                 = $DatabaseId
+        ExecutionTimeMs            = $totalElapsedMs
+        TotalRestRequestsMade      = $script:requestCount
+        TotalCollectionsInspected  = $collectionsToInspect.Count
+        TotalDocumentsDiscovered   = $totalDocsValue
+        TotalErrorsEncountered     = $script:recordedErrors.Count
+        PrivacyVerification        = 'StructuredQuery select fieldPath: __name__ (100% field protection, 0 data leaked)'
+        Status                     = $overallStatus
+    }
 
-$stopwatchTotal.Stop()
-$totalElapsedMs = $stopwatchTotal.ElapsedMilliseconds
+    # Guardar reportes Shallow
+    $summaryObj | ConvertTo-Json -Depth 6 | Set-Content -Path $summaryPath -Encoding UTF8
+    $collectionsTree | ConvertTo-Json -Depth 10 | Set-Content -Path $collectionsPath -Encoding UTF8
+    $documentCountsMap | ConvertTo-Json -Depth 6 | Set-Content -Path $countsPath -Encoding UTF8
+    $script:recordedErrors | ConvertTo-Json -Depth 6 | Set-Content -Path $errorsPath -Encoding UTF8
 
-# -----------------------------------------------------------------------------
-# 7. Generación de Archivos de Reporte
-# -----------------------------------------------------------------------------
-Write-Host ''
-Write-Host '[4/5] GENERANDO REPORTES Y ARTEFACTOS ESTRUCTURALES' -ForegroundColor Cyan
-Write-Host '------------------------------------------------------------------------'
+    $mdBuilder = New-Object System.Text.StringBuilder
+    $currentTimeUtc = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+    [void]$mdBuilder.AppendLine('# VIGORCORE -- REPORTE DE INVENTARIO ESTRUCTURAL CLOUD FIRESTORE (FASE 3.3.4)')
+    [void]$mdBuilder.AppendLine(('Generado el {0} (UTC)' -f $currentTimeUtc))
+    [void]$mdBuilder.AppendLine('')
+    [void]$mdBuilder.AppendLine('## 1. RESUMEN EJECUTIVO')
+    [void]$mdBuilder.AppendLine('')
+    [void]$mdBuilder.AppendLine('| Parametro | Valor |')
+    [void]$mdBuilder.AppendLine('| :--- | :--- |')
+    [void]$mdBuilder.AppendLine(('| **Proyecto GCP** | ' + $ProjectId + ' |'))
+    [void]$mdBuilder.AppendLine(('| **Database ID** | ' + $DatabaseId + ' |'))
+    [void]$mdBuilder.AppendLine('| **Modo de Inventario** | Shallow |')
+    [void]$mdBuilder.AppendLine(('| **Colecciones Raiz Confirmadas** | ' + $collectionsToInspect.Count + ' (' + $rootColsJoined + ') |'))
+    [void]$mdBuilder.AppendLine(('| **Documentos Enumerados** | ' + $totalDocsValue + ' |'))
+    [void]$mdBuilder.AppendLine(('| **Solicitudes REST** | ' + $script:requestCount + ' |'))
+    [void]$mdBuilder.AppendLine(('| **Tiempo Total** | ' + $totalElapsedMs + ' ms |'))
+    [void]$mdBuilder.AppendLine(('| **Estado General** | ' + $overallStatus + ' |'))
+    [void]$mdBuilder.AppendLine('')
+    [void]$mdBuilder.AppendLine('## 2. COMPROBACION DE CONSISTENCIA')
+    [void]$mdBuilder.AppendLine('')
+    [void]$mdBuilder.AppendLine(('- listCollectionIds raiz: ' + $rootColsJoined))
+    [void]$mdBuilder.AppendLine(('- RunQuery _system_: Estado HTTP ' + $consistencyReport.SystemCollectionQuery.StatusCode + ', documentos: ' + $systemDocsCount))
+    [void]$mdBuilder.AppendLine(('- GET _system_/audit_read_probe: Estado HTTP ' + $consistencyReport.SystemProbeGet.StatusCode + ' (Existe: ' + $consistencyReport.SystemProbeGet.Exists + ')'))
+    [void]$mdBuilder.AppendLine(('- Dictamen: ' + $consistencyReport.ComparisonVerdict))
+    [void]$mdBuilder.AppendLine('')
+    [void]$mdBuilder.AppendLine('## 3. TABLA DE COLECCIONES CONFIRMADAS')
+    [void]$mdBuilder.AppendLine('')
+    [void]$mdBuilder.AppendLine('| Coleccion | Tipo | Documentos Enumerados | Tiene Mas? | Estado |')
+    [void]$mdBuilder.AppendLine('| :--- | :--- | :--- | :--- | :--- |')
+    foreach ($col in $collectionsTree) {
+        $docCountStr = if ($col.DocumentsEnumerated -eq $null) { 'null (Error)' } else { [string]$col.DocumentsEnumerated }
+        $hasMoreStr = if ($col.HasMore -eq $null) { 'null' } elseif ($col.HasMore) { 'Si' } else { 'No' }
+        $statusStr = if ($col.Error) { 'FAILED' } else { 'SUCCESS' }
+        [void]$mdBuilder.AppendLine(('| ' + $col.Id + ' | Raiz | ' + $docCountStr + ' | ' + $hasMoreStr + ' | ' + $statusStr + ' |'))
+    }
 
-$overallStatus = if ($hasAnyFailure) { 'PARTIAL_FAILURE' } else { 'COMPLETED_SUCCESS' }
-
-$totalDocsValue = if ($totalDiscoveredDocuments -eq $null) {
-    'UNKNOWN (Partial failure in 1 or more collections)'
+    Set-Content -Path $reportPath -Value ($mdBuilder.ToString()) -Encoding UTF8
+    Write-Host ''
+    Write-Host '[OK] Reporte Shallow generado en: ' -NoNewline
+    Write-Host $reportPath -ForegroundColor Green
 } else {
-    $totalDiscoveredDocuments
+    # MODO DEEP: RECORRIDO RECURSIVO CON LIMITES DE SEGURIDAD Y CHECKPOINTS
+    Write-Host 'Iniciando preparacion del recorrido profundo recursivo...' -ForegroundColor Cyan
+
+    $deepQueue = [System.Collections.Generic.Queue[object]]::new()
+    $completedCollections = [System.Collections.Generic.HashSet[string]]::new()
+    $completedDocuments = [System.Collections.Generic.HashSet[string]]::new()
+    $visitedPaths = [System.Collections.Generic.HashSet[string]]::new()
+
+    $totalDiscoveredDocuments = 0
+    $totalSubcollectionsDiscovered = 0
+    $limitReached = $false
+    $limitReason = ''
+    $executionId = [System.Guid]::NewGuid().ToString()
+
+    # Reanudación desde checkpoint si se solicita y existe
+    if ($Resume -and (Test-Path -Path $deepCheckpointPath)) {
+        try {
+            $cpRaw = Get-Content -Path $deepCheckpointPath -Raw | ConvertFrom-Json
+            if ($cpRaw.completedCollections) {
+                foreach ($c in $cpRaw.completedCollections) { [void]$completedCollections.Add($c) }
+            }
+            if ($cpRaw.completedDocuments) {
+                foreach ($d in $cpRaw.completedDocuments) { [void]$completedDocuments.Add($d) }
+            }
+            if ($cpRaw.stats) {
+                $script:requestCount = [int]$cpRaw.stats.totalRequests
+                $totalDiscoveredDocuments = [int]$cpRaw.stats.totalDocuments
+                $totalSubcollectionsDiscovered = [int]$cpRaw.stats.totalSubcollections
+            }
+            if ($cpRaw.pendingQueue) {
+                foreach ($item in $cpRaw.pendingQueue) {
+                    $deepQueue.Enqueue($item)
+                    [void]$visitedPaths.Add($item.path)
+                }
+            }
+            $executionId = $cpRaw.executionId
+            Write-Host ' [CHECKPOINT]: Reanudando sesion previa con colecciones completadas.' -ForegroundColor Yellow
+        } catch {
+            Write-Host ' [WARN]: No se pudo restaurar el checkpoint; iniciando nueva sesion.' -ForegroundColor Yellow
+        }
+    }
+
+    # Si la cola está vacía, sembrar con las colecciones raíz confirmadas por listCollectionIds
+    if ($deepQueue.Count -eq 0) {
+        foreach ($rCol in $freshRootCols) {
+            $rootItem = [ordered]@{
+                collectionId      = $rCol
+                parentResourceUrl = $databaseRootUrl
+                path              = $rCol
+                depth             = 0
+                cursor            = $null
+            }
+            $deepQueue.Enqueue($rootItem)
+            [void]$visitedPaths.Add($rCol)
+        }
+    }
+
+    $deepCollectionsTree = @()
+    $deepCountsMap = [ordered]@{}
+
+    function Save-DeepCheckpoint {
+        param (
+            [string]$Status,
+            [string]$Reason = ''
+        )
+        $queueArray = @()
+        foreach ($q in $deepQueue) {
+            $queueArray += $q
+        }
+        $cpObj = [ordered]@{
+            executionId          = $executionId
+            timestamp            = (Get-Date).ToString('o')
+            mode                 = 'Deep'
+            completedCollections = @($completedCollections)
+            completedDocuments   = @($completedDocuments)
+            pendingQueue         = $queueArray
+            stats                = [ordered]@{
+                totalRequests       = $script:requestCount
+                totalDocuments      = $totalDiscoveredDocuments
+                totalSubcollections = $totalSubcollectionsDiscovered
+            }
+            limits               = [ordered]@{
+                maxRequests  = $MaxRequests
+                maxDocuments = $MaxDocuments
+                maxDepth     = $MaxDepth
+                throttleMs   = $ThrottleMs
+            }
+            status               = $Status
+            limitReachedReason   = $Reason
+        }
+
+        # Escritura atómica mediante archivo temporal
+        $tempCp = $deepCheckpointPath + '.tmp'
+        $cpObj | ConvertTo-Json -Depth 8 | Set-Content -Path $tempCp -Encoding UTF8
+        Move-Item -Path $tempCp -Destination $deepCheckpointPath -Force
+    }
+
+    Write-Host ' [DEEP RUNNER]: Procesando cola recursiva con limites de seguridad...' -ForegroundColor Cyan
+
+    while ($deepQueue.Count -gt 0) {
+        # 1. Comprobación de límites de seguridad
+        if ($script:requestCount -ge $MaxRequests) {
+            $limitReached = $true
+            $limitReason = 'MaxRequests alcanzado ({0} >= {1})' -f $script:requestCount, $MaxRequests
+            Write-Host (' [LIMITE ALCANZADO]: ' + $limitReason) -ForegroundColor Yellow
+            break
+        }
+        if ($totalDiscoveredDocuments -ge $MaxDocuments) {
+            $limitReached = $true
+            $limitReason = 'MaxDocuments alcanzado ({0} >= {1})' -f $totalDiscoveredDocuments, $MaxDocuments
+            Write-Host (' [LIMITE ALCANZADO]: ' + $limitReason) -ForegroundColor Yellow
+            break
+        }
+
+        $currentItem = $deepQueue.Dequeue()
+        $currentColId = $currentItem.collectionId
+        $currentParent = $currentItem.parentResourceUrl
+        $currentPath = $currentItem.path
+        $currentDepth = [int]$currentItem.depth
+        $currentCursor = $currentItem.cursor
+
+        if ($currentDepth -gt $MaxDepth) {
+            Write-Host (' [LIMITE MAXDEPTH]: Omitiendo subcoleccion que supera profundidad ' + $MaxDepth + ': ' + (Get-MaskedResourcePath $currentPath)) -ForegroundColor Yellow
+            continue
+        }
+
+        $maskedDisplayPath = Get-MaskedResourcePath $currentPath
+        $iterMsg = ' -> Explorando [{0}] (Nivel {1})...' -f $maskedDisplayPath, $currentDepth
+        Write-Host $iterMsg -ForegroundColor Gray
+
+        # Consultar lote de documentos
+        $queryRes = Run-FirestoreQuery -CollectionId $currentColId -Limit $PageSize -StartAfterDocName $currentCursor -ParentResourceUrl $currentParent
+        if ($queryRes.StatusCode -ne 200 -or $queryRes.Body -eq $null) {
+            $errEntry = if ($queryRes.Error) { $queryRes.Error } else { @{ StatusCode = $queryRes.StatusCode; Message = 'Error en runQuery' } }
+            $deepCountsMap[$maskedDisplayPath] = [ordered]@{
+                DocumentsEnumerated = $null
+                Status              = 'FAILED'
+                Error               = $errEntry
+            }
+            Write-Host '   [!] Error consultando coleccion; se marca en estado FAILED.' -ForegroundColor Red
+            Save-DeepCheckpoint -Status 'PAUSED_ON_ERROR' -Reason 'Error en consulta de coleccion'
+            break
+        }
+
+        $batchDocs = @()
+        $privacyAlertTriggered = $false
+
+        if ($queryRes.Body -is [System.Array]) {
+            foreach ($item in $queryRes.Body) {
+                if ($item -and $item.document -and $item.document.name) {
+                    if ($item.document.fields) {
+                        Write-Host '   [ALERTA PRIVACIDAD CRITICA]: Fields presentes; abortando ejecucion.' -ForegroundColor Red
+                        $privacyAlertTriggered = $true
+                        break
+                    }
+                    $batchDocs += [ordered]@{
+                        Name       = $item.document.name
+                        CreateTime = $item.document.createTime
+                        UpdateTime = $item.document.updateTime
+                    }
+                }
+            }
+        }
+
+        if ($privacyAlertTriggered) {
+            $limitReached = $true
+            $limitReason = 'Failsafe de privacidad activado por campos inesperados'
+            Save-DeepCheckpoint -Status 'FAILED' -Reason $limitReason
+            break
+        }
+
+        $totalDiscoveredDocuments += $batchDocs.Count
+        Write-Host ('   + Documentos descubiertos en lote: ' + $batchDocs.Count) -ForegroundColor Green
+
+        # Descubrimiento de subcolecciones en cada documento devuelto
+        foreach ($doc in $batchDocs) {
+            $docResourceName = $doc.Name
+            if ($completedDocuments.Contains($docResourceName)) {
+                continue
+            }
+
+            # Comprobar límite de peticiones antes de cada llamada
+            if ($script:requestCount -ge $MaxRequests) {
+                $limitReached = $true
+                $limitReason = 'MaxRequests alcanzado ({0} >= {1})' -f $script:requestCount, $MaxRequests
+                break
+            }
+
+            $docParentUrl = 'https://firestore.googleapis.com/v1/' + $docResourceName
+            $subCols = Get-FirestoreCollectionIds -ParentResourceUrl $docParentUrl
+            [void]$completedDocuments.Add($docResourceName)
+
+            if ($subCols.Count -gt 0) {
+                foreach ($subId in $subCols) {
+                    $subPath = $currentPath + '/{id}/' + $subId
+                    if (-not $visitedPaths.Contains($subPath)) {
+                        $totalSubcollectionsDiscovered++
+                        [void]$visitedPaths.Add($subPath)
+                        $subQueueItem = [ordered]@{
+                            collectionId      = $subId
+                            parentResourceUrl = $docParentUrl
+                            path              = $subPath
+                            depth             = ($currentDepth + 1)
+                            cursor            = $null
+                        }
+                        $deepQueue.Enqueue($subQueueItem)
+                        Write-Host ('     [SUBCOLECCION DETECTADA]: ' + (Get-MaskedResourcePath $subPath)) -ForegroundColor Magenta
+                    }
+                }
+            }
+        }
+
+        if ($limitReached) {
+            break
+        }
+
+        # Manejo de paginación si hay más documentos en la colección actual
+        if ($batchDocs.Count -ge $PageSize) {
+            $lastDocName = $batchDocs[-1].Name
+            $currentItem.cursor = $lastDocName
+            $deepQueue.Enqueue($currentItem)
+            Write-Host '   (Paginacion: coleccion encolada para siguiente lote)' -ForegroundColor DarkGray
+        } else {
+            [void]$completedCollections.Add($currentPath)
+        }
+
+        # Guardar checkpoint periódico
+        Save-DeepCheckpoint -Status 'IN_PROGRESS'
+    }
+
+    $stopwatchTotal.Stop()
+    $totalElapsedMs = $stopwatchTotal.ElapsedMilliseconds
+
+    $deepStatus = if ($limitReached) { 'PAUSED_LIMIT_REACHED' } else { 'COMPLETED_SUCCESS' }
+    Save-DeepCheckpoint -Status $deepStatus -Reason $limitReason
+
+    # Generar reportes Deep agregados sin UIDs
+    $deepSummaryObj = [ordered]@{
+        ExecutionId                  = $executionId
+        Timestamp                    = (Get-Date).ToString('o')
+        Mode                         = 'Deep'
+        ProjectId                    = $ProjectId
+        DatabaseId                   = $DatabaseId
+        ExecutionTimeMs              = $totalElapsedMs
+        TotalRestRequestsMade        = $script:requestCount
+        TotalDocumentsDiscovered     = $totalDiscoveredDocuments
+        TotalSubcollectionsFound     = $totalSubcollectionsDiscovered
+        TotalErrorsEncountered       = $script:recordedErrors.Count
+        Limits                       = [ordered]@{
+            MaxRequests  = $MaxRequests
+            MaxDocuments = $MaxDocuments
+            MaxDepth     = $MaxDepth
+            ThrottleMs   = $ThrottleMs
+        }
+        LimitReached                 = $limitReached
+        LimitReachedReason           = $limitReason
+        Status                       = $deepStatus
+    }
+
+    $deepSummaryObj | ConvertTo-Json -Depth 6 | Set-Content -Path $deepSummaryPath -Encoding UTF8
+    $deepCountsMap | ConvertTo-Json -Depth 6 | Set-Content -Path $deepCountsPath -Encoding UTF8
+    $script:recordedErrors | ConvertTo-Json -Depth 6 | Set-Content -Path $deepErrorsPath -Encoding UTF8
+
+    $deepMd = New-Object System.Text.StringBuilder
+    $currentTimeUtc = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+    [void]$deepMd.AppendLine('# VIGORCORE -- REPORTE DE INVENTARIO PROFUNDO CLOUD FIRESTORE (DEEP INVENTORY)')
+    [void]$deepMd.AppendLine(('Generado el {0} (UTC)' -f $currentTimeUtc))
+    [void]$deepMd.AppendLine('')
+    [void]$deepMd.AppendLine('## 1. RESUMEN DE EJECUCION DEEP')
+    [void]$deepMd.AppendLine('')
+    [void]$deepMd.AppendLine('| Parametro | Valor |')
+    [void]$deepMd.AppendLine('| :--- | :--- |')
+    [void]$deepMd.AppendLine(('| **Proyecto GCP** | ' + $ProjectId + ' |'))
+    [void]$deepMd.AppendLine(('| **Database ID** | ' + $DatabaseId + ' |'))
+    [void]$deepMd.AppendLine(('| **Estado de Ejecucion** | **' + $deepStatus + '** |'))
+    [void]$deepMd.AppendLine(('| **Documentos Descubiertos** | ' + $totalDiscoveredDocuments + ' |'))
+    [void]$deepMd.AppendLine(('| **Subcolecciones Encontradas** | ' + $totalSubcollectionsDiscovered + ' |'))
+    [void]$deepMd.AppendLine(('| **Solicitudes REST Realizadas** | ' + $script:requestCount + ' / ' + $MaxRequests + ' |'))
+    [void]$deepMd.AppendLine(('| **Tiempo de Recorrido** | ' + $totalElapsedMs + ' ms |'))
+    if ($limitReached) {
+        [void]$deepMd.AppendLine(('| **Motivo de Detencion** | ' + $limitReason + ' |'))
+        [void]$deepMd.AppendLine('| **Accion de Reanudacion** | Ejecutar con flag [-Resume] para continuar |')
+    }
+    [void]$deepMd.AppendLine('')
+    [void]$deepMd.AppendLine('## 2. ARBOL DE ESQUEMAS DESCUBIERTOS (ANONIMIZADO)')
+    [void]$deepMd.AppendLine('')
+    [void]$deepMd.AppendLine('| Ruta de Esquema Mascarada | Nivel de Profundidad |')
+    [void]$deepMd.AppendLine('| :--- | :--- |')
+    foreach ($p in $visitedPaths) {
+        $mPath = Get-MaskedResourcePath $p
+        $pDepth = ($mPath.Split('/')).Length / 2
+        [void]$deepMd.AppendLine(('| ' + $mPath + ' | L' + [Math]::Floor($pDepth) + ' |'))
+    }
+
+    Set-Content -Path $deepReportPath -Value ($deepMd.ToString()) -Encoding UTF8
+    Write-Host ''
+    Write-Host ('[OK] Reporte Deep generado en: ' + $deepReportPath) -ForegroundColor Green
 }
-
-$summaryObj = [ordered]@{
-    Timestamp                  = (Get-Date).ToString('o')
-    Mode                       = $Mode
-    ProjectId                  = $ProjectId
-    DatabaseId                 = $DatabaseId
-    ExecutionTimeMs            = $totalElapsedMs
-    TotalRestRequestsMade      = $script:requestCount
-    TotalCollectionsInspected  = $allCollectionsToInspect.Count
-    TotalDocumentsDiscovered   = $totalDocsValue
-    TotalErrorsEncountered     = $script:recordedErrors.Count
-    PrivacyVerification        = 'StructuredQuery select fieldPath: __name__ (100% field protection, 0 data leaked)'
-    MissingParentsLimitation   = 'Firestore REST no enumera padres fantasma en shallow runQuery; documentado formalmente'
-    Status                     = $overallStatus
-}
-
-# 1. inventory-summary.json
-$summaryJson = $summaryObj | ConvertTo-Json -Depth 6
-Set-Content -Path $summaryPath -Value $summaryJson -Encoding UTF8
-$sumOkMsg = ' [OK] Resumen JSON:           {0}' -f $summaryPath
-Write-Host $sumOkMsg -ForegroundColor Green
-
-# 2. collections-tree.json
-$treeJson = $collectionsTree | ConvertTo-Json -Depth 10
-Set-Content -Path $collectionsPath -Value $treeJson -Encoding UTF8
-$treeOkMsg = ' [OK] Arbol de Colecciones:   {0}' -f $collectionsPath
-Write-Host $treeOkMsg -ForegroundColor Green
-
-# 3. document-counts.json
-$countsJson = $documentCountsMap | ConvertTo-Json -Depth 6
-Set-Content -Path $countsPath -Value $countsJson -Encoding UTF8
-$countsOkMsg = ' [OK] Conteo de Documentos:   {0}' -f $countsPath
-Write-Host $countsOkMsg -ForegroundColor Green
-
-# 4. inventory-errors.json
-$errorsJson = $script:recordedErrors | ConvertTo-Json -Depth 6
-Set-Content -Path $errorsPath -Value $errorsJson -Encoding UTF8
-$errOkMsg = ' [OK] Registro de Errores:    {0}' -f $errorsPath
-Write-Host $errOkMsg -ForegroundColor Green
-
-# 5. inventory-report.md (Construido sin interpolaciones anidadas, solo comillas simples)
-$mdBuilder = New-Object System.Text.StringBuilder
-
-$currentTimeUtc = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
-[void]$mdBuilder.AppendLine('# VIGORCORE -- REPORTE DE INVENTARIO ESTRUCTURAL CLOUD FIRESTORE (FASE 3.3.3)')
-$genLine = 'Generado el {0} (UTC)' -f $currentTimeUtc
-[void]$mdBuilder.AppendLine($genLine)
-[void]$mdBuilder.AppendLine('')
-[void]$mdBuilder.AppendLine('## 1. RESUMEN EJECUTIVO')
-[void]$mdBuilder.AppendLine('')
-[void]$mdBuilder.AppendLine('| Parametro | Valor |')
-[void]$mdBuilder.AppendLine('| :--- | :--- |')
-$p1 = '| **Proyecto GCP** | ' + $ProjectId + ' |'
-$p2 = '| **Database ID** | ' + $DatabaseId + ' |'
-$p3 = '| **Modo de Inventario** | ' + $Mode + ' |'
-$p4 = '| **Identidad ADC** | ' + $adcIdentity + ' |'
-$p5 = '| **Colecciones Inspeccionadas** | ' + $allCollectionsToInspect.Count + ' |'
-
-$docsText = if ($totalDiscoveredDocuments -eq $null) { 'DESCONOCIDO (Fallo parcial registrado)' } else { [string]$totalDiscoveredDocuments }
-$p6 = '| **Documentos Enumerados** | ' + $docsText + ' |'
-$p7 = '| **Solicitudes REST Realizadas** | ' + $script:requestCount + ' |'
-$p8 = '| **Tiempo Total de Ejecucion** | ' + $totalElapsedMs + ' ms |'
-$p9 = '| **Garantia de Privacidad** | StructuredQuery con proyeccion exclusiva __name__ (Cero campos de atletas) |'
-$p10 = '| **Estado General** | ' + $overallStatus + ' |'
-
-[void]$mdBuilder.AppendLine($p1)
-[void]$mdBuilder.AppendLine($p2)
-[void]$mdBuilder.AppendLine($p3)
-[void]$mdBuilder.AppendLine($p4)
-[void]$mdBuilder.AppendLine($p5)
-[void]$mdBuilder.AppendLine($p6)
-[void]$mdBuilder.AppendLine($p7)
-[void]$mdBuilder.AppendLine($p8)
-[void]$mdBuilder.AppendLine($p9)
-[void]$mdBuilder.AppendLine($p10)
-[void]$mdBuilder.AppendLine('')
-[void]$mdBuilder.AppendLine('## 2. DISCREPANCIA _system_ VS users')
-[void]$mdBuilder.AppendLine('')
-$d1 = '- Resultado listCollectionIds: ' + $rootColsJoined
-$d2 = '- Resultado RunQuery _system_: Estado HTTP ' + $consistencyReport.SystemCollectionQuery.StatusCode
-$d3 = '- Resultado GET _system_/audit_read_probe: Estado HTTP ' + $consistencyReport.SystemProbeGet.StatusCode + ' (Existe: ' + $consistencyReport.SystemProbeGet.Exists + ')'
-$d4 = '- Dictamen de Consistencia: ' + $consistencyReport.ComparisonVerdict
-$d5 = '- Explicacion Tecnica: ' + $consistencyReport.TechnicalExplanation
-
-[void]$mdBuilder.AppendLine($d1)
-[void]$mdBuilder.AppendLine($d2)
-[void]$mdBuilder.AppendLine($d3)
-[void]$mdBuilder.AppendLine($d4)
-[void]$mdBuilder.AppendLine($d5)
-[void]$mdBuilder.AppendLine('')
-[void]$mdBuilder.AppendLine('## 3. TABLA DE COLECCIONES Y ESTADOS')
-[void]$mdBuilder.AppendLine('')
-[void]$mdBuilder.AppendLine('| Coleccion | Nivel | Documentos Enumerados | Tiene Mas? | Completo? | Estado |')
-[void]$mdBuilder.AppendLine('| :--- | :--- | :--- | :--- | :--- | :--- |')
-
-foreach ($col in $collectionsTree) {
-    $cId = $col.Id
-    $docCountStr = if ($col.DocumentsEnumerated -eq $null) { 'null (Error)' } else { [string]$col.DocumentsEnumerated }
-    $hasMoreStr = if ($col.HasMore -eq $null) { 'null' } elseif ($col.HasMore) { 'Si' } else { 'No' }
-    $compStr = if ($col.EnumerationComplete) { 'Si' } else { 'No' }
-    $statusStr = if ($col.Error) { 'FAILED (' + $col.Error.StatusCode + ')' } else { 'SUCCESS' }
-
-    $colLine = '| ' + $cId + ' | Raiz | ' + $docCountStr + ' | ' + $hasMoreStr + ' | ' + $compStr + ' | ' + $statusStr + ' |'
-    [void]$mdBuilder.AppendLine($colLine)
-}
-
-[void]$mdBuilder.AppendLine('')
-[void]$mdBuilder.AppendLine('## 4. LIMITACIONES ARQUITECTONICAS DOCUMENTADAS')
-[void]$mdBuilder.AppendLine('')
-[void]$mdBuilder.AppendLine('1. Padres Fantasma (Missing Parents): En Firestore, si un documento padre fue eliminado o nunca creado pero existen subcolecciones hijas, dicho padre no es retornado por consultas sobre la coleccion padre sin usar allDescendants: true. Por estricta precaucion de privacidad, no se ejecutan consultas globales de subcolecciones hasta contar con el mapeo seguro.')
-[void]$mdBuilder.AppendLine('2. Tratamiento de Metadatos de Colecciones: listCollectionIds enumera colecciones registradas en el catalogo de particiones. Las colecciones no listadas pero con documentos existentes (ej. _system_) son inspeccionadas directamente mediante la lista declarativa del modelo de datos.')
-
-Set-Content -Path $reportPath -Value ($mdBuilder.ToString()) -Encoding UTF8
-$repOkMsg = ' [OK] Reporte Markdown:       {0}' -f $reportPath
-Write-Host $repOkMsg -ForegroundColor Green
 
 # -----------------------------------------------------------------------------
 # 8. Dictamen Final en Consola
@@ -798,28 +1074,20 @@ Write-Host ''
 Write-Host '[5/5] EVALUACION DE FINALIZACION' -ForegroundColor Cyan
 Write-Host '------------------------------------------------------------------------'
 
-if ($overallStatus -eq 'COMPLETED_SUCCESS') {
+$finalStatus = if ($Mode -eq 'Deep') { $deepStatus } else { $overallStatus }
+if ($finalStatus -eq 'COMPLETED_SUCCESS') {
     Write-Host ' [ESTADO]: INVENTARIO FINALIZADO EXITOSAMENTE (COMPLETED_SUCCESS)' -ForegroundColor Green
-    $finColsMsg = ' - Colecciones Inspeccionadas:       {0}' -f $allCollectionsToInspect.Count
-    $finDocsMsg = ' - Total Documentos Descubiertos:    {0}' -f $totalDiscoveredDocuments
-    Write-Host $finColsMsg -ForegroundColor Green
-    Write-Host $finDocsMsg -ForegroundColor Green
+    Write-Host (' - Total Documentos Descubiertos:    ' + $totalDiscoveredDocuments) -ForegroundColor Green
+} elseif ($finalStatus -eq 'PAUSED_LIMIT_REACHED') {
+    Write-Host ' [ESTADO]: RECORRIDO EN PAUSA POR LIMITE DE SEGURIDAD (PAUSED_LIMIT_REACHED)' -ForegroundColor Yellow
+    Write-Host (' - Motivo:                           ' + $limitReason) -ForegroundColor Yellow
+    Write-Host ' - Checkpoint guardado; ejecute con -Resume para continuar.' -ForegroundColor Yellow
 } else {
     Write-Host ' [ADVERTENCIA]: INVENTARIO FINALIZADO CON ESTADO PARCIAL (PARTIAL_FAILURE)' -ForegroundColor Yellow
-    Write-Host ' - Se registraron errores en una o mas consultas; los conteos fallidos se mantienen en null.' -ForegroundColor Yellow
-    $errColsCount = 0
-    foreach ($cNode in $collectionsTree) {
-        if ($cNode.Error -ne $null) { $errColsCount++ }
-    }
-    $errColsMsg = ' - Colecciones con Incidencias:       {0}' -f $errColsCount
-    Write-Host $errColsMsg -ForegroundColor Yellow
 }
 
-$finReqMsg  = ' - Total Solicitudes REST:           {0}' -f $script:requestCount
-$finTimeMsg = ' - Duracion Total:                   {0} ms' -f $totalElapsedMs
-Write-Host $finReqMsg -ForegroundColor Gray
-Write-Host $finTimeMsg -ForegroundColor Gray
+Write-Host (' - Total Solicitudes REST:           ' + $script:requestCount) -ForegroundColor Gray
+Write-Host (' - Duracion Total:                   ' + $totalElapsedMs + ' ms') -ForegroundColor Gray
 Write-Host ''
 Write-Host 'Reportes guardados en:' -ForegroundColor White
-$finalOutDirMsg = '    ' + $resolvedOutputDir
-Write-Host $finalOutDirMsg -ForegroundColor Yellow
+Write-Host ('    ' + $resolvedOutputDir) -ForegroundColor Yellow
