@@ -1,19 +1,20 @@
 <#
 .SYNOPSIS
-    VigorCore — Fase 3.3.1: Inventario Estructural y Proyección Segura de Cloud Firestore
+    VigorCore — Fase 3.3.2: Inventario Estructural y Validación de Consistencia de Cloud Firestore
     Descubrimiento read-only mediante API REST, StructuredQuery y credenciales ADC locales.
 
 .DESCRIPTION
-    Herramienta de auditoría e inventario corregida para la base de datos Firestore Enterprise de VigorCore.
+    Herramienta de auditoría e inventario para la base de datos Firestore Enterprise de VigorCore.
+    Compatible al 100% con Windows PowerShell 5.1 y PowerShell 7+.
     Utiliza exclusivamente StructuredQuery con proyección de clave primaria __name__, garantizando
     cero transmisión o almacenamiento de atributos biométricos, rutinas deportivas o planes nutricionales.
-    
-    Correcciones aplicadas (Fase 3.3.1):
-      1. Sustitución de 'mask.fieldPaths=__none__' por 'documents:runQuery' con proyección estricta '__name__'.
-      2. Paginación determinista basada en cursores 'startAt' con referenceValue y before: false.
-      3. Comprobación exhaustiva de consistencia entre la colección '_system_' y 'users'.
-      4. Manejo estricto de estados incompletos (documentsEnumerated = null ante fallos, no 0).
-      5. Resolución robusta de rutas relativas de reportes y archivado de ejecuciones anteriores.
+
+    Correcciones aplicadas (Fase 3.3.2):
+      1. Eliminación de todas las expresiones complejas anidadas $(...) dentro de cadenas expansibles.
+      2. Construcción de texto y tablas Markdown mediante variables pre-calculadas y operador -f.
+      3. Protocolo de consistencia empírico e independiente para _system_ (listCollectionIds vs GET vs RunQuery).
+      4. Failsafe estricto de privacidad: interrupción inmediata si la API devuelve campos inesperados.
+      5. Preservación de estados: DocumentsEnumerated = null y status = PARTIAL_FAILURE ante errores.
 
 .PARAMETER Mode
     'Shallow' (predeterminado) o 'Deep'.
@@ -32,7 +33,6 @@
 
 .EXAMPLE
     powershell -NoProfile -ExecutionPolicy Bypass -File .\poc\catalyst-3-2\scripts\inventory-firestore.ps1 -Mode Shallow
-    powershell -NoProfile -ExecutionPolicy Bypass -File .\poc\catalyst-3-2\scripts\inventory-firestore.ps1 -Mode Deep
 #>
 
 [CmdletBinding()]
@@ -56,8 +56,9 @@ param (
 $ErrorActionPreference = "Stop"
 
 Write-Host "========================================================================" -ForegroundColor Cyan
-Write-Host " VIGORCORE -- FASE 3.3.1: INVENTARIO ESTRUCTURAL Y PROYECCION SEGURA    " -ForegroundColor Cyan
-Write-Host " Modo: $Mode | StructuredQuery (__name__) | Zero Data | API REST v1     " -ForegroundColor Cyan
+Write-Host " VIGORCORE -- FASE 3.3.2: INVENTARIO ESTRUCTURAL Y VALIDACION ROBUSTA   " -ForegroundColor Cyan
+$headerSub = " Modo: {0} | StructuredQuery (__name__) | PS 5.1/7+ | Zero Data       " -f $Mode
+Write-Host $headerSub -ForegroundColor Cyan
 Write-Host "========================================================================" -ForegroundColor Cyan
 
 # -----------------------------------------------------------------------------
@@ -69,7 +70,6 @@ $scriptDir = if (-not [string]::IsNullOrWhiteSpace($PSScriptRoot)) {
     Split-Path -Parent $MyInvocation.MyCommand.Definition
 }
 
-# La raíz del módulo aislado es el padre del directorio scripts/
 $pocDir = Split-Path -Parent $scriptDir
 $defaultReportDir = Join-Path $pocDir "reports\firestore-inventory"
 
@@ -79,7 +79,6 @@ if ([string]::IsNullOrWhiteSpace($OutputDir)) {
     if ([System.IO.Path]::IsPathRooted($OutputDir)) {
         $resolvedOutputDir = [System.IO.Path]::GetFullPath($OutputDir)
     } else {
-        # Limpiar barras iniciales para evitar resolución en C:\
         $cleanRelative = $OutputDir.TrimStart('/', '\')
         $resolvedOutputDir = [System.IO.Path]::GetFullPath((Join-Path $pocDir $cleanRelative))
     }
@@ -89,7 +88,6 @@ if (-not (Test-Path -Path $resolvedOutputDir)) {
     New-Item -ItemType Directory -Path $resolvedOutputDir -Force | Out-Null
 }
 
-# Rutas de artefactos
 $summaryPath     = Join-Path $resolvedOutputDir "inventory-summary.json"
 $collectionsPath = Join-Path $resolvedOutputDir "collections-tree.json"
 $countsPath      = Join-Path $resolvedOutputDir "document-counts.json"
@@ -106,15 +104,17 @@ if (Test-Path -Path $summaryPath) {
             New-Item -ItemType Directory -Path $archiveBase -Force | Out-Null
         }
         $backupStamp = (Get-Date).ToString("yyyyMMdd-HHmmss")
-        $archiveTarget = Join-Path $archiveBase "run-$backupStamp"
+        $archiveTarget = Join-Path $archiveBase ("run-" + $backupStamp)
         New-Item -ItemType Directory -Path $archiveTarget -Force | Out-Null
 
         Get-ChildItem -Path $resolvedOutputDir -File | Where-Object { $_.Name -ne "checkpoint.json" } | ForEach-Object {
             Copy-Item -Path $_.FullName -Destination $archiveTarget -Force
         }
-        Write-Host " [BACKUP] Reportes anteriores preservados en: $archiveTarget" -ForegroundColor DarkGray
+        $archivedMsg = " [BACKUP] Reportes anteriores preservados en: {0}" -f $archiveTarget
+        Write-Host $archivedMsg -ForegroundColor DarkGray
     } catch {
-        Write-Host " [WARN] No se pudo crear copia de seguridad de reportes previos: $_" -ForegroundColor Yellow
+        $warnBackup = " [WARN] No se pudo crear copia de seguridad de reportes previos: {0}" -f $_.Exception.Message
+        Write-Host $warnBackup -ForegroundColor Yellow
     }
 }
 
@@ -138,16 +138,23 @@ if (Test-Path -Path $adcFilePath) {
         if ($adcContent.client_email) {
             $adcIdentity = $adcContent.client_email
         }
-        Write-Host " - Archivo ADC Detectado:     $adcFilePath" -ForegroundColor Green
+        $adcFoundMsg = " - Archivo ADC Detectado:     {0}" -f $adcFilePath
+        Write-Host $adcFoundMsg -ForegroundColor Green
     } catch {
-        Write-Host " - Archivo ADC Detectado:     $adcFilePath (Error parseando JSON)" -ForegroundColor Yellow
+        $adcWarnMsg = " - Archivo ADC Detectado:     {0} (Error parseando JSON)" -f $adcFilePath
+        Write-Host $adcWarnMsg -ForegroundColor Yellow
     }
 }
 
-Write-Host " - Proyecto GCP Destino:      $ProjectId"
-Write-Host " - Base de Datos Firestore:   $DatabaseId"
-Write-Host " - Quota Project Header:      $adcQuotaProject"
-Write-Host " - Directorio de Reportes:    $resolvedOutputDir"
+$destProjMsg = " - Proyecto GCP Destino:      {0}" -f $ProjectId
+$destDbMsg   = " - Base de Datos Firestore:   {0}" -f $DatabaseId
+$quotaMsg    = " - Quota Project Header:      {0}" -f $adcQuotaProject
+$outDirMsg   = " - Directorio de Reportes:    {0}" -f $resolvedOutputDir
+
+Write-Host $destProjMsg
+Write-Host $destDbMsg
+Write-Host $quotaMsg
+Write-Host $outDirMsg
 
 Write-Host "`n - Adquiriendo Access Token en memoria..." -NoNewline
 $tokenOutput = & gcloud auth application-default print-access-token 2>&1
@@ -160,19 +167,21 @@ if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($tokenOutput)) {
 }
 
 $accessToken = ($tokenOutput -split "`r?`n")[0].Trim()
-Write-Host " OK (Token protegido en memoria, longitud: $($accessToken.Length) caracteres)" -ForegroundColor Green
+$tokenLen = $accessToken.Length
+$tokenOkMsg = " OK (Token protegido en memoria, longitud: {0} caracteres)" -f $tokenLen
+Write-Host $tokenOkMsg -ForegroundColor Green
 
 # -----------------------------------------------------------------------------
 # 3. Motor de Invocación REST con Resiliencia y Control de Tasa
 # -----------------------------------------------------------------------------
 $headers = @{
-    "Authorization"       = "Bearer $accessToken"
+    "Authorization"       = "Bearer " + $accessToken
     "x-goog-user-project" = $adcQuotaProject
     "Accept"              = "application/json"
     "Content-Type"        = "application/json; charset=utf-8"
 }
 
-$databaseRootUrl = "https://firestore.googleapis.com/v1/projects/$ProjectId/databases/$DatabaseId/documents"
+$databaseRootUrl = "https://firestore.googleapis.com/v1/projects/" + $ProjectId + "/databases/" + $DatabaseId + "/documents"
 
 $script:recordedErrors = @()
 $script:requestCount = 0
@@ -242,7 +251,8 @@ function Invoke-FirestoreRest {
 
             if (($statusCode -eq 429 -or $statusCode -eq 503) -and $attempt -lt $MaxRetries) {
                 $backoffSec = [Math]::Pow(2, $attempt)
-                Write-Host "   [WARN] HTTP $statusCode recibido. Reintentando en $backoffSec s..." -ForegroundColor Yellow
+                $warnRetry = "   [WARN] HTTP {0} recibido. Reintentando en {1} s..." -f $statusCode, $backoffSec
+                Write-Host $warnRetry -ForegroundColor Yellow
                 Start-Sleep -Seconds $backoffSec
                 continue
             }
@@ -265,13 +275,14 @@ function Invoke-FirestoreRest {
             }
         } catch {
             $sw.Stop()
+            $exMsg = $_.Exception.Message
             $errorEntry = [ordered]@{
                 Timestamp   = (Get-Date).ToString("o")
                 Url         = $Url
                 Method      = $Method
                 StatusCode  = 0
-                Message     = $_.Exception.Message
-                Details     = "$_"
+                Message     = $exMsg
+                Details     = $_.ToString()
             }
             $script:recordedErrors += $errorEntry
 
@@ -284,11 +295,12 @@ function Invoke-FirestoreRest {
         }
     }
 
+    $failMsg = "Excedido maximo de reintentos para " + $Url
     return @{
         StatusCode = 0
         Body       = $null
         DurationMs = 0
-        Error      = @{ Message = "Excedido maximo de reintentos para $Url" }
+        Error      = @{ Message = $failMsg }
     }
 }
 
@@ -303,7 +315,7 @@ function Get-FirestoreCollectionIds {
 
     $collections = @()
     $pageToken = $null
-    $url = "$ParentResourceUrl`:listCollectionIds"
+    $url = $ParentResourceUrl + ":listCollectionIds"
 
     do {
         $bodyObj = [ordered]@{ "pageSize" = $PageSize }
@@ -320,7 +332,8 @@ function Get-FirestoreCollectionIds {
             }
             $pageToken = $res.Body.nextPageToken
         } else {
-            Write-Host "   [!] Advertencia: No se pudieron listar colecciones en $ParentResourceUrl (Status: $($res.StatusCode))" -ForegroundColor Yellow
+            $warnList = "   [!] Advertencia: No se pudieron listar colecciones en {0} (Status: {1})" -f $ParentResourceUrl, $res.StatusCode
+            Write-Host $warnList -ForegroundColor Yellow
             break
         }
     } while (-not [string]::IsNullOrEmpty($pageToken))
@@ -371,7 +384,7 @@ function Run-FirestoreQuery {
         "structuredQuery" = $structuredQuery
     }
 
-    $runQueryUrl = "$ParentResourceUrl`:runQuery"
+    $runQueryUrl = $ParentResourceUrl + ":runQuery"
     $res = Invoke-FirestoreRest -Method "POST" -Url $runQueryUrl -Body $requestBody
     return $res
 }
@@ -400,12 +413,25 @@ function Query-CollectionDocumentsSafe {
         }
 
         $batchDocs = @()
+        $privacyAlertTriggered = $false
+
         if ($res.Body -is [System.Array]) {
             foreach ($item in $res.Body) {
                 if ($item -and $item.document -and $item.document.name) {
-                    # Invariante de privacidad: comprobar que no se extraigan campos
+                    # Invariante estricta de privacidad: detección de fields
                     if ($item.document.fields) {
-                        Write-Host "   [ALERTA DE PRIVACIDAD] Fields detectados en respuesta; excluidos estrictamente de la memoria." -ForegroundColor Yellow
+                        Write-Host "   [ALERTA DE PRIVACIDAD CRITICA] Fields detectados en respuesta; abortando lote por proteccion de datos." -ForegroundColor Red
+                        $privacyAlert = [ordered]@{
+                            Timestamp   = (Get-Date).ToString("o")
+                            Collection  = $CollectionId
+                            StatusCode  = 400
+                            Message     = "Campos inesperados detectados en la respuesta de runQuery; procesamiento abortado para garantizar cero fugas."
+                        }
+                        $script:recordedErrors += $privacyAlert
+                        $querySuccess = $false
+                        $queryError = @{ StatusCode = 400; Message = "Failsafe de privacidad activado: campos inesperados detectados" }
+                        $privacyAlertTriggered = $true
+                        break
                     }
 
                     $batchDocs += [ordered]@{
@@ -417,11 +443,16 @@ function Query-CollectionDocumentsSafe {
             }
         }
 
+        if ($privacyAlertTriggered) {
+            break
+        }
+
         $documents += $batchDocs
 
         if ($batchDocs.Count -ge $limitPerPage) {
             $hasMore = $true
-            $cursor = $batchDocs[-1].Name
+            $lastIndex = $batchDocs.Count - 1
+            $cursor = $batchDocs[$lastIndex].Name
             if ($SampleOnly) {
                 break
             }
@@ -454,21 +485,47 @@ $consistencyReport = [ordered]@{
     TechnicalExplanation   = ""
 }
 
-Write-Host " 1. Re-listando colecciones raiz mediante listCollectionIds..." -NoNewline
+Write-Host " A. Re-listando colecciones raiz mediante listCollectionIds (paginacion completa)..." -NoNewline
 $freshRootCols = Get-FirestoreCollectionIds -ParentResourceUrl $databaseRootUrl
 $consistencyReport.ListCollectionIdsRoot = $freshRootCols
-Write-Host " Encontradas: $($freshRootCols -join ', ')" -ForegroundColor Yellow
+$rootColsJoined = if ($freshRootCols.Count -gt 0) { $freshRootCols -join ', ' } else { 'Vacio' }
+$rootColsMsg = " Encontradas: {0}" -f $rootColsJoined
+Write-Host $rootColsMsg -ForegroundColor Yellow
 
-Write-Host " 2. Ejecutando RunQuery con proyeccion __name__ sobre coleccion '_system_'..." -NoNewline
+Write-Host " B. Verificando ruta concreta '_system_/audit_read_probe' via GET directo..." -NoNewline
+$probeUrl = $databaseRootUrl + "/_system_/audit_read_probe"
+$probeRes = Invoke-FirestoreRest -Method "GET" -Url $probeUrl
+$probeStatus = $probeRes.StatusCode
+$probeExists = ($probeStatus -eq 200)
+$probeLatency = $probeRes.DurationMs
+
+$probeResourceName = if ($probeExists -and $probeRes.Body -and $probeRes.Body.name) {
+    $probeRes.Body.name
+} else {
+    "No determinado"
+}
+
+$consistencyReport.SystemProbeGet = [ordered]@{
+    StatusCode   = $probeStatus
+    Exists       = $probeExists
+    ResourceName = $probeResourceName
+    LatencyMs    = $probeLatency
+}
+$probeStatusColor = if ($probeExists) { "Green" } else { "Yellow" }
+$probeStatusMsg = " HTTP {0}" -f $probeStatus
+Write-Host $probeStatusMsg -ForegroundColor $probeStatusColor
+
+Write-Host " C. Ejecutando RunQuery con proyeccion __name__ sobre coleccion '_system_'..." -NoNewline
 $systemQueryRes = Run-FirestoreQuery -CollectionId "_system_" -Limit 10
 $systemDocsCount = 0
 $systemQueryStatus = $systemQueryRes.StatusCode
 
-if ($systemQueryRes.StatusCode -eq 200 -and ($systemQueryRes.Body -is [System.Array])) {
+if ($systemQueryStatus -eq 200 -and ($systemQueryRes.Body -is [System.Array])) {
     $foundNames = @()
     foreach ($item in $systemQueryRes.Body) {
         if ($item -and $item.document -and $item.document.name) {
-            $foundNames += (Split-Path $item.document.name -Leaf)
+            $leafName = Split-Path $item.document.name -Leaf
+            $foundNames += $leafName
             $systemDocsCount++
         }
     }
@@ -477,42 +534,37 @@ if ($systemQueryRes.StatusCode -eq 200 -and ($systemQueryRes.Body -is [System.Ar
         DocumentCount = $systemDocsCount
         Documents     = $foundNames
     }
-    Write-Host " HTTP 200 ($systemDocsCount documentos encontrados)" -ForegroundColor Green
+    $systemQueryOkMsg = " HTTP 200 ({0} documentos encontrados)" -f $systemDocsCount
+    Write-Host $systemQueryOkMsg -ForegroundColor Green
 } else {
+    $sysErrMsg = if ($systemQueryRes.Error) { $systemQueryRes.Error.Message } else { "Error de consulta" }
     $consistencyReport.SystemCollectionQuery = [ordered]@{
-        StatusCode = $systemQueryRes.StatusCode
-        Error      = if ($systemQueryRes.Error) { $systemQueryRes.Error.Message } else { "Error de consulta" }
+        StatusCode = $systemQueryStatus
+        Error      = $sysErrMsg
     }
-    Write-Host " HTTP $($systemQueryRes.StatusCode)" -ForegroundColor Yellow
+    $sysErrStatusMsg = " HTTP {0}" -f $systemQueryStatus
+    Write-Host $sysErrStatusMsg -ForegroundColor Yellow
 }
 
-Write-Host " 3. Verificando ruta concreta '_system_/audit_read_probe' via GET directo..." -NoNewline
-$probeUrl = "$databaseRootUrl/_system_/audit_read_probe"
-$probeRes = Invoke-FirestoreRest -Method "GET" -Url $probeUrl
-$consistencyReport.SystemProbeGet = [ordered]@{
-    StatusCode = $probeRes.StatusCode
-    Exists     = ($probeRes.StatusCode -eq 200)
-    LatencyMs  = $probeRes.DurationMs
-}
-Write-Host " HTTP $($probeRes.StatusCode)" -ForegroundColor $(if ($probeRes.StatusCode -eq 200) { "Green" } else { "Yellow" })
+# Evaluación empírica de consistencia
+$systemInListCols = ($freshRootCols -contains "_system_")
+$usersInListCols  = ($freshRootCols -contains "users")
 
-# Evaluación de la discrepancia
-$hasSystemInList = ($freshRootCols -contains "_system_")
-$hasUsersInList  = ($freshRootCols -contains "users")
-
-if ($probeRes.StatusCode -eq 200 -and (-not $hasSystemInList)) {
-    $consistencyReport.ComparisonVerdict = "DOCUMENT_EXISTS_BUT_OMITTED_BY_LIST_COLLECTION_IDS"
-    $consistencyReport.TechnicalExplanation = "El documento '_system_/audit_read_probe' existe plenamente y responde HTTP 200, pero 'listCollectionIds' omite la coleccion '_system_'. Esto ocurre comunmente en Firestore cuando: (a) colecciones con prefijo de guion bajo '_' reciben tratamiento de metadatos/sistema y no son expuestas por el indice estandar de colecciones, o (b) la coleccion fue creada directamente sin metadatos de catalogo. La coleccion 'users' si aparece en listCollectionIds."
-    Write-Host "`n [HALLAZGO CONSISTENCIA]: El documento '_system_/audit_read_probe' EXISTE realmente (HTTP 200), pero listCollectionIds no enumera colecciones prefijadas con '_'. Se agregara '_system_' a la lista de inspeccion obligatoria." -ForegroundColor Magenta
+if ($probeExists -and (-not $systemInListCols)) {
+    $consistencyReport.ComparisonVerdict = "DIVERGENCE_OBSERVED"
+    $divergenceExplanation = "El documento '_system_/audit_read_probe' responde HTTP 200 via GET (recurso existente), y RunQuery sobre '_system_' responde HTTP {0} con {1} documentos. Sin embargo, listCollectionIds devolvio: [{2}]. Se observa una divergencia real entre la lista de colecciones y el acceso directo a documentos. No se asume ninguna hipotesis de prefijo; se auditan ambas fuentes de forma transparente." -f $systemQueryStatus, $systemDocsCount, $rootColsJoined
+    $consistencyReport.TechnicalExplanation = $divergenceExplanation
+    Write-Host "`n [HALLAZGO EMPIRICO]: '_system_/audit_read_probe' EXISTE (HTTP 200), pero listCollectionIds no enumero '_system_'. Ambas fuentes seran incorporadas al inventario." -ForegroundColor Magenta
 } else {
     $consistencyReport.ComparisonVerdict = "CONSISTENT"
-    $consistencyReport.TechnicalExplanation = "Los resultados de listCollectionIds y las consultas directas son consistentes."
+    $consistencyReport.TechnicalExplanation = "Los resultados de listCollectionIds, GET y RunQuery son consistentes entre si."
 }
 
 # Guardar consistency-check.json
 $consistencyJson = $consistencyReport | ConvertTo-Json -Depth 6
 Set-Content -Path $consistencyPath -Value $consistencyJson -Encoding UTF8
-Write-Host " [OK] Consistencia registrada en: $consistencyPath" -ForegroundColor Green
+$consSavedMsg = " [OK] Consistencia registrada en: {0}" -f $consistencyPath
+Write-Host $consSavedMsg -ForegroundColor Green
 
 # -----------------------------------------------------------------------------
 # 6. Descubrimiento de Colecciones y Estructura
@@ -522,12 +574,11 @@ Write-Host "--------------------------------------------------------------------
 
 $stopwatchTotal = [System.Diagnostics.Stopwatch]::StartNew()
 
-# Conjunto de colecciones a inspeccionar: las devueltas por listCollectionIds + colecciones conocidas del dominio
+# Conjunto de colecciones a inspeccionar: descubiertas dinámicamente + colecciones del modelo de datos
 $allCollectionsToInspect = [System.Collections.Generic.List[string]]::new()
 foreach ($col in $freshRootCols) {
     if (-not $allCollectionsToInspect.Contains($col)) { $allCollectionsToInspect.Add($col) }
 }
-# Garantizar inspección de _system_ y usuarios
 foreach ($expectedCol in @("_system_", "users", "athletes", "trainers", "invitations", "security_audit", "locks")) {
     if (-not $allCollectionsToInspect.Contains($expectedCol)) { $allCollectionsToInspect.Add($expectedCol) }
 }
@@ -540,7 +591,8 @@ $totalDiscoveredDocuments = 0
 $isShallow = ($Mode -eq "Shallow")
 
 foreach ($colId in $allCollectionsToInspect) {
-    Write-Host "`n [Coleccion] '$colId'" -ForegroundColor White
+    $colHeaderMsg = "`n [Coleccion] '{0}'" -f $colId
+    Write-Host $colHeaderMsg -ForegroundColor White
 
     $colNode = [ordered]@{
         Id                   = $colId
@@ -576,7 +628,9 @@ foreach ($colId in $allCollectionsToInspect) {
             Status              = "SUCCESS"
         }
 
-        Write-Host "   - Documentos enumerados: $count $(if ($hasMore) { '(+ mas disponibles)' } else { '' })" -ForegroundColor Green
+        $moreSuffix = if ($hasMore) { " (+ mas disponibles)" } else { "" }
+        $colSuccessMsg = "   - Documentos enumerados: {0}{1}" -f $count, $moreSuffix
+        Write-Host $colSuccessMsg -ForegroundColor Green
     } else {
         $hasAnyFailure = $true
         $colNode.DocumentsEnumerated = $null
@@ -593,7 +647,9 @@ foreach ($colId in $allCollectionsToInspect) {
             Error               = $docResult.Error
         }
 
-        Write-Host "   - [ERROR EN CONSULTA]: $($docResult.Error.Message)" -ForegroundColor Red
+        $errReason = if ($docResult.Error -and $docResult.Error.Message) { $docResult.Error.Message } else { "Error en consulta" }
+        $colErrMsg = "   - [ERROR EN CONSULTA]: {0}" -f $errReason
+        Write-Host $colErrMsg -ForegroundColor Red
         Write-Host "     Estado registrado como: DocumentsEnumerated = null, EnumerationComplete = false" -ForegroundColor Yellow
     }
 
@@ -611,6 +667,12 @@ Write-Host "--------------------------------------------------------------------
 
 $overallStatus = if ($hasAnyFailure) { "PARTIAL_FAILURE" } else { "COMPLETED_SUCCESS" }
 
+$totalDocsValue = if ($totalDiscoveredDocuments -eq $null) {
+    "UNKNOWN (Partial failure in 1 or more collections)"
+} else {
+    $totalDiscoveredDocuments
+}
+
 $summaryObj = [ordered]@{
     Timestamp                  = (Get-Date).ToString("o")
     Mode                       = $Mode
@@ -619,7 +681,7 @@ $summaryObj = [ordered]@{
     ExecutionTimeMs            = $totalElapsedMs
     TotalRestRequestsMade      = $script:requestCount
     TotalCollectionsInspected  = $allCollectionsToInspect.Count
-    TotalDocumentsDiscovered   = if ($totalDiscoveredDocuments -eq $null) { "UNKNOWN (Partial failure in 1 or more collections)" } else { $totalDiscoveredDocuments }
+    TotalDocumentsDiscovered   = $totalDocsValue
     TotalErrorsEncountered     = $script:recordedErrors.Count
     PrivacyVerification        = "StructuredQuery select fieldPath: __name__ (100% field protection, 0 data leaked)"
     MissingParentsLimitation   = "Firestore REST no enumera padres fantasma en shallow runQuery; documentado formalmente"
@@ -629,51 +691,76 @@ $summaryObj = [ordered]@{
 # 1. inventory-summary.json
 $summaryJson = $summaryObj | ConvertTo-Json -Depth 6
 Set-Content -Path $summaryPath -Value $summaryJson -Encoding UTF8
-Write-Host " [OK] Resumen JSON:           $summaryPath" -ForegroundColor Green
+$sumOkMsg = " [OK] Resumen JSON:           {0}" -f $summaryPath
+Write-Host $sumOkMsg -ForegroundColor Green
 
 # 2. collections-tree.json
 $treeJson = $collectionsTree | ConvertTo-Json -Depth 10
 Set-Content -Path $collectionsPath -Value $treeJson -Encoding UTF8
-Write-Host " [OK] Arbol de Colecciones:   $collectionsPath" -ForegroundColor Green
+$treeOkMsg = " [OK] Arbol de Colecciones:   {0}" -f $collectionsPath
+Write-Host $treeOkMsg -ForegroundColor Green
 
 # 3. document-counts.json
 $countsJson = $documentCountsMap | ConvertTo-Json -Depth 6
 Set-Content -Path $countsPath -Value $countsJson -Encoding UTF8
-Write-Host " [OK] Conteo de Documentos:   $countsPath" -ForegroundColor Green
+$countsOkMsg = " [OK] Conteo de Documentos:   {0}" -f $countsPath
+Write-Host $countsOkMsg -ForegroundColor Green
 
 # 4. inventory-errors.json
 $errorsJson = $script:recordedErrors | ConvertTo-Json -Depth 6
 Set-Content -Path $errorsPath -Value $errorsJson -Encoding UTF8
-Write-Host " [OK] Registro de Errores:    $errorsPath" -ForegroundColor Green
+$errOkMsg = " [OK] Registro de Errores:    {0}" -f $errorsPath
+Write-Host $errOkMsg -ForegroundColor Green
 
-# 5. inventory-report.md
+# 5. inventory-report.md (Construido sin interpolaciones anidadas)
 $mdBuilder = New-Object System.Text.StringBuilder
 
-[void]$mdBuilder.AppendLine("# VIGORCORE -- REPORTE DE INVENTARIO ESTRUCTURAL CLOUD FIRESTORE (FASE 3.3.1)")
-[void]$mdBuilder.AppendLine("Generado el $((Get-Date).ToString('yyyy-MM-dd HH:mm:ss')) (UTC)")
+$currentTimeUtc = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+[void]$mdBuilder.AppendLine("# VIGORCORE -- REPORTE DE INVENTARIO ESTRUCTURAL CLOUD FIRESTORE (FASE 3.3.2)")
+$genLine = "Generado el {0} (UTC)" -f $currentTimeUtc
+[void]$mdBuilder.AppendLine($genLine)
 [void]$mdBuilder.AppendLine("")
 [void]$mdBuilder.AppendLine("## 1. RESUMEN EJECUTIVO")
 [void]$mdBuilder.AppendLine("")
 [void]$mdBuilder.AppendLine("| Parametro | Valor |")
 [void]$mdBuilder.AppendLine("| :--- | :--- |")
-[void]$mdBuilder.AppendLine("| **Proyecto GCP** | `$ProjectId` |")
-[void]$mdBuilder.AppendLine("| **Database ID** | `$DatabaseId` |")
-[void]$mdBuilder.AppendLine("| **Modo de Inventario** | `$Mode` |")
-[void]$mdBuilder.AppendLine("| **Identidad ADC** | `$adcIdentity` |")
-[void]$mdBuilder.AppendLine("| **Colecciones Inspeccionadas** | $($allCollectionsToInspect.Count) |")
-[void]$mdBuilder.AppendLine("| **Documentos Enumerados** | $(if ($totalDiscoveredDocuments -eq $null) { 'DESCONOCIDO (Fallo parcial registrado)' } else { $totalDiscoveredDocuments }) |")
-[void]$mdBuilder.AppendLine("| **Solicitudes REST Realizadas** | $($script:requestCount) |")
-[void]$mdBuilder.AppendLine("| **Tiempo Total de Ejecucion** | $($totalElapsedMs) ms |")
-[void]$mdBuilder.AppendLine("| **Garantia de Privacidad** | StructuredQuery con proyeccion exclusiva `__name__` (Cero campos de atletas) |")
-[void]$mdBuilder.AppendLine("| **Estado General** | **`$overallStatus`** |")
+$p1 = "| **Proyecto GCP** | `{0}` |" -f $ProjectId
+$p2 = "| **Database ID** | `{0}` |" -f $DatabaseId
+$p3 = "| **Modo de Inventario** | `{0}` |" -f $Mode
+$p4 = "| **Identidad ADC** | `{0}` |" -f $adcIdentity
+$p5 = "| **Colecciones Inspeccionadas** | {0} |" -f $allCollectionsToInspect.Count
+
+$docsText = if ($totalDiscoveredDocuments -eq $null) { "DESCONOCIDO (Fallo parcial registrado)" } else { $totalDiscoveredDocuments }
+$p6 = "| **Documentos Enumerados** | {0} |" -f $docsText
+$p7 = "| **Solicitudes REST Realizadas** | {0} |" -f $script:requestCount
+$p8 = "| **Tiempo Total de Ejecucion** | {0} ms |" -f $totalElapsedMs
+$p9 = "| **Garantia de Privacidad** | StructuredQuery con proyeccion exclusiva `__name__` (Cero campos de atletas) |"
+$p10 = "| **Estado General** | **`{0}`** |" -f $overallStatus
+
+[void]$mdBuilder.AppendLine($p1)
+[void]$mdBuilder.AppendLine($p2)
+[void]$mdBuilder.AppendLine($p3)
+[void]$mdBuilder.AppendLine($p4)
+[void]$mdBuilder.AppendLine($p5)
+[void]$mdBuilder.AppendLine($p6)
+[void]$mdBuilder.AppendLine($p7)
+[void]$mdBuilder.AppendLine($p8)
+[void]$mdBuilder.AppendLine($p9)
+[void]$mdBuilder.AppendLine($p10)
 [void]$mdBuilder.AppendLine("")
 [void]$mdBuilder.AppendLine("## 2. DISCREPANCIA `_system_` VS `users`")
 [void]$mdBuilder.AppendLine("")
-[void]$mdBuilder.AppendLine("- **Resultado listCollectionIds:** $(if ($freshRootCols.Count -gt 0) { $freshRootCols -join ', ' } else { 'Vacio' })")
-[void]$mdBuilder.AppendLine("- **Resultado RunQuery `_system_`:** Estado HTTP $($consistencyReport.SystemCollectionQuery.StatusCode)")
-[void]$mdBuilder.AppendLine("- **Resultado GET `_system_/audit_read_probe`:** Estado HTTP $($consistencyReport.SystemProbeGet.StatusCode) (Existe: $($consistencyReport.SystemProbeGet.Exists))")
-[void]$mdBuilder.AppendLine("- **Dictamen de Consistencia:** $($consistencyReport.ComparisonVerdict)")
-[void]$mdBuilder.AppendLine("- **Explicacion Tecnica:** $($consistencyReport.TechnicalExplanation)")
+$d1 = "- **Resultado listCollectionIds:** {0}" -f $rootColsJoined
+$d2 = "- **Resultado RunQuery `_system_`:** Estado HTTP {0}" -f $consistencyReport.SystemCollectionQuery.StatusCode
+$d3 = "- **Resultado GET `_system_/audit_read_probe`:** Estado HTTP {0} (Existe: {1})" -f $consistencyReport.SystemProbeGet.StatusCode, $consistencyReport.SystemProbeGet.Exists
+$d4 = "- **Dictamen de Consistencia:** {0}" -f $consistencyReport.ComparisonVerdict
+$d5 = "- **Explicacion Tecnica:** {0}" -f $consistencyReport.TechnicalExplanation
+
+[void]$mdBuilder.AppendLine($d1)
+[void]$mdBuilder.AppendLine($d2)
+[void]$mdBuilder.AppendLine($d3)
+[void]$mdBuilder.AppendLine($d4)
+[void]$mdBuilder.AppendLine($d5)
 [void]$mdBuilder.AppendLine("")
 [void]$mdBuilder.AppendLine("## 3. TABLA DE COLECCIONES Y ESTADOS")
 [void]$mdBuilder.AppendLine("")
@@ -682,22 +769,24 @@ $mdBuilder = New-Object System.Text.StringBuilder
 
 foreach ($col in $collectionsTree) {
     $cId = $col.Id
-    $docCountStr = if ($col.DocumentsEnumerated -eq $null) { "null (Error)" } else { "$($col.DocumentsEnumerated)" }
+    $docCountStr = if ($col.DocumentsEnumerated -eq $null) { "null (Error)" } else { [string]$col.DocumentsEnumerated }
     $hasMoreStr = if ($col.HasMore -eq $null) { "null" } elseif ($col.HasMore) { "Si" } else { "No" }
     $compStr = if ($col.EnumerationComplete) { "Si" } else { "No" }
-    $statusStr = if ($col.Error) { "FAILED ($($col.Error.StatusCode))" } else { "SUCCESS" }
+    $statusStr = if ($col.Error) { "FAILED (" + $col.Error.StatusCode + ")" } else { "SUCCESS" }
 
-    [void]$mdBuilder.AppendLine("| `$cId` | Raiz | $docCountStr | $hasMoreStr | $compStr | $statusStr |")
+    $colLine = "| `{0}` | Raiz | {1} | {2} | {3} | {4} |" -f $cId, $docCountStr, $hasMoreStr, $compStr, $statusStr
+    [void]$mdBuilder.AppendLine($colLine)
 }
 
 [void]$mdBuilder.AppendLine("")
 [void]$mdBuilder.AppendLine("## 4. LIMITACIONES ARQUITECTONICAS DOCUMENTADAS")
 [void]$mdBuilder.AppendLine("")
 [void]$mdBuilder.AppendLine("1. **Padres Fantasma (Missing Parents):** En Firestore, si un documento padre fue eliminado o nunca creado pero existen subcolecciones hijas, dicho padre no es retornado por consultas sobre la coleccion padre sin usar `allDescendants: true`. Por estricta precaucion de privacidad, no se ejecutan consultas globales de subcolecciones hasta contar con el mapeo seguro.")
-[void]$mdBuilder.AppendLine("2. **Tratamiento de Prefijo de Subguion (`_`):** `listCollectionIds` no garantiza la exposicion de colecciones internas de sistema. La herramienta inspecciona tanto la lista dinamica como las colecciones declaradas en el modelo de datos de VigorCore.")
+[void]$mdBuilder.AppendLine("2. **Tratamiento de Metadatos de Colecciones:** `listCollectionIds` enumera colecciones registradas en el catalogo de particiones. Las colecciones no listadas pero con documentos existentes (ej. `_system_`) son inspeccionadas directamente mediante la lista declarativa del modelo de datos.")
 
 Set-Content -Path $reportPath -Value ($mdBuilder.ToString()) -Encoding UTF8
-Write-Host " [OK] Reporte Markdown:       $reportPath" -ForegroundColor Green
+$repOkMsg = " [OK] Reporte Markdown:       {0}" -f $reportPath
+Write-Host $repOkMsg -ForegroundColor Green
 
 # -----------------------------------------------------------------------------
 # 8. Dictamen Final en Consola
@@ -707,15 +796,24 @@ Write-Host "--------------------------------------------------------------------
 
 if ($overallStatus -eq "COMPLETED_SUCCESS") {
     Write-Host " [ESTADO]: INVENTARIO FINALIZADO EXITOSAMENTE (COMPLETED_SUCCESS)" -ForegroundColor Green
-    Write-Host " - Colecciones Inspeccionadas:       $($allCollectionsToInspect.Count)" -ForegroundColor Green
-    Write-Host " - Total Documentos Descubiertos:    $totalDiscoveredDocuments" -ForegroundColor Green
+    $finColsMsg = " - Colecciones Inspeccionadas:       {0}" -f $allCollectionsToInspect.Count
+    $finDocsMsg = " - Total Documentos Descubiertos:    {0}" -f $totalDiscoveredDocuments
+    Write-Host $finColsMsg -ForegroundColor Green
+    Write-Host $finDocsMsg -ForegroundColor Green
 } else {
     Write-Host " [ADVERTENCIA]: INVENTARIO FINALIZADO CON ESTADO PARCIAL (PARTIAL_FAILURE)" -ForegroundColor Yellow
     Write-Host " - Se registraron errores en una o mas consultas; los conteos fallidos se mantienen en 'null'." -ForegroundColor Yellow
-    Write-Host " - Colecciones con Incidencias:       $(($collectionsTree | Where-Object { $_.Error -ne $null }).Count)" -ForegroundColor Yellow
+    $errColsCount = 0
+    foreach ($cNode in $collectionsTree) {
+        if ($cNode.Error -ne $null) { $errColsCount++ }
+    }
+    $errColsMsg = " - Colecciones con Incidencias:       {0}" -f $errColsCount
+    Write-Host $errColsMsg -ForegroundColor Yellow
 }
 
-Write-Host " - Total Solicitudes REST:           $($script:requestCount)" -ForegroundColor Gray
-Write-Host " - Duracion Total:                   $totalElapsedMs ms" -ForegroundColor Gray
+$finReqMsg  = " - Total Solicitudes REST:           {0}" -f $script:requestCount
+$finTimeMsg = " - Duracion Total:                   {0} ms" -f $totalElapsedMs
+Write-Host $finReqMsg -ForegroundColor Gray
+Write-Host $finTimeMsg -ForegroundColor Gray
 Write-Host "`nReportes guardados en:" -ForegroundColor White
-Write-Host "    $resolvedOutputDir" -ForegroundColor Yellow
+Write-Host ("    " + $resolvedOutputDir) -ForegroundColor Yellow

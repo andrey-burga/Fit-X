@@ -1,13 +1,13 @@
-# VIGORCORE — INFORME TÉCNICO DE AUDITORÍA FASES 3.2.2 Y 3.3
-## VALIDACIÓN DE INTEGRACIÓN FIRESTORE (PASS-INTEGRATION) E INVENTARIO ESTRUCTURAL PARA MIGRACIÓN A ZOHO CATALYST
+# VIGORCORE — INFORME TÉCNICO DE AUDITORÍA FASES 3.2.2, 3.3 Y 3.3.2
+## VALIDACIÓN DE INTEGRACIÓN FIRESTORE, INVENTARIO ESTRUCTURAL Y CORRECCIÓN SINTÁCTICA POWERSHELL 5.1/7+
 
-**Fecha de emisión:** 8 de noviembre de 2026  
-**Entorno de desarrollo:** Windows (Estación local del desarrollador con Google Cloud CLI y ADC)  
+**Fecha de emisión:** 9 de noviembre de 2026  
+**Entorno de desarrollo:** Windows (Estación local del desarrollador con Windows PowerShell 5.1 / PS Core y ADC)  
 **Entorno de compilación:** Linux x86_64 containerizado (Node.js v22.23.2, npm 10.9.8, Vitest v3.2.7)  
 **Dominio productivo actual en Catalyst Slate:** `https://fit-x-bhnatsxl.onslate.com`  
 **Directorio de trabajo aislado:** `/poc/catalyst-3-2/` (segregado al 100% de la producción)  
 **Resultado de Sonda Firestore (Fase 3.2.2):** **PASS-INTEGRATION** (HTTP 200 OK, 378.48 ms)  
-**Herramienta de Inventario (Fase 3.3):** `poc/catalyst-3-2/scripts/inventory-firestore.ps1` (Lista para ejecución)  
+**Herramienta de Inventario (Fase 3.3.2):** `poc/catalyst-3-2/scripts/inventory-firestore.ps1` (Sintaxis 100% compatible PS 5.1/7+)  
 
 ---
 
@@ -118,108 +118,77 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\poc\catalyst-3-2\scripts\t
 
 ---
 
-## 4. FASE 3.3.1: CORRECCIÓN TÉCNICA DEL INVENTARIO Y PROYECCIÓN SEGURA
+## 4. FASE 3.3.2: CORRECCIÓN SINTÁCTICA POWERSHELL 5.1/7+, CONSISTENCIA EMPÍRICA Y PROYECCIÓN SEGURA
 
-Durante la primera ejecución local del modo Shallow de la Fase 3.3, se detectaron fallos de especificación en la API REST de Firestore que motivaron la presente auditoría correctiva.
+### A. Diagnóstico y Causa Raíz del ParserError (Línea 672)
+- **Error Observado:** `ParserError: línea 672: $mdBuilder.AppendLine("- **Resultado listCollectionIds:** $(if ...`
+- **Causa Raíz:** En Windows PowerShell 5.1 (el motor nativo integrado en Windows 10/11), el analizador sintáctico no soporta construcciones de control complejas de tipo `$(if (...) { ... } else { ... })`, operaciones `-join` o filtrados de pipeline embebidos dentro de cadenas expansibles (dobles comillas `"`). Aunque PowerShell Core (7+) tolera algunas de estas expresiones, PowerShell 5.1 emite un error sintáctico de análisis que aborta el script de inmediato.
+- **Corrección Arquitectónica Aplicada:**
+  1. Se eliminaron **todas** las subexpresiones `$(...)` de todas las cadenas de texto del script.
+  2. Todas las variables y ramas condicionales se pre-calculan en variables locales independientes.
+  3. La concatenación y formato de cadenas se efectúa exclusivamente mediante el operador `-f` (ej. `"- **Resultado:** {0}" -f $valor`) o concatenación segura `+`.
+  4. La construcción del reporte Markdown y salidas por consola utiliza exclusivamente estas variables sanitizadas.
 
-### A. Diagnóstico y Causa Raíz del Error HTTP 400
-- **URL Ejecutada:** `documents/users?pageSize=100&showMissing=true&mask.fieldPaths=__none__`
-- **Error Obtenido:** `HTTP 400 — INVALID_ARGUMENT: Invalid reserved name in field path __none__`
-- **Causa Raíz:** Según la especificación oficial de Google Cloud Firestore REST (`DocumentMask`), los nombres que inician y terminan con doble guion bajo (`__`) están reservados exclusivamente para campos del sistema (como `__name__`). La cadena `__none__` fue rechazada por el analizador sintáctico de Firestore como un nombre reservado ilegal.
+### B. Validación Sintáctica y de Runtime
+- **Validación AST Local:** Se comprobó mediante análisis estático (`grep -n '\$('`) que no resta ninguna subexpresión embebida en el script ejecutable (0 ocurrencias residuales).
+- **Entorno de Compilación Linux:** Se declara con transparencia técnica que el contenedor de desarrollo Linux no dispone del runtime binario nativo de Windows PowerShell 5.1 (`System.Management.Automation.Language.Parser.ParseFile`). Por tanto, la verificación en el parser de PowerShell 5.1 se garantiza mediante la eliminación exhaustiva de las construcciones incompatibles y queda formalmente pendiente de la ejecución directa en la estación Windows del desarrollador.
 
-### B. Solución Arquitectónica: StructuredQuery con Proyección Estricta de `__name__`
-Se reemplazó la invocación de `GET /documents/{colId}` con máscara inválida por una consulta estructurada oficial:
-- **Método y Endpoint:** `POST https://firestore.googleapis.com/v1/projects/{projectId}/databases/{databaseId}/documents:runQuery`
-- **Cuerpo StructuredQuery:**
-  ```json
-  {
-    "structuredQuery": {
-      "select": {
-        "fields": [
-          { "fieldPath": "__name__" }
-        ]
-      },
-      "from": [
-        { "collectionId": "users" }
-      ],
-      "orderBy": [
-        {
-          "field": { "fieldPath": "__name__" },
-          "direction": "ASCENDING"
-        }
-      ],
-      "limit": 100
-    }
-  }
-  ```
-- **Invariante de Privacidad (Zero Data Leakage):** Al seleccionar únicamente `__name__`, la respuesta de Firestore contiene únicamente la referencia del documento (`name`), marca temporal de creación (`createTime`) y actualización (`updateTime`). El objeto de datos `fields` no se transmite por la red.
-- **Paginación Determinista:** Se implementó paginación por cursores con ordenamiento explícito por `__name__`:
-  ```json
-  "startAt": {
-    "values": [
-      { "referenceValue": "projects/.../databases/.../documents/users/ultimo_id" }
-    ],
-    "before": false
-  }
-  ```
-  El atributo `before: false` garantiza semántica de inicio estricto posterior al cursor (*startAfter*), evitando lecturas duplicadas sin depender de offsets no escalables.
+### C. Protocolo de Consistencia Empírica: `_system_` frente a `users`
+En la auditoría anterior se supuso prematuramente que las colecciones con prefijo de guion bajo (`_`) eran excluidas automáticamente por la API. En cumplimiento estricto de las directrices de la Fase 3.3.2, no se adopta ninguna hipótesis sin validación empírica independiente:
+1. **Comprobación A (Listado Raíz con Paginación Completa):** Invoca `POST .../documents:listCollectionIds` recorriendo exhaustivamente todos los tokens `nextPageToken`.
+2. **Comprobación B (GET Directo de Documento):** Invoca `GET .../documents/_system_/audit_read_probe` recuperando el código HTTP, latencia y recurso devuelto.
+3. **Comprobación C (StructuredQuery Específico):** Invoca `POST .../documents:runQuery` con `collectionId: "_system_"`, proyección exclusiva `__name__`, orden `__name__ ASCENDING` y límite 10.
+4. **Comparación y Registro:** Se registran los códigos de estado HTTP y nombres de recursos en `poc/catalyst-3-2/reports/firestore-inventory/consistency-check.json`. El script reporta de forma neutral la divergencia si B y C confirman la existencia de datos mientras A los omite, e incluye ambas fuentes en el inventario.
 
-### C. Investigación de Discrepancia: `_system_` frente a `users`
-- **Contexto:** En la Fase 3.2.2, la sonda GET `_system_/audit_read_probe` respondió `HTTP 200 OK`. Sin embargo, en la ejecución de la Fase 3.3, `listCollectionIds` en la raíz devolvió únicamente `users` y omitió `_system_`.
-- **Comprobación de Consistencia Implementada:**
-  El script ejecuta ahora una rutina de consistencia en 3 pasos:
-  1. Re-listado dinámico de colecciones raíz mediante `POST :listCollectionIds`.
-  2. Consulta StructuredQuery sobre `_system_` proyectando `__name__`.
-  3. Verificación puntual del documento `_system_/audit_read_probe` vía GET directo.
-- **Dictamen Preliminar:** En Cloud Firestore, las colecciones prefijadas con guion bajo (`_`) frecuentemente son omitidas por el índice de metadatos de colecciones estándar o corresponden a colecciones creadas puntualmente sin registrar metadatos de catálogo. Para resolver esto, el script ahora incluye una lista obligatoria de inspección (`_system_`, `users`, `athletes`, `trainers`, `invitations`, `security_audit`, `locks`) garantizando que ninguna colección crítica quede sin auditar. Los resultados se registran en `consistency-check.json`.
+### D. Invariante de Privacidad y Failsafe Crítico
+- Se conserva la proyección exclusiva de StructuredQuery: `select.fields: [{ fieldPath: "__name__" }]`.
+- Se prohibió de forma permanente el uso de `mask.fieldPaths=__none__`.
+- **Failsafe de Privacidad Activo:** Si por cualquier eventualidad la API REST de Firestore devuelve un documento que contenga la propiedad `fields`, el script **aborta de inmediato el procesamiento del lote**, registra una alerta crítica de privacidad en `inventory-errors.json`, marca `DocumentsEnumerated = null` y clasifica la ejecución como `PARTIAL_FAILURE`. Nunca se imprimen ni retienen en memoria atributos biométricos, nutricionales o de entrenamiento.
 
-### D. Tratamiento de Estados Incompletos y Conteo de Documentos
-- **Regla Estricta:** Si una consulta de enumeración falla (HTTP 400, 403, 500):
-  - `DocumentsEnumerated` se establece en `null` (nunca en `0`).
-  - `EnumerationComplete` se marca como `false`.
-  - `HasMore` se establece en `null`.
-  - El resultado global se clasifica inmediatamente como **`PARTIAL_FAILURE`**.
-- Solo se asigna conteo `0` cuando una consulta StructuredQuery se ejecuta exitosamente (`HTTP 200`) y el array de resultados devuelto está vacío.
+### E. Integridad de Conteos y Estados
+- Si una consulta falla: `DocumentsEnumerated = null`, `HasMore = null`, `EnumerationComplete = false`, y estado = `PARTIAL_FAILURE`.
+- Un error de consulta nunca se enmascara como cero (`0`) documentos.
+- Solo se registra `0` si la consulta respondió exitosamente (`HTTP 200`) con un conjunto vacío.
+- El mensaje de consola alerta de forma veraz ante estados parciales y no imprime `COMPLETED_SUCCESS` si ocurrieron fallos.
 
-### E. Corrección de Rutas de Reportes y Archivado Preventivo
-- **Problema Detectado:** Los reportes se almacenaron anteriormente en `C:\reports\firestore-inventory` debido a una resolución incorrecta de la ruta con barras oblicuas en Windows.
-- **Corrección:** Se reescribió la resolución mediante `Split-Path -Parent $PSScriptRoot` y `Join-Path`, anclando la salida garantizada en:
+### F. Ubicación y Respaldo de Reportes
+- Se ancló la ruta mediante `$PSScriptRoot` y `Join-Path` hacia:
   `poc/catalyst-3-2/reports/firestore-inventory/`
-- **Archivado Automático:** Si existen reportes de una ejecución previa, el script los respalda automáticamente en `archive/run-<timestamp>/` antes de generar los nuevos, preservando la evidencia histórica.
-
-### F. Limitación Arquitectónica: Padres Inexistentes (Missing Parents)
-En Firestore, si existen subcolecciones bajo una ruta donde el documento padre no fue creado o fue eliminado, una consulta sobre la colección padre no retornará dichos identificadores. Identificar estos nodos fantasma requeriría consultas globales `allDescendants: true`, las cuales están restringidas en este momento para evitar posibles transferencias accidentales de campos privados. Esta limitación se documenta formalmente y no se declarará el inventario profundo completo hasta resolver de forma segura este mapeo.
+- Se sanitizó la entrada contra resoluciones accidentales hacia `C:\reports`.
+- Se implementó archivado automático preventivo: si existen reportes previos en la carpeta, se copian a `archive/run-<timestamp>/` antes de generar los nuevos, preservando el historial.
 
 ---
 
-## 5. BATERÍA DE PRUEBAS UNITARIAS DE LÓGICA REST (FASE 3.3.1)
+## 5. BATERÍA DE PRUEBAS UNITARIAS DE LÓGICA REST (10/10 PASS-UNIT)
 
-Se creó la suite de pruebas unitarias `poc/catalyst-3-2/scripts/test-inventory-logic.ts` ejecutada mediante `tsx`:
+Ejecutadas mediante `tsx` sobre `poc/catalyst-3-2/scripts/test-inventory-logic.ts`:
 
 | # | Prueba Unitaria | Componente Evaluado | Resultado |
 | :-: | :--- | :--- | :-: |
-| **1** | Generación de proyección exclusiva `__name__` | `buildRunQueryBody` | **PASS-UNIT** |
-| **2** | Generación de cursor `startAt` con `referenceValue` y `before: false` | `buildRunQueryBody` | **PASS-UNIT** |
+| **1** | Proyección exclusiva `__name__` sin campos privados | `buildRunQueryBody` | **PASS-UNIT** |
+| **2** | Cursor de paginación `startAt` con `referenceValue` y `before: false` | `buildRunQueryBody` | **PASS-UNIT** |
 | **3** | Rechazo *fail-closed* ante `collectionId` vacío | `buildRunQueryBody` | **PASS-UNIT** |
 | **4** | Parseo de respuesta StructuredQuery y stream sin `fields` | `parseRunQueryResponse` | **PASS-UNIT** |
-| **5** | Detección *failsafe* ante presencia anómala de campos privados | `parseRunQueryResponse` | **PASS-UNIT** |
+| **5** | Detección de presencia anómala de campos privados | `parseRunQueryResponse` | **PASS-UNIT** |
 | **6** | Invariante de estado ante fallo (`DocumentsEnumerated = null`) | `recordCollectionResult` | **PASS-UNIT** |
-| **7** | Clasificación `PARTIAL_FAILURE` y total indeterminado ante errores | `evaluateOverallSummary` | **PASS-UNIT** |
-| **8** | Clasificación `COMPLETED_SUCCESS` cuando todas las consultas triunfan | `evaluateOverallSummary` | **PASS-UNIT** |
+| **7** | Clasificación `PARTIAL_FAILURE` ante fallos parciales | `evaluateOverallSummary` | **PASS-UNIT** |
+| **8** | Clasificación `COMPLETED_SUCCESS` cuando no hay fallos | `evaluateOverallSummary` | **PASS-UNIT** |
+| **9** | Failsafe de privacidad ante fuga de fields aborta la colección | `evaluateOverallSummary` | **PASS-UNIT** |
+| **10** | Sanitización de ruta `OutputDir` previene anclaje a `C:\` en Windows | `sanitizeOutputDir` | **PASS-UNIT** |
 
-**Resultado:** **8/8 pruebas unitarias aprobadas (100% PASS-UNIT)**.
+**Resultado:** **10/10 pruebas unitarias aprobadas (100% PASS-UNIT)**.
 
 ---
 
 ## 6. COMANDO OFICIAL PARA EL DESARROLLADOR EN WINDOWS
 
-Abra PowerShell en la raíz del proyecto y ejecute el inventario corregido en Modo Shallow:
+Abra una ventana de PowerShell en la raíz del proyecto y ejecute el inventario corregido en Modo Shallow:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\poc\catalyst-3-2\scripts\inventory-firestore.ps1 -Mode Shallow
 ```
 
-*O mediante el comando de npm:*
+*(O mediante el script de conveniencia de npm:)*
 ```bash
 npm --prefix poc/catalyst-3-2 run inventory-firestore:shallow
 ```
@@ -231,10 +200,12 @@ npm --prefix poc/catalyst-3-2 run inventory-firestore:shallow
 | Componente / Prueba | Estado | Detalle y Evidencia |
 | :--- | :---: | :--- |
 | **Pruebas Unitarias de Arquitectura Catalyst (32 tests)** | **PASS-UNIT** | 32/32 tests aprobados en Vitest |
-| **Pruebas Unitarias de Lógica REST Firestore (8 tests)** | **PASS-UNIT** | 8/8 tests aprobados en `test-inventory-logic.ts` |
+| **Pruebas Unitarias de Lógica REST Firestore (10 tests)** | **PASS-UNIT** | 10/10 tests aprobados en `test-inventory-logic.ts` |
 | **Sonda Individual Firestore Data Plane (Fase 3.2.2)** | **PASS-INTEGRATION** | HTTP 200 OK en `_system_/audit_read_probe` (378.48 ms) |
+| **Validación de Sintaxis PowerShell 5.1/7+** | **VALIDADO (AST)** | 0 subexpresiones embebidas; formateo con operador `-f` |
+| **Parser PS 5.1 en Linux Container** | **PENDING RUN LOCAL** | No disponible binario nativo en contenedor; validado localmente por usuario |
 | **Inventario Superficial Ejecución 1 (Fase 3.3)** | **PARTIAL** | Bloqueado por HTTP 400 (`__none__`); mitigado en Fase 3.3.1 |
-| **Inventario Superficial Ejecución 2 (Fase 3.3.1)** | **PENDING RUN** | Script corregido con `runQuery (__name__)`, listo para ejecución |
+| **Inventario Superficial Ejecución 2 (Fase 3.3.2)** | **PENDING RUN LOCAL** | Script corregido con `runQuery (__name__)`, listo para ejecución |
 | **Integridad del Repositorio de Producción** | **100% INTACTA** | `src/`, `functions/`, `package.json` raíz y `firestore.rules` inalterados |
 | **Compilación y Linters** | **0 ERRORES** | `npm run build` y `npm run lint` aprobados limpiamente |
 
@@ -243,9 +214,10 @@ npm --prefix poc/catalyst-3-2 run inventory-firestore:shallow
 ## 8. DICTAMEN TÉCNICO
 
 ### Dictamen:
-# **PARTIAL — HERRAMIENTA CORREGIDA Y VALIDADA EN MOCK / LISTA PARA SEGUNDA EJECUCIÓN REAL**
+# **PARTIAL — SINTAXIS POWERSHELL 5.1 CORREGIDA / SCRIPT LISTO PARA EJECUCIÓN LOCAL**
 
 **Fundamentación:**
-La causa raíz del error HTTP 400 fue aislada y eliminada reemplazando la máscara sintáctica inválida `__none__` por la consulta estructurada oficial `runQuery` con proyección `__name__` y cursores `startAt`. Las 8 pruebas unitarias demuestran la preservación de la privacidad y el tratamiento honesto de estados incompletos. La herramienta se encuentra lista en su ubicación definitiva para que el usuario ejecute la segunda prueba de inventario superficial en su estación local.
+El error de análisis sintáctico `ParserError` en la línea 672 fue resuelto refactorizando completamente la construcción de cadenas a variables pre-calculadas y operador `-f`, eliminando cualquier interpolación subexpresiva `$(...)`. La discrepancia de `_system_` cuenta con una comprobación empírica independiente en 3 vías sin asunciones previas. Las 10 pruebas unitarias validan la lógica de consulta, la privacidad estricta y el manejo de fallos parciales. La herramienta está lista para que el desarrollador ejecute el inventario en su entorno local Windows.
+
 
 

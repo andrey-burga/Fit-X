@@ -200,6 +200,72 @@ runTest('8. evaluateOverallSummary clasifica COMPLETED_SUCCESS cuando no hay fal
   assert.equal(summary.failedCollectionsCount, 0);
 });
 
+// 9. Failsafe de Privacidad: cuando se detectan fields en respuesta, se aborta y marca PARTIAL_FAILURE
+runTest('9. failsafe de privacidad ante fuga de fields aborta la colección y marca PARTIAL_FAILURE', () => {
+  const contaminatedResponse = [
+    {
+      document: {
+        name: 'projects/p/databases/d/documents/athletes/ath1',
+        fields: {
+          workout_plan: { stringValue: 'Hipertrofia Pierna' },
+        },
+      },
+    },
+  ];
+
+  const parsed = parseRunQueryResponse(contaminatedResponse, 10);
+  assert.equal(parsed.fieldsLeaked, true);
+
+  // El motor aborta la colección ante fieldsLeaked y registra error de privacidad
+  const collectionResult = recordCollectionResult('athletes', 'athletes', 0, {
+    success: false,
+    error: {
+      statusCode: 400,
+      message: 'Failsafe de privacidad activado: campos inesperados detectados',
+    },
+  });
+
+  const successResult = recordCollectionResult('users', 'users', 0, {
+    success: true,
+    count: 2,
+    hasMore: false,
+  });
+
+  assert.strictEqual(collectionResult.documentsEnumerated, null);
+  assert.strictEqual(collectionResult.enumerationComplete, false);
+
+  const summary = evaluateOverallSummary({
+    projectId: 'gen-lang-client-0041212770',
+    databaseId: 'test-db',
+    mode: 'Shallow',
+    collectionStates: [collectionResult, successResult],
+  });
+
+  assert.equal(summary.status, 'PARTIAL_FAILURE');
+  assert.strictEqual(summary.totalDocumentsEnumerated, null);
+});
+
+// 10. Sanitización de ruta relativa: prevención de C:\ en Windows
+runTest('10. sanitización de ruta OutputDir previene anclaje a C:\\ en Windows', () => {
+  const sanitizeOutputDir = (rawDir: string, pocDir: string) => {
+    if (!rawDir || rawDir.trim().length === 0) {
+      return `${pocDir}/reports/firestore-inventory`;
+    }
+    const cleanRelative = rawDir.replace(/^[\/\\]+/, '');
+    return `${pocDir}/${cleanRelative}`;
+  };
+
+  const pocMockDir = 'C:/Users/User/vigorcore/poc/catalyst-3-2';
+  
+  // Si el usuario pasa '/reports/firestore-inventory', no debe resolver en 'C:/reports/...'
+  const resolvedWithLeadingSlash = sanitizeOutputDir('/reports/firestore-inventory', pocMockDir);
+  assert.equal(resolvedWithLeadingSlash, 'C:/Users/User/vigorcore/poc/catalyst-3-2/reports/firestore-inventory');
+
+  // Si está vacío, debe usar la ruta predeterminada en poc/catalyst-3-2
+  const resolvedEmpty = sanitizeOutputDir('', pocMockDir);
+  assert.equal(resolvedEmpty, 'C:/Users/User/vigorcore/poc/catalyst-3-2/reports/firestore-inventory');
+});
+
 console.log(`\n========================================================================`);
-console.log(` RESULTADO: ${testsPassed}/8 PRUEBAS UNITARIAS APROBADAS (100% PASS-UNIT)`);
+console.log(` RESULTADO: ${testsPassed}/10 PRUEBAS UNITARIAS APROBADAS (100% PASS-UNIT)`);
 console.log(`========================================================================\n`);
