@@ -14,6 +14,7 @@
     "test-firestore-read": "tsx scripts/test-firestore-read.ts",
     "test-firestore-read:ps1": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-firestore-read.ps1",
     "test:inventory": "tsx scripts/test-inventory-logic.ts",
+    "validate:syntax": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/validate-script-syntax.ps1",
     "inventory-firestore:shallow": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/inventory-firestore.ps1 -Mode Shallow",
     "inventory-firestore:deep": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/inventory-firestore.ps1 -Mode Deep"
   },

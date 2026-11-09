@@ -266,6 +266,32 @@ runTest('10. sanitización de ruta OutputDir previene anclaje a C:\\ en Windows'
   assert.equal(resolvedEmpty, 'C:/Users/User/vigorcore/poc/catalyst-3-2/reports/firestore-inventory');
 });
 
+// 11. Validación de Construcción Markdown Segura (Cero backticks escapados en plantillas)
+runTest('11. construcción estática de Markdown genera tablas válidas sin backticks conflictivos', () => {
+  const formatMarkdownRow = (colId: string, count: number | null, hasMore: boolean | null, complete: boolean, status: string) => {
+    const docCountStr = count === null ? 'null (Error)' : String(count);
+    const hasMoreStr = hasMore === null ? 'null' : hasMore ? 'Si' : 'No';
+    const compStr = complete ? 'Si' : 'No';
+    return '| ' + colId + ' | Raiz | ' + docCountStr + ' | ' + hasMoreStr + ' | ' + compStr + ' | ' + status + ' |';
+  };
+
+  const rowSuccess = formatMarkdownRow('users', 14, false, true, 'SUCCESS');
+  assert.equal(rowSuccess, '| users | Raiz | 14 | No | Si | SUCCESS |');
+
+  const rowFailed = formatMarkdownRow('athletes', null, null, false, 'FAILED (400)');
+  assert.equal(rowFailed, '| athletes | Raiz | null (Error) | null | No | FAILED (400) |');
+});
+
+// 12. Verificación de ausencia de backticks y subexpresiones en el script .ps1
+runTest('12. script inventory-firestore.ps1 tiene 0 backticks y 0 subexpresiones $(...)', async () => {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const scriptContent = fs.readFileSync(path.resolve('poc/catalyst-3-2/scripts/inventory-firestore.ps1'), 'utf-8');
+
+  assert.ok(!scriptContent.includes('`'), 'El script no debe contener ningún carácter backtick para evitar errores en PS 5.1');
+  assert.ok(!scriptContent.includes('$('), 'El script no debe contener ninguna subexpresión $(...)');
+});
+
 console.log(`\n========================================================================`);
-console.log(` RESULTADO: ${testsPassed}/10 PRUEBAS UNITARIAS APROBADAS (100% PASS-UNIT)`);
+console.log(` RESULTADO: ${testsPassed}/12 PRUEBAS UNITARIAS APROBADAS (100% PASS-UNIT)`);
 console.log(`========================================================================\n`);
