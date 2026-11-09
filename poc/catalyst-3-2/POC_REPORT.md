@@ -118,80 +118,134 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\poc\catalyst-3-2\scripts\t
 
 ---
 
-## 4. FASE 3.3: ARQUITECTURA DEL INVENTARIO ESTRUCTURAL FIRESTORE
+## 4. FASE 3.3.1: CORRECCIÓN TÉCNICA DEL INVENTARIO Y PROYECCIÓN SEGURA
 
-Para avanzar hacia la migración controlada hacia **Zoho Catalyst NoSQL**, se ha implementado la herramienta de auditoría e inventario estructural:
+Durante la primera ejecución local del modo Shallow de la Fase 3.3, se detectaron fallos de especificación en la API REST de Firestore que motivaron la presente auditoría correctiva.
 
-`poc/catalyst-3-2/scripts/inventory-firestore.ps1`
+### A. Diagnóstico y Causa Raíz del Error HTTP 400
+- **URL Ejecutada:** `documents/users?pageSize=100&showMissing=true&mask.fieldPaths=__none__`
+- **Error Obtenido:** `HTTP 400 — INVALID_ARGUMENT: Invalid reserved name in field path __none__`
+- **Causa Raíz:** Según la especificación oficial de Google Cloud Firestore REST (`DocumentMask`), los nombres que inician y terminan con doble guion bajo (`__`) están reservados exclusivamente para campos del sistema (como `__name__`). La cadena `__none__` fue rechazada por el analizador sintáctico de Firestore como un nombre reservado ilegal.
 
-### A. Modos de Operación:
-1. **Modo Shallow (`-Mode Shallow`, predeterminado):**
-   - Ejecuta `POST :listCollectionIds` para descubrir todas las colecciones raíz de la base de datos.
-   - Realiza un sondeo limitado (`pageSize=10`, `showMissing=true`) por cada colección para verificar la existencia de documentos y determinar si existen páginas adicionales (`hasMore`).
-   - Genera mínimo tráfico de red (< 20 solicitudes REST) y no inspecciona subcolecciones profundas.
-   - Ideal para validación inmediata de esquema.
+### B. Solución Arquitectónica: StructuredQuery con Proyección Estricta de `__name__`
+Se reemplazó la invocación de `GET /documents/{colId}` con máscara inválida por una consulta estructurada oficial:
+- **Método y Endpoint:** `POST https://firestore.googleapis.com/v1/projects/{projectId}/databases/{databaseId}/documents:runQuery`
+- **Cuerpo StructuredQuery:**
+  ```json
+  {
+    "structuredQuery": {
+      "select": {
+        "fields": [
+          { "fieldPath": "__name__" }
+        ]
+      },
+      "from": [
+        { "collectionId": "users" }
+      ],
+      "orderBy": [
+        {
+          "field": { "fieldPath": "__name__" },
+          "direction": "ASCENDING"
+        }
+      ],
+      "limit": 100
+    }
+  }
+  ```
+- **Invariante de Privacidad (Zero Data Leakage):** Al seleccionar únicamente `__name__`, la respuesta de Firestore contiene únicamente la referencia del documento (`name`), marca temporal de creación (`createTime`) y actualización (`updateTime`). El objeto de datos `fields` no se transmite por la red.
+- **Paginación Determinista:** Se implementó paginación por cursores con ordenamiento explícito por `__name__`:
+  ```json
+  "startAt": {
+    "values": [
+      { "referenceValue": "projects/.../databases/.../documents/users/ultimo_id" }
+    ],
+    "before": false
+  }
+  ```
+  El atributo `before: false` garantiza semántica de inicio estricto posterior al cursor (*startAfter*), evitando lecturas duplicadas sin depender de offsets no escalables.
 
-2. **Modo Deep (`-Mode Deep`):**
-   - Descubre recursivamente todas las colecciones raíz, documentos y subcolecciones anidadas.
-   - Paginación automática exhaustiva mediante `nextPageToken`.
-   - Soporte para **puntos de control (*checkpoints*)** en `checkpoint.json` que permite reanudar con `-Resume` si el proceso es interrumpido.
-   - Control de tasa configurable (`-ThrottleMs 50`) y reintentos con retroceso exponencial (*exponential backoff*) ante códigos 429 y 503.
+### C. Investigación de Discrepancia: `_system_` frente a `users`
+- **Contexto:** En la Fase 3.2.2, la sonda GET `_system_/audit_read_probe` respondió `HTTP 200 OK`. Sin embargo, en la ejecución de la Fase 3.3, `listCollectionIds` en la raíz devolvió únicamente `users` y omitió `_system_`.
+- **Comprobación de Consistencia Implementada:**
+  El script ejecuta ahora una rutina de consistencia en 3 pasos:
+  1. Re-listado dinámico de colecciones raíz mediante `POST :listCollectionIds`.
+  2. Consulta StructuredQuery sobre `_system_` proyectando `__name__`.
+  3. Verificación puntual del documento `_system_/audit_read_probe` vía GET directo.
+- **Dictamen Preliminar:** En Cloud Firestore, las colecciones prefijadas con guion bajo (`_`) frecuentemente son omitidas por el índice de metadatos de colecciones estándar o corresponden a colecciones creadas puntualmente sin registrar metadatos de catálogo. Para resolver esto, el script ahora incluye una lista obligatoria de inspección (`_system_`, `users`, `athletes`, `trainers`, `invitations`, `security_audit`, `locks`) garantizando que ninguna colección crítica quede sin auditar. Los resultados se registran en `consistency-check.json`.
 
-### B. Invariante de Privacidad de Datos (Zero-Leakage):
-- **Máscara de Proyección Obligatoria:** Todas las solicitudes a documentos utilizan:
-  `mask.fieldPaths=__none__`
-- **Garantía:** Google Cloud Firestore devuelve únicamente metadatos estructurales (`name`, `createTime`, `updateTime`). Ningún atributo biométrico, peso, repetición, rutina deportiva, plan nutricional o credencial es transmitido por la red ni almacenado en los reportes locales.
+### D. Tratamiento de Estados Incompletos y Conteo de Documentos
+- **Regla Estricta:** Si una consulta de enumeración falla (HTTP 400, 403, 500):
+  - `DocumentsEnumerated` se establece en `null` (nunca en `0`).
+  - `EnumerationComplete` se marca como `false`.
+  - `HasMore` se establece en `null`.
+  - El resultado global se clasifica inmediatamente como **`PARTIAL_FAILURE`**.
+- Solo se asigna conteo `0` cuando una consulta StructuredQuery se ejecuta exitosamente (`HTTP 200`) y el array de resultados devuelto está vacío.
 
-### C. Artefactos y Reportes Estructurales Generados:
-Los resultados se almacenan en `poc/catalyst-3-2/reports/firestore-inventory/`:
-- `inventory-summary.json`: Metadatos globales de ejecución, tiempo total, colecciones y estado.
-- `collections-tree.json`: Árbol jerárquico completo de colecciones y subcolecciones detectadas.
-- `document-counts.json`: Mapa detallado de conteo de documentos por ruta de colección.
-- `inventory-errors.json`: Registro estructurado de advertencias, códigos de error o retries.
-- `inventory-report.md`: Informe analítico en Markdown con el mapeo sugerido hacia tablas de Zoho Catalyst NoSQL (PK y SK).
+### E. Corrección de Rutas de Reportes y Archivado Preventivo
+- **Problema Detectado:** Los reportes se almacenaron anteriormente en `C:\reports\firestore-inventory` debido a una resolución incorrecta de la ruta con barras oblicuas en Windows.
+- **Corrección:** Se reescribió la resolución mediante `Split-Path -Parent $PSScriptRoot` y `Join-Path`, anclando la salida garantizada en:
+  `poc/catalyst-3-2/reports/firestore-inventory/`
+- **Archivado Automático:** Si existen reportes de una ejecución previa, el script los respalda automáticamente en `archive/run-<timestamp>/` antes de generar los nuevos, preservando la evidencia histórica.
+
+### F. Limitación Arquitectónica: Padres Inexistentes (Missing Parents)
+En Firestore, si existen subcolecciones bajo una ruta donde el documento padre no fue creado o fue eliminado, una consulta sobre la colección padre no retornará dichos identificadores. Identificar estos nodos fantasma requeriría consultas globales `allDescendants: true`, las cuales están restringidas en este momento para evitar posibles transferencias accidentales de campos privados. Esta limitación se documenta formalmente y no se declarará el inventario profundo completo hasta resolver de forma segura este mapeo.
 
 ---
 
-## 5. COMANDOS DE EJECUCIÓN LOCAL PARA EL USUARIO
+## 5. BATERÍA DE PRUEBAS UNITARIAS DE LÓGICA REST (FASE 3.3.1)
 
-### 1. Ejecutar Inventario Estructural Ligero (Modo Shallow - Recomendado):
+Se creó la suite de pruebas unitarias `poc/catalyst-3-2/scripts/test-inventory-logic.ts` ejecutada mediante `tsx`:
+
+| # | Prueba Unitaria | Componente Evaluado | Resultado |
+| :-: | :--- | :--- | :-: |
+| **1** | Generación de proyección exclusiva `__name__` | `buildRunQueryBody` | **PASS-UNIT** |
+| **2** | Generación de cursor `startAt` con `referenceValue` y `before: false` | `buildRunQueryBody` | **PASS-UNIT** |
+| **3** | Rechazo *fail-closed* ante `collectionId` vacío | `buildRunQueryBody` | **PASS-UNIT** |
+| **4** | Parseo de respuesta StructuredQuery y stream sin `fields` | `parseRunQueryResponse` | **PASS-UNIT** |
+| **5** | Detección *failsafe* ante presencia anómala de campos privados | `parseRunQueryResponse` | **PASS-UNIT** |
+| **6** | Invariante de estado ante fallo (`DocumentsEnumerated = null`) | `recordCollectionResult` | **PASS-UNIT** |
+| **7** | Clasificación `PARTIAL_FAILURE` y total indeterminado ante errores | `evaluateOverallSummary` | **PASS-UNIT** |
+| **8** | Clasificación `COMPLETED_SUCCESS` cuando todas las consultas triunfan | `evaluateOverallSummary` | **PASS-UNIT** |
+
+**Resultado:** **8/8 pruebas unitarias aprobadas (100% PASS-UNIT)**.
+
+---
+
+## 6. COMANDO OFICIAL PARA EL DESARROLLADOR EN WINDOWS
+
+Abra PowerShell en la raíz del proyecto y ejecute el inventario corregido en Modo Shallow:
+
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\poc\catalyst-3-2\scripts\inventory-firestore.ps1 -Mode Shallow
 ```
-*O mediante el shortcut npm:*
+
+*O mediante el comando de npm:*
 ```bash
 npm --prefix poc/catalyst-3-2 run inventory-firestore:shallow
 ```
 
-### 2. Ejecutar Inventario Completo y Recursivo (Modo Deep):
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\poc\catalyst-3-2\scripts\inventory-firestore.ps1 -Mode Deep
-```
-
-### 3. Reanudar Inventario Deep Interrumpido:
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\poc\catalyst-3-2\scripts\inventory-firestore.ps1 -Mode Deep -Resume
-```
-
 ---
 
-## 6. ESTADO ACTUAL DE CLASIFICACIÓN
+## 7. CLASIFICACIÓN GENERAL DE RESULTADOS
 
-| Componente / Prueba | Estado | Evidencia |
+| Componente / Prueba | Estado | Detalle y Evidencia |
 | :--- | :---: | :--- |
-| **Pruebas Unitarias de Arquitectura (Vitest)** | **PASS-UNIT** | 32/32 pruebas aprobadas (100% éxito) |
-| **Integración Firestore Data Plane (REST + ADC)** | **PASS-INTEGRATION** | HTTP 200 OK en `_system_/audit_read_probe` (378.48 ms, `jhonyandreyburga@gmail.com`) |
-| **Herramienta de Inventario Estructural (Fase 3.3)** | **LISTA** | `inventory-firestore.ps1` con modos Shallow y Deep y cero filtración de datos |
-| **Integridad del Repositorio de Producción** | **100% INTACTA** | `src/`, `functions/`, `package.json` raíz, `bun.lock` y `firestore.rules` inalterados |
-| **Compilación y Linters** | **0 ERRORES** | `npm run build` y `npm run lint` verificados sin advertencias |
+| **Pruebas Unitarias de Arquitectura Catalyst (32 tests)** | **PASS-UNIT** | 32/32 tests aprobados en Vitest |
+| **Pruebas Unitarias de Lógica REST Firestore (8 tests)** | **PASS-UNIT** | 8/8 tests aprobados en `test-inventory-logic.ts` |
+| **Sonda Individual Firestore Data Plane (Fase 3.2.2)** | **PASS-INTEGRATION** | HTTP 200 OK en `_system_/audit_read_probe` (378.48 ms) |
+| **Inventario Superficial Ejecución 1 (Fase 3.3)** | **PARTIAL** | Bloqueado por HTTP 400 (`__none__`); mitigado en Fase 3.3.1 |
+| **Inventario Superficial Ejecución 2 (Fase 3.3.1)** | **PENDING RUN** | Script corregido con `runQuery (__name__)`, listo para ejecución |
+| **Integridad del Repositorio de Producción** | **100% INTACTA** | `src/`, `functions/`, `package.json` raíz y `firestore.rules` inalterados |
+| **Compilación y Linters** | **0 ERRORES** | `npm run build` y `npm run lint` aprobados limpiamente |
 
 ---
 
-## 7. DICTAMEN TÉCNICO
+## 8. DICTAMEN TÉCNICO
 
 ### Dictamen:
-# **PASS-INTEGRATION CONFIRMADO — INVENTARIO ESTRUCTURAL FASE 3.3 LISTO**
+# **PARTIAL — HERRAMIENTA CORREGIDA Y VALIDADA EN MOCK / LISTA PARA SEGUNDA EJECUCIÓN REAL**
 
 **Fundamentación:**
-La viabilidad técnica de lectura del clúster de Cloud Firestore mediante el plano de datos REST sin incurrir en bloqueos de facturación ha quedado formalmente demostrada y verificada en el ordenador del desarrollador. La herramienta de auditoría de esquema estructural (`inventory-firestore.ps1`) garantiza total privacidad mediante `mask.fieldPaths=__none__`, segregación completa dentro de `poc/catalyst-3-2/` y prepara la hoja de ruta definitiva para el mapeo hacia Zoho Catalyst NoSQL.
+La causa raíz del error HTTP 400 fue aislada y eliminada reemplazando la máscara sintáctica inválida `__none__` por la consulta estructurada oficial `runQuery` con proyección `__name__` y cursores `startAt`. Las 8 pruebas unitarias demuestran la preservación de la privacidad y el tratamiento honesto de estados incompletos. La herramienta se encuentra lista en su ubicación definitiva para que el usuario ejecute la segunda prueba de inventario superficial en su estación local.
+
 

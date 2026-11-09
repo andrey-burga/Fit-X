@@ -1,0 +1,17 @@
+{
+  "timestamp": "2026-11-08T00:00:00Z",
+  "listCollectionIdsRoot": [
+    "users"
+  ],
+  "systemCollectionQuery": {
+    "statusCode": 0,
+    "status": "PENDING_RUN"
+  },
+  "systemProbeGet": {
+    "statusCode": 200,
+    "exists": true,
+    "latencyMs": 378.48
+  },
+  "comparisonVerdict": "INVESTIGATION_INITIALIZED",
+  "technicalExplanation": "Fase 3.3.1 inicializada. La sonda individual confirma acceso a _system_/audit_read_probe mientras listCollectionIds sólo expuso users. El script de consistencia ejecutará las 3 comprobaciones en la estación del desarrollador."
+}
