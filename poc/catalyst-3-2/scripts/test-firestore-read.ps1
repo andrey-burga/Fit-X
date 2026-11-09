@@ -125,9 +125,17 @@ Write-Host " - Codigo de Estado HTTP:     $responseStatus"
 
 # A. HTTP 200: Lectura Autorizada y Documento Existente
 if ($responseStatus -eq 200) {
+    $resourceName = if ($responseBody -and $responseBody.name) {
+        $responseBody.name
+    } elseif ($response -and $response.Content -match '"name"\s*:\s*"([^"]+)"') {
+        $matches[1]
+    } else {
+        "projects/$ProjectId/databases/$DatabaseId/documents/$DocumentPath"
+    }
+
     Write-Host " - Estado de Autorizacion:    AUTORIZADO (Lectura concedida por Google Cloud IAM)" -ForegroundColor Green
     Write-Host " - Existencia del Documento:  DOCUMENTO EXISTE" -ForegroundColor Green
-    Write-Host " - Recurso Identificado:      $($responseBody.name)" -ForegroundColor Gray
+    Write-Host " - Recurso Identificado:      $resourceName" -ForegroundColor Gray
     Write-Host " - Proteccion de Datos:       Contenido oculto (Invariante de privacidad garantizado)" -ForegroundColor Gray
     Write-Host "`n[VEREDICTO]: PASS-INTEGRATION — Firestore responde autorizadamente mediante ADC local sin reactivar Billing." -ForegroundColor Green
     exit 0

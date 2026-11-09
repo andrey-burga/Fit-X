@@ -1,0 +1,32 @@
+{
+  "athletes": {
+    "count": 0,
+    "hasMore": false,
+    "sampledOnly": true
+  },
+  "trainers": {
+    "count": 0,
+    "hasMore": false,
+    "sampledOnly": true
+  },
+  "invitations": {
+    "count": 0,
+    "hasMore": false,
+    "sampledOnly": true
+  },
+  "security_audit": {
+    "count": 0,
+    "hasMore": false,
+    "sampledOnly": true
+  },
+  "locks": {
+    "count": 0,
+    "hasMore": false,
+    "sampledOnly": true
+  },
+  "_system_": {
+    "count": 1,
+    "hasMore": false,
+    "sampledOnly": true
+  }
+}

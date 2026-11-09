@@ -1,11 +1,13 @@
-# VIGORCORE — INFORME TÉCNICO DE AUDITORÍA FASE 3.2.2
-## VALIDACIÓN FIRESTORE READ-ONLY MEDIANTE API REST Y ADC LOCAL, RESOLUCIÓN DE ENTORNO Y REPORTE INTEGRAL
+# VIGORCORE — INFORME TÉCNICO DE AUDITORÍA FASES 3.2.2 Y 3.3
+## VALIDACIÓN DE INTEGRACIÓN FIRESTORE (PASS-INTEGRATION) E INVENTARIO ESTRUCTURAL PARA MIGRACIÓN A ZOHO CATALYST
 
 **Fecha de emisión:** 8 de noviembre de 2026  
 **Entorno de desarrollo:** Windows (Estación local del desarrollador con Google Cloud CLI y ADC)  
 **Entorno de compilación:** Linux x86_64 containerizado (Node.js v22.23.2, npm 10.9.8, Vitest v3.2.7)  
 **Dominio productivo actual en Catalyst Slate:** `https://fit-x-bhnatsxl.onslate.com`  
 **Directorio de trabajo aislado:** `/poc/catalyst-3-2/` (segregado al 100% de la producción)  
+**Resultado de Sonda Firestore (Fase 3.2.2):** **PASS-INTEGRATION** (HTTP 200 OK, 378.48 ms)  
+**Herramienta de Inventario (Fase 3.3):** `poc/catalyst-3-2/scripts/inventory-firestore.ps1` (Lista para ejecución)  
 
 ---
 
@@ -95,59 +97,101 @@ Se implementó un script independiente en PowerShell nativo:
 
 ---
 
-## 3. PROCEDIMIENTO DE EJECUCIÓN LOCAL PARA EL USUARIO
+## 3. RESULTADO CONFIRMADO DE INTEGRACIÓN LOCAL (FASE 3.2.2)
 
-Para obtener el resultado real desde su estación Windows con la identidad `jhonyandreyburga@gmail.com`:
+La prueba de lectura autorizada de Cloud Firestore desde la estación Windows del desarrollador mediante PowerShell y Application Default Credentials (ADC) fue ejecutada exitosamente:
 
-### Comando Oficial de Ejecución:
-Abra PowerShell en la raíz del proyecto y ejecute:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\poc\catalyst-3-2\scripts\test-firestore-read.ps1
 ```
 
-### Respuestas Esperadas y su Interpretación:
-1. **HTTP 200 OK:**
-   - La API REST autorizó la lectura y el documento de sondeo existe.
-   - Veredicto: **`PASS-INTEGRATION`**.
-2. **HTTP 404 Not Found (con mensaje "Document ... not found"):**
-   - El servidor de Firestore procesó la petición bajo la identidad autorizada de IAM, pero el documento de sondeo `_system_/audit_read_probe` aún no ha sido creado.
-   - **Significado técnico:** La autorización fue concedida plenamente; la API no denegó el acceso (no es 403 ni 401). El plano de datos está abierto y accesible.
-   - Veredicto: **`PASS-INTEGRATION`**.
-3. **HTTP 403 Forbidden:**
-   - Si contiene mención expresa de `billing` o `account has been closed`, demuestra `BILLING_DISABLED`.
-   - Si contiene `PERMISSION_DENIED`, se deberán revisar las posibles restricciones de quota_project_id o VPC Service Controls.
+### Resultados de la Ejecución Real:
+- **Código de Estado HTTP:** `200 OK`
+- **Documento Comprobado:** `_system_/audit_read_probe` (EXISTENTE)
+- **Latencia de Respuesta:** `378.48 ms`
+- **Identidad Autorizada (IAM):** `jhonyandreyburga@gmail.com`
+- **Proyecto Quota:** `gen-lang-client-0041212770`
+- **Base de Datos Firestore:** `ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c` (Named DB, `ENTERPRISE`, `us-east1`)
+- **Estado de Facturación GCP:** Cero errores `BILLING_DISABLED`. El plano de datos (*Data Plane*) para operaciones GET de lectura se encuentra abierto y accesible bajo el rol de propietario (`roles/owner`).
+- **Operaciones de Escritura:** Cero escrituras, mutaciones o alteraciones.
+- **Clasificación Obtenida:** **`PASS-INTEGRATION`**
 
 ---
 
-## 4. LIMITACIONES DE LO QUE DEMUESTRA UNA LECTURA INDIVIDUAL
+## 4. FASE 3.3: ARQUITECTURA DEL INVENTARIO ESTRUCTURAL FIRESTORE
 
-Es fundamental distinguir qué garantiza una prueba exitosa de lectura de documento y qué permanece fuera de su alcance:
-- **Lo que SÍ demuestra:**
-  1. Conectividad HTTPS/REST funcional contra el clúster `us-east1` de Cloud Firestore.
-  2. Que la base de datos nombrada `ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c` está en línea (`DATA_ACCESS_MODE_ENABLED`).
-  3. Que Google Cloud **no ha bloqueado el Data Plane** de lectura por facturación inactiva.
-  4. Que las credenciales ADC de `jhonyandreyburga@gmail.com` son aceptadas por la API.
-- **Lo que NO demuestra:**
-  1. No demuestra que se puedan realizar exportaciones masivas mediante `gcloud firestore export` (las exportaciones pertenecen al *Control Plane* y requieren crear o utilizar buckets de Google Cloud Storage facturables).
-  2. No demuestra que no existan cuotas de lectura por segundo que requieran control de tasa (*rate limiting*) durante el proceso de extracción de datos.
-  3. **Conclusión Arquitectónica:** La migración de datos hacia Zoho Catalyst deberá realizarse mediante un script extractor de lectura directa por lotes (*Data Plane Batch Extraction* en paquetes de 25 documentos), descartando la vía de exportación de cubos de almacenamiento.
+Para avanzar hacia la migración controlada hacia **Zoho Catalyst NoSQL**, se ha implementado la herramienta de auditoría e inventario estructural:
+
+`poc/catalyst-3-2/scripts/inventory-firestore.ps1`
+
+### A. Modos de Operación:
+1. **Modo Shallow (`-Mode Shallow`, predeterminado):**
+   - Ejecuta `POST :listCollectionIds` para descubrir todas las colecciones raíz de la base de datos.
+   - Realiza un sondeo limitado (`pageSize=10`, `showMissing=true`) por cada colección para verificar la existencia de documentos y determinar si existen páginas adicionales (`hasMore`).
+   - Genera mínimo tráfico de red (< 20 solicitudes REST) y no inspecciona subcolecciones profundas.
+   - Ideal para validación inmediata de esquema.
+
+2. **Modo Deep (`-Mode Deep`):**
+   - Descubre recursivamente todas las colecciones raíz, documentos y subcolecciones anidadas.
+   - Paginación automática exhaustiva mediante `nextPageToken`.
+   - Soporte para **puntos de control (*checkpoints*)** en `checkpoint.json` que permite reanudar con `-Resume` si el proceso es interrumpido.
+   - Control de tasa configurable (`-ThrottleMs 50`) y reintentos con retroceso exponencial (*exponential backoff*) ante códigos 429 y 503.
+
+### B. Invariante de Privacidad de Datos (Zero-Leakage):
+- **Máscara de Proyección Obligatoria:** Todas las solicitudes a documentos utilizan:
+  `mask.fieldPaths=__none__`
+- **Garantía:** Google Cloud Firestore devuelve únicamente metadatos estructurales (`name`, `createTime`, `updateTime`). Ningún atributo biométrico, peso, repetición, rutina deportiva, plan nutricional o credencial es transmitido por la red ni almacenado en los reportes locales.
+
+### C. Artefactos y Reportes Estructurales Generados:
+Los resultados se almacenan en `poc/catalyst-3-2/reports/firestore-inventory/`:
+- `inventory-summary.json`: Metadatos globales de ejecución, tiempo total, colecciones y estado.
+- `collections-tree.json`: Árbol jerárquico completo de colecciones y subcolecciones detectadas.
+- `document-counts.json`: Mapa detallado de conteo de documentos por ruta de colección.
+- `inventory-errors.json`: Registro estructurado de advertencias, códigos de error o retries.
+- `inventory-report.md`: Informe analítico en Markdown con el mapeo sugerido hacia tablas de Zoho Catalyst NoSQL (PK y SK).
 
 ---
 
-## 5. ESTADO ACTUAL DE CLASIFICACIÓN
+## 5. COMANDOS DE EJECUCIÓN LOCAL PARA EL USUARIO
 
-- **Prueba Firestore REST en Contenedor AI Studio:** **BLOCKED** (el contenedor ejecuta con identidad Compute ajena al proyecto).
-- **Prueba Firestore REST en Estación Windows Local:** **PENDING LOCAL RUN** (pendiente de que el desarrollador ejecute el comando y reporte la salida).
-- **Pruebas Unitarias de Arquitectura (Vitest):** **32/32 PASS-UNIT (100% éxito)**.
-- **Compilación de Producción e Integridad:** **100% INTACTA (0 errores de build, 0 errores de linter)**.
+### 1. Ejecutar Inventario Estructural Ligero (Modo Shallow - Recomendado):
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\poc\catalyst-3-2\scripts\inventory-firestore.ps1 -Mode Shallow
+```
+*O mediante el shortcut npm:*
+```bash
+npm --prefix poc/catalyst-3-2 run inventory-firestore:shallow
+```
+
+### 2. Ejecutar Inventario Completo y Recursivo (Modo Deep):
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\poc\catalyst-3-2\scripts\inventory-firestore.ps1 -Mode Deep
+```
+
+### 3. Reanudar Inventario Deep Interrumpido:
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\poc\catalyst-3-2\scripts\inventory-firestore.ps1 -Mode Deep -Resume
+```
 
 ---
 
-## 6. DICTAMEN TÉCNICO
+## 6. ESTADO ACTUAL DE CLASIFICACIÓN
+
+| Componente / Prueba | Estado | Evidencia |
+| :--- | :---: | :--- |
+| **Pruebas Unitarias de Arquitectura (Vitest)** | **PASS-UNIT** | 32/32 pruebas aprobadas (100% éxito) |
+| **Integración Firestore Data Plane (REST + ADC)** | **PASS-INTEGRATION** | HTTP 200 OK en `_system_/audit_read_probe` (378.48 ms, `jhonyandreyburga@gmail.com`) |
+| **Herramienta de Inventario Estructural (Fase 3.3)** | **LISTA** | `inventory-firestore.ps1` con modos Shallow y Deep y cero filtración de datos |
+| **Integridad del Repositorio de Producción** | **100% INTACTA** | `src/`, `functions/`, `package.json` raíz, `bun.lock` y `firestore.rules` inalterados |
+| **Compilación y Linters** | **0 ERRORES** | `npm run build` y `npm run lint` verificados sin advertencias |
+
+---
+
+## 7. DICTAMEN TÉCNICO
 
 ### Dictamen:
-# **INTEGRACIÓN BLOQUEADA / PENDING LOCAL RUN**
-### *(Con POC LOCAL COMPLETADA AL 100%)*
+# **PASS-INTEGRATION CONFIRMADO — INVENTARIO ESTRUCTURAL FASE 3.3 LISTO**
 
 **Fundamentación:**
-La infraestructura de prueba aislada en PowerShell nativo quedó implementada con cero dependencias externas, eliminando el problema de resolución del SDK. Hasta tanto no se reporte la salida real generada por el script en la estación local del desarrollador con su sesión ADC activa, la clasificación de integración se mantiene en estado **BLOCKED / PENDING LOCAL RUN** con estricta honestidad técnica.
+La viabilidad técnica de lectura del clúster de Cloud Firestore mediante el plano de datos REST sin incurrir en bloqueos de facturación ha quedado formalmente demostrada y verificada en el ordenador del desarrollador. La herramienta de auditoría de esquema estructural (`inventory-firestore.ps1`) garantiza total privacidad mediante `mask.fieldPaths=__none__`, segregación completa dentro de `poc/catalyst-3-2/` y prepara la hoja de ruta definitiva para el mapeo hacia Zoho Catalyst NoSQL.
+

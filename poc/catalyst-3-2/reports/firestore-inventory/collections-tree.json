@@ -1,0 +1,56 @@
+[
+  {
+    "id": "athletes",
+    "path": "athletes",
+    "type": "root_collection",
+    "level": 0,
+    "documentCount": 0,
+    "hasMore": false,
+    "subcollections": []
+  },
+  {
+    "id": "trainers",
+    "path": "trainers",
+    "type": "root_collection",
+    "level": 0,
+    "documentCount": 0,
+    "hasMore": false,
+    "subcollections": []
+  },
+  {
+    "id": "invitations",
+    "path": "invitations",
+    "type": "root_collection",
+    "level": 0,
+    "documentCount": 0,
+    "hasMore": false,
+    "subcollections": []
+  },
+  {
+    "id": "security_audit",
+    "path": "security_audit",
+    "type": "root_collection",
+    "level": 0,
+    "documentCount": 0,
+    "hasMore": false,
+    "subcollections": []
+  },
+  {
+    "id": "locks",
+    "path": "locks",
+    "type": "root_collection",
+    "level": 0,
+    "documentCount": 0,
+    "hasMore": false,
+    "subcollections": []
+  },
+  {
+    "id": "_system_",
+    "path": "_system_",
+    "type": "root_collection",
+    "level": 0,
+    "documentCount": 1,
+    "hasMore": false,
+    "subcollections": []
+  }
+]

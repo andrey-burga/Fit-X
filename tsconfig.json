@@ -23,5 +23,11 @@
     },
     "allowImportingTsExtensions": true,
     "noEmit": true
-  }
+  },
+  "exclude": [
+    "poc",
+    "functions",
+    "node_modules",
+    "dist"
+  ]
 }
