@@ -7,4 +7,5 @@ coverage/
 reports/
 archive/
 checkpoint*.json
-
+.data/
+*.bin

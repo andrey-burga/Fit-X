@@ -1,14 +1,23 @@
 # VigorCore -- Validador Sintáctico Oficial mediante Parser de Windows PowerShell
 # Ejecuta System.Management.Automation.Language.Parser::ParseFile
 
-$targetScript = Join-Path $PSScriptRoot 'inventory-firestore.ps1'
+[CmdletBinding()]
+param (
+    [string]$TargetScript = 'extract-firestore.ps1'
+)
+
+$targetPath = if ([System.IO.Path]::IsPathRooted($TargetScript)) {
+    $TargetScript
+} else {
+    Join-Path $PSScriptRoot $TargetScript
+}
 
 Write-Host '========================================================================' -ForegroundColor Cyan
 Write-Host ' VALIDACION SINTACTICA POWERSHELL (PARSER FILE CHECK)                   ' -ForegroundColor Cyan
-Write-Host (' Analizando: ' + $targetScript) -ForegroundColor Gray
+Write-Host (' Analizando: ' + $targetPath) -ForegroundColor Gray
 Write-Host '========================================================================' -ForegroundColor Cyan
 
-if (-not (Test-Path -Path $targetScript)) {
+if (-not (Test-Path -Path $targetPath)) {
     Write-Host 'ERROR: No se encuentra el archivo objetivo.' -ForegroundColor Red
     exit 1
 }
@@ -17,7 +26,7 @@ $tokens = $null
 $parseErrors = $null
 
 [System.Management.Automation.Language.Parser]::ParseFile(
-    $targetScript,
+    $targetPath,
     [ref]$tokens,
     [ref]$parseErrors
 ) | Out-Null
