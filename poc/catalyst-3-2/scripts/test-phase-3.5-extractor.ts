@@ -30,6 +30,11 @@ import {
   EncryptedDocumentEnvelope,
   CheckpointData,
   AuditManifest,
+  PreflightReport,
+  createPreflightAuthEnvelope,
+  verifyPreflightTokenAuthenticity,
+  auditExtractGates,
+  executeCryptoSelfTest,
 } from '../src/etl/firestoreExtractor.js';
 
 console.log('========================================================================');
@@ -646,8 +651,301 @@ runMock('8.3: Escritura atómica mediante .tmp y reemplazo atómico previene arc
   assert.equal(simulatedFs.get(targetBin)!.toString('utf8'), 'TEST_DATA_CIPHER');
 });
 
+// -----------------------------------------------------------------------------
+// 9. Validación Criptográfica DPAPI y Auditoría de Compuertas (FASE 3.5.0.1)
+// -----------------------------------------------------------------------------
+runUnit('9.1: executeCryptoSelfTest ejecuta exitosamente el protocolo de 11 pasos DPAPI', () => {
+  const provider = new MockDpapiProvider();
+  const res = executeCryptoSelfTest(provider);
+  assert.equal(res.success, true);
+  assert.equal(res.stepsPassed, 11);
+  assert.ok(res.details.includes('11/11 pasos aprobados'));
+});
+
+runUnit('9.2: Rechazo estricto de ciphertext alterado en DPAPI (resistencia a manipulación)', () => {
+  const provider = new MockDpapiProvider();
+  const plain = Buffer.from('TEST_PAYLOAD_TAMPER_CHECK', 'utf8');
+  const cipher = provider.protect(plain);
+
+  const tampered = Buffer.from(cipher);
+  tampered[tampered.length - 1] ^= 0x55;
+
+  assert.throws(() => {
+    provider.unprotect(tampered);
+  }, /DPAPI_ERROR/);
+});
+
+runMock('9.3: Preflight Token autenticado genera sobre criptográfico y pasa validación', () => {
+  const provider = new MockDpapiProvider();
+  const tokenReport: PreflightReport = {
+    executionId: 'exec-123',
+    timestamp: new Date().toISOString(),
+    projectId: 'gen-lang-client-0041212770',
+    databaseId: 'ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c',
+    usersDiscovered: 5,
+    totalDocumentsDiscovered: 73,
+    countsByUser: {},
+    administrativeCounts: {},
+    errors: [],
+    status: 'PREFLIGHT_PASS',
+  };
+
+  const { envelope, rawJson } = createPreflightAuthEnvelope(tokenReport);
+  const cipherEnvelope = provider.protect(Buffer.from(JSON.stringify(envelope), 'utf8'));
+
+  const verif = verifyPreflightTokenAuthenticity({
+    plainJson: rawJson,
+    authEnvelopeBytes: cipherEnvelope,
+    cryptoProvider: provider,
+    expectedProjectId: 'gen-lang-client-0041212770',
+    expectedDatabaseId: 'ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c',
+  });
+
+  assert.equal(verif.valid, true);
+  assert.equal(verif.envelope?.status, 'PREFLIGHT_PASS');
+});
+
+runMock('9.4: Preflight Token manipulado en JSON es rechazado con TOKEN_TAMPERED', () => {
+  const provider = new MockDpapiProvider();
+  const tokenReport: PreflightReport = {
+    executionId: 'exec-123',
+    timestamp: new Date().toISOString(),
+    projectId: 'gen-lang-client-0041212770',
+    databaseId: 'ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c',
+    usersDiscovered: 5,
+    totalDocumentsDiscovered: 73,
+    countsByUser: {},
+    administrativeCounts: {},
+    errors: [],
+    status: 'BASELINE_DRIFT', // Original es DRIFT
+  };
+
+  const { envelope, rawJson } = createPreflightAuthEnvelope(tokenReport);
+  const cipherEnvelope = provider.protect(Buffer.from(JSON.stringify(envelope), 'utf8'));
+
+  // Intento de manipulación manual del JSON: cambiar status a PREFLIGHT_PASS
+  const tamperedJson = rawJson.replace('BASELINE_DRIFT', 'PREFLIGHT_PASS');
+
+  const verif = verifyPreflightTokenAuthenticity({
+    plainJson: tamperedJson,
+    authEnvelopeBytes: cipherEnvelope,
+    cryptoProvider: provider,
+    expectedProjectId: 'gen-lang-client-0041212770',
+    expectedDatabaseId: 'ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c',
+  });
+
+  assert.equal(verif.valid, false);
+  assert.equal(verif.errorCode, 'TOKEN_TAMPERED');
+});
+
+runMock('9.5: Preflight Token caducado (> 60 min) es rechazado con TOKEN_EXPIRED', () => {
+  const provider = new MockDpapiProvider();
+  const expiredTime = new Date(Date.now() - 65 * 60 * 1000).toISOString(); // Hace 65 min
+  const tokenReport: PreflightReport = {
+    executionId: 'exec-old',
+    timestamp: expiredTime,
+    projectId: 'gen-lang-client-0041212770',
+    databaseId: 'ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c',
+    usersDiscovered: 5,
+    totalDocumentsDiscovered: 73,
+    countsByUser: {},
+    administrativeCounts: {},
+    errors: [],
+    status: 'PREFLIGHT_PASS',
+  };
+
+  const { envelope, rawJson } = createPreflightAuthEnvelope(tokenReport);
+  const cipherEnvelope = provider.protect(Buffer.from(JSON.stringify(envelope), 'utf8'));
+
+  const verif = verifyPreflightTokenAuthenticity({
+    plainJson: rawJson,
+    authEnvelopeBytes: cipherEnvelope,
+    cryptoProvider: provider,
+    expectedProjectId: 'gen-lang-client-0041212770',
+    expectedDatabaseId: 'ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c',
+    maxAgeMinutes: 60,
+  });
+
+  assert.equal(verif.valid, false);
+  assert.equal(verif.errorCode, 'TOKEN_EXPIRED');
+});
+
+runMock('9.6: Preflight Token emitido para otro proyecto GCP es rechazado con PROJECT_MISMATCH', () => {
+  const provider = new MockDpapiProvider();
+  const tokenReport: PreflightReport = {
+    executionId: 'exec-other-proj',
+    timestamp: new Date().toISOString(),
+    projectId: 'rogue-unauthorized-project',
+    databaseId: 'ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c',
+    usersDiscovered: 5,
+    totalDocumentsDiscovered: 73,
+    countsByUser: {},
+    administrativeCounts: {},
+    errors: [],
+    status: 'PREFLIGHT_PASS',
+  };
+
+  const { envelope, rawJson } = createPreflightAuthEnvelope(tokenReport);
+  const cipherEnvelope = provider.protect(Buffer.from(JSON.stringify(envelope), 'utf8'));
+
+  const verif = verifyPreflightTokenAuthenticity({
+    plainJson: rawJson,
+    authEnvelopeBytes: cipherEnvelope,
+    cryptoProvider: provider,
+    expectedProjectId: 'gen-lang-client-0041212770',
+    expectedDatabaseId: 'ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c',
+  });
+
+  assert.equal(verif.valid, false);
+  assert.equal(verif.errorCode, 'PROJECT_MISMATCH');
+});
+
+runMock('9.7: Preflight Token emitido para otra base de datos Firestore es rechazado con DATABASE_MISMATCH', () => {
+  const provider = new MockDpapiProvider();
+  const tokenReport: PreflightReport = {
+    executionId: 'exec-other-db',
+    timestamp: new Date().toISOString(),
+    projectId: 'gen-lang-client-0041212770',
+    databaseId: '(default)', // Default DB en lugar de la named DB
+    usersDiscovered: 5,
+    totalDocumentsDiscovered: 73,
+    countsByUser: {},
+    administrativeCounts: {},
+    errors: [],
+    status: 'PREFLIGHT_PASS',
+  };
+
+  const { envelope, rawJson } = createPreflightAuthEnvelope(tokenReport);
+  const cipherEnvelope = provider.protect(Buffer.from(JSON.stringify(envelope), 'utf8'));
+
+  const verif = verifyPreflightTokenAuthenticity({
+    plainJson: rawJson,
+    authEnvelopeBytes: cipherEnvelope,
+    cryptoProvider: provider,
+    expectedProjectId: 'gen-lang-client-0041212770',
+    expectedDatabaseId: 'ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c',
+  });
+
+  assert.equal(verif.valid, false);
+  assert.equal(verif.errorCode, 'DATABASE_MISMATCH');
+});
+
+runMock('9.8: auditExtractGates bloquea extracción si ADC es inválido', () => {
+  const audit = auditExtractGates({
+    adcValid: false,
+    preflightVerification: { valid: true },
+    preflightReport: { status: 'PREFLIGHT_PASS', errors: [] } as any,
+    driftAcknowledged: false,
+    operatorConfirmed: true,
+    maintenanceWindowConfirmed: true,
+    dpapiSelfTestPassed: true,
+    gitExclusionActive: true,
+  });
+
+  assert.equal(audit.allowed, false);
+  assert.equal(audit.failedGateCode, 'GATE_ADC_INVALID');
+});
+
+runMock('9.9: auditExtractGates bloquea extracción si el operador no confirma explícitamente', () => {
+  const audit = auditExtractGates({
+    adcValid: true,
+    preflightVerification: { valid: true },
+    preflightReport: { status: 'PREFLIGHT_PASS', errors: [] } as any,
+    driftAcknowledged: false,
+    operatorConfirmed: false, // NO confirmado!
+    maintenanceWindowConfirmed: true,
+    dpapiSelfTestPassed: true,
+    gitExclusionActive: true,
+  });
+
+  assert.equal(audit.allowed, false);
+  assert.equal(audit.failedGateCode, 'GATE_OPERATOR_NOT_CONFIRMED');
+});
+
+runMock('9.10: auditExtractGates bloquea extracción si falta confirmación de ventana de mantenimiento', () => {
+  const audit = auditExtractGates({
+    adcValid: true,
+    preflightVerification: { valid: true },
+    preflightReport: { status: 'PREFLIGHT_PASS', errors: [] } as any,
+    driftAcknowledged: false,
+    operatorConfirmed: true,
+    maintenanceWindowConfirmed: false, // NO confirmada!
+    dpapiSelfTestPassed: true,
+    gitExclusionActive: true,
+  });
+
+  assert.equal(audit.allowed, false);
+  assert.equal(audit.failedGateCode, 'GATE_MAINTENANCE_NOT_CONFIRMED');
+});
+
+runMock('9.11: auditExtractGates bloquea extracción si .data/ no está excluido en .gitignore', () => {
+  const audit = auditExtractGates({
+    adcValid: true,
+    preflightVerification: { valid: true },
+    preflightReport: { status: 'PREFLIGHT_PASS', errors: [] } as any,
+    driftAcknowledged: false,
+    operatorConfirmed: true,
+    maintenanceWindowConfirmed: true,
+    dpapiSelfTestPassed: true,
+    gitExclusionActive: false, // Fuga a git!
+  });
+
+  assert.equal(audit.allowed, false);
+  assert.equal(audit.failedGateCode, 'GATE_GIT_NOT_PROTECTED');
+});
+
+runMock('9.12: auditExtractGates bloquea extracción si el checkpoint es inconsistente', () => {
+  const audit = auditExtractGates({
+    adcValid: true,
+    preflightVerification: { valid: true },
+    preflightReport: { status: 'PREFLIGHT_PASS', errors: [] } as any,
+    driftAcknowledged: false,
+    operatorConfirmed: true,
+    maintenanceWindowConfirmed: true,
+    dpapiSelfTestPassed: true,
+    gitExclusionActive: true,
+    checkpointStatus: 'INCONSISTENT',
+  });
+
+  assert.equal(audit.allowed, false);
+  assert.equal(audit.failedGateCode, 'GATE_CHECKPOINT_INCONSISTENT');
+});
+
+runMock('9.13: auditExtractGates bloquea extracción si existe drift no reconocido', () => {
+  const audit = auditExtractGates({
+    adcValid: true,
+    preflightVerification: { valid: true },
+    preflightReport: { status: 'BASELINE_DRIFT', errors: [] } as any,
+    driftAcknowledged: false, // NO reconocido!
+    operatorConfirmed: true,
+    maintenanceWindowConfirmed: true,
+    dpapiSelfTestPassed: true,
+    gitExclusionActive: true,
+  });
+
+  assert.equal(audit.allowed, false);
+  assert.equal(audit.failedGateCode, 'GATE_DRIFT_NOT_ACKNOWLEDGED');
+});
+
+runMock('9.14: auditExtractGates aprueba extracción cuando todas las 10 compuertas están satisfechas', () => {
+  const audit = auditExtractGates({
+    adcValid: true,
+    preflightVerification: { valid: true },
+    preflightReport: { status: 'PREFLIGHT_PASS', errors: [] } as any,
+    driftAcknowledged: false,
+    operatorConfirmed: true,
+    maintenanceWindowConfirmed: true,
+    dpapiSelfTestPassed: true,
+    gitExclusionActive: true,
+    checkpointStatus: 'CLEAN',
+  });
+
+  assert.equal(audit.allowed, true);
+  assert.equal(audit.failedGateCode, undefined);
+});
+
 console.log('========================================================================');
-console.log(` RESULTADOS DE LAS PRUEBAS FASE 3.5.0:`);
+console.log(` RESULTADOS DE LAS PRUEBAS FASE 3.5.0 Y 3.5.0.1:`);
 console.log(`   PASS-UNIT:   ${passUnitCount}`);
 console.log(`   PASS-MOCK:   ${passMockCount}`);
 console.log(`   PASS-STATIC: ${passStaticCount}`);

@@ -5,7 +5,7 @@
 
 [CmdletBinding()]
 param (
-    [ValidateSet('Preflight', 'Extract', 'Verify')]
+    [ValidateSet('Preflight', 'Extract', 'Verify', 'CryptoSelfTest')]
     [string]$Mode = 'Preflight',
 
     [string]$ProjectId = 'gen-lang-client-0041212770',
@@ -108,8 +108,9 @@ if (-not (Test-Path -Path $resolvedReportDir)) {
     New-Item -ItemType Directory -Path $resolvedReportDir -Force | Out-Null
 }
 
-$preflightTokenPath = Join-Path $resolvedReportDir 'preflight-token.json'
-$manifestAuditPath  = Join-Path $resolvedReportDir 'manifest-audit.json'
+$preflightTokenPath    = Join-Path $resolvedReportDir 'preflight-token.json'
+$preflightTokenBinPath = Join-Path $resolvedReportDir 'preflight-token.bin'
+$manifestAuditPath     = Join-Path $resolvedReportDir 'manifest-audit.json'
 $verifyReportPath   = Join-Path $resolvedReportDir 'verify-report.json'
 
 $checkpointBinPath  = Join-Path $resolvedCacheDir 'checkpoint.bin'
@@ -177,7 +178,18 @@ function Test-DpapiRoundtrip {
         }
         $plain = Unprotect-DpapiBytes -CipherBytes $cipher
         $recoveredMsg = [System.Text.Encoding]::UTF8.GetString($plain)
-        return ($testMsg -eq $recoveredMsg)
+        if ($testMsg -ne $recoveredMsg) { return $false }
+
+        # Verificación estricta de resistencia a manipulación
+        $tampered = [byte[]]$cipher.Clone()
+        $tampered[$tampered.Length - 1] = [byte]($tampered[$tampered.Length - 1] -bxor 0xFF)
+        $tamperDetected = $false
+        try {
+            Unprotect-DpapiBytes -CipherBytes $tampered | Out-Null
+        } catch {
+            $tamperDetected = $true
+        }
+        return $tamperDetected
     } catch {
         return $false
     }
@@ -555,6 +567,24 @@ if ($Mode -eq 'Preflight') {
 
     $preflightToken | ConvertTo-Json -Depth 6 | Set-Content -Path $preflightTokenPath -Encoding UTF8
 
+    # Generación de sobre autenticado DPAPI de preflight (preflight-token.bin)
+    $tokenJsonCompact = $preflightToken | ConvertTo-Json -Depth 6 -Compress
+    $tokenSha256 = Compute-Sha256Hex -InputString $tokenJsonCompact
+    $authEnvelope = [ordered]@{
+        version      = '1.0.0'
+        timestampUtc = $preflightToken.timestampUtc
+        projectId    = $ProjectId
+        databaseId   = $DatabaseId
+        status       = $baselineStatus
+        tokenSha256  = $tokenSha256
+        grandTotal   = $grandTotalDiscovered
+        usersCount   = $discoveredUsersCount
+    }
+    $authEnvelopeJson = $authEnvelope | ConvertTo-Json -Depth 8 -Compress
+    $authEnvelopeBytes = [System.Text.Encoding]::UTF8.GetBytes($authEnvelopeJson)
+    $authEnvelopeCipher = Protect-DpapiBytes -PlainBytes $authEnvelopeBytes
+    [System.IO.File]::WriteAllBytes($preflightTokenBinPath, $authEnvelopeCipher)
+
     Write-Host ''
     Write-Host '========================================================================' -ForegroundColor Cyan
     Write-Host ' RESULTADO DEL PREFLIGHT' -ForegroundColor Cyan
@@ -583,26 +613,70 @@ elseif ($Mode -eq 'Extract') {
     Write-Host '[EXTRACT]: Verificando compuertas y controles estrictos antes de iniciar...' -ForegroundColor Cyan
     Write-Host '------------------------------------------------------------------------'
 
-    # Control 1: Verificación de Preflight reciente
+    # Control 1: Validación obligatoria de ADC en memoria
+    Write-Host ' - Validando credenciales ADC en memoria...' -NoNewline
+    $token = Get-AdcAccessToken
+    if ([string]::IsNullOrWhiteSpace($token)) {
+        Write-Host ' ERROR' -ForegroundColor Red
+        throw 'BLOQUEO: Credencial ADC no válida o vacía en memoria.'
+    }
+    Write-Host ' OK' -ForegroundColor Green
+
+    # Control 2: Verificación criptográfica y autenticidad del Preflight Token
+    Write-Host ' - Verificando autenticidad e integridad del token de preflight...' -NoNewline
     if (-not (Test-Path -Path $preflightTokenPath)) {
         throw 'BLOQUEO: No se encontró preflight-token.json reciente. Ejecute primero -Mode Preflight.'
     }
+    if (-not (Test-Path -Path $preflightTokenBinPath)) {
+        throw 'BLOQUEO: No se encontró preflight-token.bin autenticado. Preflight no verificado criptográficamente.'
+    }
+
+    # Descifrado DPAPI del sobre autenticado de preflight
+    $authCipherBytes = [System.IO.File]::ReadAllBytes($preflightTokenBinPath)
+    $authPlainBytes = $null
+    try {
+        $authPlainBytes = Unprotect-DpapiBytes -CipherBytes $authCipherBytes
+    } catch {
+        throw ('BLOQUEO CRIPTOGRAFICO: Falla al descifrar preflight-token.bin via DPAPI: ' + $_.Exception.Message)
+    }
+
+    $authEnvelope = [System.Text.Encoding]::UTF8.GetString($authPlainBytes) | ConvertFrom-Json
     $tokenContent = Get-Content -Path $preflightTokenPath -Raw | ConvertFrom-Json
-    $preflightDate = [DateTime]::Parse($tokenContent.timestampUtc)
+    $recomputedTokenJson = $tokenContent | ConvertTo-Json -Depth 6 -Compress
+    $recomputedSha256 = Compute-Sha256Hex -InputString $recomputedTokenJson
+
+    if ($recomputedSha256 -ne $authEnvelope.tokenSha256) {
+        throw 'BLOQUEO DE INTEGRIDAD: preflight-token.json fue manipulado o no coincide con la firma autenticada DPAPI.'
+    }
+
+    # Control 3: Correspondencia de ProjectId y DatabaseId
+    if ($authEnvelope.projectId -ne $ProjectId -or $tokenContent.projectId -ne $ProjectId) {
+        throw ('BLOQUEO: El token de preflight corresponde al proyecto {0}, pero el script fue invocado para {1}.' -f $authEnvelope.projectId, $ProjectId)
+    }
+    if ($authEnvelope.databaseId -ne $DatabaseId -or $tokenContent.databaseId -ne $DatabaseId) {
+        throw ('BLOQUEO: El token de preflight corresponde a la base {0}, pero el script fue invocado para {1}.' -f $authEnvelope.databaseId, $DatabaseId)
+    }
+
+    # Control 4: Antigüedad máxima del Preflight (< 60 minutos)
+    $preflightDate = [DateTime]::Parse($authEnvelope.timestampUtc)
     $ageMinutes = ((Get-Date).ToUniversalTime() - $preflightDate).TotalMinutes
     if ($ageMinutes -gt 60) {
-        throw ('BLOQUEO: El token de preflight tiene {0:F1} minutos (> 60 min). Ejecute un nuevo Preflight.' -f $ageMinutes)
+        throw ('BLOQUEO: El token de preflight tiene {0:F1} minutos de antigüedad (> 60 min). Ejecute un nuevo Preflight.' -f $ageMinutes)
     }
-    if ($tokenContent.status -eq 'PREFLIGHT_FAILED') {
-        throw 'BLOQUEO: El preflight anterior reportó errores (PREFLIGHT_FAILED). Extracción denegada.'
+    if ($authEnvelope.status -eq 'PREFLIGHT_FAILED' -or $tokenContent.status -eq 'PREFLIGHT_FAILED') {
+        throw 'BLOQUEO: El preflight reportó errores de consulta (PREFLIGHT_FAILED). Extracción denegada.'
     }
-
-    # Control 2: Baseline drift acknowledgment
-    if ($tokenContent.status -eq 'BASELINE_DRIFT' -and -not $DriftAcknowledged) {
-        throw 'BLOQUEO: Existe BASELINE_DRIFT y no se especificó -DriftAcknowledged.'
+    if ($tokenContent.errors -and $tokenContent.errors.Count -gt 0) {
+        throw 'BLOQUEO: El preflight contiene errores de consulta registrados. Extracción denegada.'
     }
 
-    # Control 3: Confirmación interactiva o por flag del operador
+    # Control 5: Baseline drift acknowledgment
+    if ($authEnvelope.status -eq 'BASELINE_DRIFT' -and -not $DriftAcknowledged) {
+        throw 'BLOQUEO: Existe BASELINE_DRIFT y no se especificó el parámetro -DriftAcknowledged.'
+    }
+    Write-Host ' OK (Autenticado y vigente)' -ForegroundColor Green
+
+    # Control 6: Confirmación explícita del operador
     if (-not $OperatorConfirmed) {
         Write-Host ''
         $promptOp = Read-Host '¿Confirma la descarga segura y cifrada de los documentos a su disco local? [Y/N]'
@@ -611,7 +685,7 @@ elseif ($Mode -eq 'Extract') {
         }
     }
 
-    # Control 4: Confirmación de ventana de mantenimiento / suspensión de escrituras
+    # Control 7: Confirmación de ventana de mantenimiento / suspensión de escrituras
     if (-not $MaintenanceWindowConfirmed) {
         Write-Host ''
         Write-Host '[ATENCION]: Esta confirmacion es una declaracion operativa del usuario.' -ForegroundColor Yellow
@@ -622,36 +696,53 @@ elseif ($Mode -eq 'Extract') {
         }
     }
 
-    # Control 5: Prueba de ida y vuelta DPAPI obligatoria
-    Write-Host ' - Probando protección criptográfica DPAPI CurrentUser...' -NoNewline
+    # Control 8: Prueba de ida y vuelta DPAPI obligatoria
+    Write-Host ' - Probando protección criptográfica DPAPI CurrentUser y tamper-resistance...' -NoNewline
     $dpapiTestOk = Test-DpapiRoundtrip
     if (-not $dpapiTestOk) {
         Write-Host ' ERROR CRITICO' -ForegroundColor Red
-        throw 'DPAPI_ERROR: La prueba de ida y vuelta de DPAPI falló. No se puede garantizar el cifrado en reposo.'
+        throw 'DPAPI_ERROR: La prueba de ida y vuelta de DPAPI falló o no detectó manipulación. No se puede garantizar el cifrado en reposo.'
     }
-    Write-Host ' OK (DPAPI CurrentUser operativo)' -ForegroundColor Green
+    Write-Host ' OK (DPAPI CurrentUser operativo y resistente a manipulación)' -ForegroundColor Green
 
-    # Control 6: Creación y restricción de ACL en el directorio local de caché
+    # Control 9: Verificación de exclusión Git y permisos ACL del directorio de caché
+    if (-not $gitignoreOk) {
+        throw 'BLOQUEO: El directorio .data/ no está excluido en .gitignore. Riesgo de fuga a repositorio.'
+    }
     if (-not (Test-Path -Path $resolvedCacheDir)) {
         New-Item -ItemType Directory -Path $resolvedCacheDir -Force | Out-Null
     }
-
     try {
         $acl = Get-Acl -Path $resolvedCacheDir
+        $acl.SetAccessRuleProtection($true, $false) # Deshabilitar herencia de permisos
         $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
         $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($currentUser, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
-        $acl.SetAccessRule($rule)
+        $acl.ResetAccessRule($rule)
         Set-Acl -Path $resolvedCacheDir -AclObject $acl
-        Write-Host ' - Permisos ACL restringidos al usuario ejecutor actual.' -ForegroundColor Green
+        Write-Host ' - Permisos ACL restringidos al usuario ejecutor actual (herencia removida).' -ForegroundColor Green
     } catch {
         Write-Host '   [WARN] No se pudieron ajustar ACLs avanzadas de Windows: ' -NoNewline
         Write-Host $_.Exception.Message -ForegroundColor Yellow
     }
 
-    # Control 7: Ejecución segura de la extracción secuencial
+    # Control 10: Validación de integridad de Checkpoint si se usa -Resume
+    if ($Resume -and (Test-Path -Path $checkpointBinPath)) {
+        try {
+            $cpBytes = [System.IO.File]::ReadAllBytes($checkpointBinPath)
+            $cpPlain = Unprotect-DpapiBytes -CipherBytes $cpBytes
+            $cpObj = [System.Text.Encoding]::UTF8.GetString($cpPlain) | ConvertFrom-Json
+            if (-not $cpObj.nextDocIndex -or -not $cpObj.confirmedDocIds) {
+                throw 'Checkpoint corrupto o esquema inconsistente.'
+            }
+        } catch {
+            throw ('BLOQUEO: Checkpoint previo corrupto o inconsistente: ' + $_.Exception.Message)
+        }
+    }
+
+    # Iniciando extracción secuencial y cifrado en sobre atómico
     Write-Host ''
     Write-Host ' - Iniciando extracción secuencial y cifrado en sobre atómico...' -ForegroundColor Cyan
-    $token = Get-AdcAccessToken
+    # $token ya adquirido y validado en Control 1
 
     $docIndex = 1
     $confirmedOpaqueIds = @()
@@ -1021,5 +1112,126 @@ elseif ($Mode -eq 'Verify') {
         Write-Host (' - Estado:                 ' + $verifyStatus + ' (' + $statusReason + ')') -ForegroundColor Red
     }
     Write-Host (' - Reporte de Verificación:' + $verifyReportPath)
+    Write-Host '========================================================================' -ForegroundColor Cyan
+}
+
+# -----------------------------------------------------------------------------
+# 10. Modo D: CRYPTOSELFTEST (Validación Criptográfica Real DPAPI CurrentUser en 11 Pasos)
+# -----------------------------------------------------------------------------
+elseif ($Mode -eq 'CryptoSelfTest') {
+    Write-Host ''
+    Write-Host '[CRYPTO-SELFTEST]: Ejecutando prueba criptográfica DPAPI CurrentUser en 11 pasos...' -ForegroundColor Cyan
+    Write-Host '------------------------------------------------------------------------'
+
+    # Paso 1: Comprobar disponibilidad de ProtectedData
+    Write-Host ' [1/11] Comprobando disponibilidad de System.Security.Cryptography.ProtectedData...' -NoNewline
+    if (-not $dpapiAvailable) {
+        Write-Host ' ERROR' -ForegroundColor Red
+        throw 'DPAPI_ERROR: ProtectedData no está disponible en este entorno.'
+    }
+    Write-Host ' OK' -ForegroundColor Green
+
+    # Paso 2: Generar contenido sintético aleatorio
+    Write-Host ' [2/11] Generando contenido sintético aleatorio en memoria...' -NoNewline
+    $testGuid = [System.Guid]::NewGuid().ToString()
+    $testPayload = 'VIGORCORE_DPAPI_VERIFY_' + $testGuid + '_' + (Get-Date).Ticks
+    $plainBytes = [System.Text.Encoding]::UTF8.GetBytes($testPayload)
+    Write-Host ' OK' -ForegroundColor Green
+
+    # Paso 3: Cifrar usando CurrentUser
+    Write-Host ' [3/11] Cifrando contenido con DataProtectionScope::CurrentUser...' -NoNewline
+    $scope = [System.Security.Cryptography.DataProtectionScope]::CurrentUser
+    $cipherBytes = [System.Security.Cryptography.ProtectedData]::Protect($plainBytes, $null, $scope)
+    if (-not $cipherBytes -or $cipherBytes.Length -eq 0) {
+        Write-Host ' ERROR' -ForegroundColor Red
+        throw 'DPAPI_ERROR: Falla en Protect; ciphertext vacío o nulo.'
+    }
+    Write-Host ' OK' -ForegroundColor Green
+
+    # Paso 4: Escribir el ciphertext en archivo temporal protegido
+    Write-Host ' [4/11] Escribiendo ciphertext en archivo temporal protegido...' -NoNewline
+    if (-not (Test-Path -Path $resolvedCacheDir)) {
+        New-Item -ItemType Directory -Path $resolvedCacheDir -Force | Out-Null
+    }
+    $tempFile = Join-Path $resolvedCacheDir ('selftest-' + [System.Guid]::NewGuid().ToString() + '.tmp')
+    [System.IO.File]::WriteAllBytes($tempFile, $cipherBytes)
+    Write-Host ' OK' -ForegroundColor Green
+
+    # Paso 5: Leer el ciphertext desde disco
+    Write-Host ' [5/11] Leyendo ciphertext desde archivo temporal...' -NoNewline
+    $readBackBytes = [System.IO.File]::ReadAllBytes($tempFile)
+    if ($readBackBytes.Length -ne $cipherBytes.Length) {
+        Write-Host ' ERROR' -ForegroundColor Red
+        throw 'DPAPI_ERROR: Longitud leída no coincide con longitud escrita.'
+    }
+    Write-Host ' OK' -ForegroundColor Green
+
+    # Paso 6: Descifrar bajo el mismo usuario
+    Write-Host ' [6/11] Descifrando ciphertext con DataProtectionScope::CurrentUser...' -NoNewline
+    $decryptedBytes = [System.Security.Cryptography.ProtectedData]::Unprotect($readBackBytes, $null, $scope)
+    Write-Host ' OK' -ForegroundColor Green
+
+    # Paso 7: Comparar el resultado byte por byte
+    Write-Host ' [7/11] Comparando contenido original vs descifrado byte a byte...' -NoNewline
+    $bytesIdentical = $true
+    if ($plainBytes.Length -ne $decryptedBytes.Length) {
+        $bytesIdentical = $false
+    } else {
+        for ($i = 0; $i -lt $plainBytes.Length; $i++) {
+            if ($plainBytes[$i] -ne $decryptedBytes[$i]) {
+                $bytesIdentical = $false
+                break
+            }
+        }
+    }
+    if (-not $bytesIdentical) {
+        Write-Host ' ERROR' -ForegroundColor Red
+        throw 'DPAPI_ERROR: Los bytes descifrados difieren de los bytes originales.'
+    }
+    Write-Host ' OK (Coincidencia exacta 100%)' -ForegroundColor Green
+
+    # Paso 8: Comprobar que el ciphertext no contiene el texto original
+    Write-Host ' [8/11] Verificando ausencia de filtración de texto plano en ciphertext...' -NoNewline
+    $cipherString = [System.Text.Encoding]::UTF8.GetString($cipherBytes)
+    if ($cipherString.Contains($testGuid)) {
+        Write-Host ' ERROR DE SEGURIDAD' -ForegroundColor Red
+        throw 'DPAPI_SECURITY_LEAK: El ciphertext contiene subcadenas del texto original.'
+    }
+    Write-Host ' OK (Cero texto plano en ciphertext)' -ForegroundColor Green
+
+    # Paso 9: Intentar descifrar una copia alterada y verificar que falla
+    Write-Host ' [9/11] Probando detección de manipulación en ciphertext alterado...' -NoNewline
+    $tamperedBytes = [byte[]]$cipherBytes.Clone()
+    $tamperedBytes[$tamperedBytes.Length - 1] = [byte]($tamperedBytes[$tamperedBytes.Length - 1] -bxor 0xFF)
+    $tamperDetected = $false
+    try {
+        [System.Security.Cryptography.ProtectedData]::Unprotect($tamperedBytes, $null, $scope) | Out-Null
+    } catch {
+        $tamperDetected = $true
+    }
+    if (-not $tamperDetected) {
+        Write-Host ' ERROR' -ForegroundColor Red
+        throw 'DPAPI_ERROR: El descifrado no rechazó el ciphertext alterado (fallo de detección de integridad).'
+    }
+    Write-Host ' OK (Manipulación rechazada fail-closed)' -ForegroundColor Green
+
+    # Paso 10: Eliminar los archivos temporales
+    Write-Host ' [10/11] Eliminando archivos temporales de prueba...' -NoNewline
+    if (Test-Path -Path $tempFile) {
+        Remove-Item -Path $tempFile -Force
+    }
+    Write-Host ' OK' -ForegroundColor Green
+
+    # Paso 11: Informar resultado sin imprimir secretos ni contenido sensible
+    Write-Host ' [11/11] Generando veredicto de validación criptográfica...' -ForegroundColor Cyan
+    Write-Host ''
+    Write-Host '========================================================================' -ForegroundColor Cyan
+    Write-Host ' RESULTADO DEL SELF-TEST CRIPTOGRAFICO REAL DPAPI' -ForegroundColor Cyan
+    Write-Host '========================================================================' -ForegroundColor Cyan
+    Write-Host ' - Proveedor:        Windows DPAPI (CurrentUser)' -ForegroundColor Green
+    Write-Host ' - Integridad:       11/11 Pasos Aprobados (100% PASS-LOCAL-WINDOWS)' -ForegroundColor Green
+    Write-Host ' - Fuga de Texto:    CERO (Validado ausente)' -ForegroundColor Green
+    Write-Host ' - Anti-Tampering:   VALIDADO (Ciphertext alterado rechazado)' -ForegroundColor Green
+    Write-Host ' - Veredicto:        DPAPI_LOCAL_SECURITY_VERIFIED' -ForegroundColor Green
     Write-Host '========================================================================' -ForegroundColor Cyan
 }
