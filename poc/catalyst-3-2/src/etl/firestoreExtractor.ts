@@ -707,3 +707,150 @@ export function executeCryptoSelfTest(cryptoProvider: StorageEncryptionProvider)
     details: '11/11 pasos aprobados. Cifrado DPAPI verificado, no reversible sin credencial y resistente a manipulación.',
   };
 }
+
+export interface LocalSecurityAuditResult {
+  passed: boolean;
+  verdict: 'LOCAL SECURITY VERIFIED — EXTRACTION REVIEW READY' | 'PARTIALLY VERIFIED — BLOCKERS REMAIN';
+  checks: Record<string, { status: 'PASS' | 'FAIL'; details: string }>;
+  errors: string[];
+}
+
+export function executeLocalSecurityAudit(params: {
+  jsonExists: boolean;
+  binExists: boolean;
+  jsonLength: number;
+  binLength: number;
+  plainJson: string;
+  binBytes: Buffer;
+  cryptoProvider: StorageEncryptionProvider;
+  expectedProjectId: string;
+  expectedDatabaseId: string;
+  maxAgeMinutes?: number;
+  syntheticAclTested: boolean;
+  gitExclusionActive: boolean;
+  strayBinFilesCount: number;
+}): LocalSecurityAuditResult {
+  const checks: Record<string, { status: 'PASS' | 'FAIL'; details: string }> = {};
+  const errors: string[] = [];
+
+  // 1. Archivos existentes y no vacíos
+  if (!params.jsonExists || params.jsonLength === 0) {
+    checks['PREFLIGHT_JSON'] = { status: 'FAIL', details: 'preflight-token.json falta o tiene 0 bytes' };
+    errors.push('PREFLIGHT_JSON_MISSING');
+  } else {
+    checks['PREFLIGHT_JSON'] = { status: 'PASS', details: `preflight-token.json presente (${params.jsonLength} bytes)` };
+  }
+
+  if (!params.binExists || params.binLength === 0) {
+    checks['PREFLIGHT_BIN'] = { status: 'FAIL', details: 'preflight-token.bin falta o tiene 0 bytes' };
+    errors.push('PREFLIGHT_BINARY_MISSING');
+  } else {
+    checks['PREFLIGHT_BIN'] = { status: 'PASS', details: `preflight-token.bin presente (${params.binLength} bytes)` };
+  }
+
+  // 2. Descifrado DPAPI y verificación de firma
+  if (params.jsonExists && params.binExists && params.jsonLength > 0 && params.binLength > 0) {
+    const verif = verifyPreflightTokenAuthenticity({
+      plainJson: params.plainJson,
+      authEnvelopeBytes: params.binBytes,
+      cryptoProvider: params.cryptoProvider,
+      expectedProjectId: params.expectedProjectId,
+      expectedDatabaseId: params.expectedDatabaseId,
+      maxAgeMinutes: params.maxAgeMinutes,
+    });
+
+    if (!verif.valid) {
+      const mappedCode =
+        verif.errorCode === 'TOKEN_CORRUPTED'
+          ? 'PREFLIGHT_BINARY_DECRYPT_ERROR'
+          : verif.errorCode === 'TOKEN_TAMPERED'
+          ? 'PREFLIGHT_TOKEN_TAMPERED'
+          : verif.errorCode === 'TOKEN_EXPIRED'
+          ? 'PREFLIGHT_TOKEN_EXPIRED'
+          : verif.errorCode === 'PROJECT_MISMATCH'
+          ? 'PREFLIGHT_PROJECT_MISMATCH'
+          : verif.errorCode === 'DATABASE_MISMATCH'
+          ? 'PREFLIGHT_DATABASE_MISMATCH'
+          : verif.errorCode!;
+
+      checks['TOKEN_AUTHENTICITY'] = { status: 'FAIL', details: verif.reason || mappedCode };
+      errors.push(mappedCode);
+    } else {
+      checks['TOKEN_AUTHENTICITY'] = { status: 'PASS', details: 'Firma SHA-256 coincide y descifrado DPAPI exitoso' };
+
+      // 3. Status PREFLIGHT_PASS
+      if (verif.envelope?.status !== 'PREFLIGHT_PASS') {
+        checks['PREFLIGHT_STATUS'] = { status: 'FAIL', details: `Status es ${verif.envelope?.status}, no PREFLIGHT_PASS` };
+        errors.push('PREFLIGHT_STATUS_NOT_PASS');
+      } else {
+        checks['PREFLIGHT_STATUS'] = { status: 'PASS', details: 'Status es PREFLIGHT_PASS' };
+      }
+    }
+
+    // 4. Ausencia de errores o conteos null
+    try {
+      const parsed = JSON.parse(params.plainJson);
+      let hasError = false;
+      if (parsed.errors && Array.isArray(parsed.errors) && parsed.errors.length > 0) {
+        hasError = true;
+      }
+      if (parsed.countsByUser && typeof parsed.countsByUser === 'object') {
+        for (const userCounts of Object.values(parsed.countsByUser) as any[]) {
+          if (userCounts && typeof userCounts === 'object') {
+            for (const val of Object.values(userCounts)) {
+              if (val === null) hasError = true;
+            }
+          }
+        }
+      }
+      if (hasError) {
+        checks['PREFLIGHT_NULLS_ERRORS'] = { status: 'FAIL', details: 'El preflight contiene errores o conteos nulos' };
+        errors.push('PREFLIGHT_CONTAINS_NULL_OR_ERRORS');
+      } else {
+        checks['PREFLIGHT_NULLS_ERRORS'] = { status: 'PASS', details: 'Cero errores y conteos íntegros' };
+      }
+    } catch {
+      // Ignorar si el JSON no es válido
+    }
+
+    // 5. Ausencia de token ADC
+    if (/ya29\.[a-zA-Z0-9_-]+/.test(params.plainJson)) {
+      checks['ADC_TOKEN_LEAK'] = { status: 'FAIL', details: 'Token ADC detectado en preflight-token.json' };
+      errors.push('SECURITY_LEAK_ADC_TOKEN_FOUND');
+    } else {
+      checks['ADC_TOKEN_LEAK'] = { status: 'PASS', details: 'Cero tokens ADC en preflight' };
+    }
+  }
+
+  // 6. ACL en directorio sintético
+  if (!params.syntheticAclTested) {
+    checks['NTFS_ACL'] = { status: 'FAIL', details: 'Prueba de ACL sintética no superada' };
+    errors.push('ACL_TEST_FAILED');
+  } else {
+    checks['NTFS_ACL'] = { status: 'PASS', details: 'ACL sintética validada: herencia deshabilitada, acceso exclusivo y limpio' };
+  }
+
+  // 6. Exclusión Git
+  if (!params.gitExclusionActive) {
+    checks['GIT_EXCLUSION'] = { status: 'FAIL', details: '.data/ no excluido en .gitignore' };
+    errors.push('GITIGNORE_MISSING_EXCLUSION');
+  } else {
+    checks['GIT_EXCLUSION'] = { status: 'PASS', details: '.data/ y *.bin excluidos en .gitignore' };
+  }
+
+  // 7. Binarios huérfanos
+  if (params.strayBinFilesCount > 0) {
+    checks['STRAY_BIN_FILES'] = { status: 'FAIL', details: `${params.strayBinFilesCount} binarios fuera de .data/` };
+    errors.push('STRAY_BIN_FILES_FOUND');
+  } else {
+    checks['STRAY_BIN_FILES'] = { status: 'PASS', details: 'Cero binarios fuera de .data/' };
+  }
+
+  const passed = errors.length === 0;
+  return {
+    passed,
+    verdict: passed ? 'LOCAL SECURITY VERIFIED — EXTRACTION REVIEW READY' : 'PARTIALLY VERIFIED — BLOCKERS REMAIN',
+    checks,
+    errors,
+  };
+}

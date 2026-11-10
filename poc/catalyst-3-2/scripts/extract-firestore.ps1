@@ -5,7 +5,7 @@
 
 [CmdletBinding()]
 param (
-    [ValidateSet('Preflight', 'Extract', 'Verify', 'CryptoSelfTest')]
+    [ValidateSet('Preflight', 'Extract', 'Verify', 'CryptoSelfTest', 'LocalSecurityAudit')]
     [string]$Mode = 'Preflight',
 
     [string]$ProjectId = 'gen-lang-client-0041212770',
@@ -1233,5 +1233,316 @@ elseif ($Mode -eq 'CryptoSelfTest') {
     Write-Host ' - Fuga de Texto:    CERO (Validado ausente)' -ForegroundColor Green
     Write-Host ' - Anti-Tampering:   VALIDADO (Ciphertext alterado rechazado)' -ForegroundColor Green
     Write-Host ' - Veredicto:        DPAPI_LOCAL_SECURITY_VERIFIED' -ForegroundColor Green
+    Write-Host '========================================================================' -ForegroundColor Cyan
+}
+
+# -----------------------------------------------------------------------------
+# 11. Modo E: LOCALSECURITYAUDIT (Auditoría Runtime de ACL NTFS, Preflight Token y Seguridad)
+# -----------------------------------------------------------------------------
+elseif ($Mode -eq 'LocalSecurityAudit') {
+    Write-Host ''
+    Write-Host '========================================================================' -ForegroundColor Cyan
+    Write-Host ' VIGORCORE -- FASE 3.5.0.2: AUDITORIA RUNTIME DE SEGURIDAD LOCAL         ' -ForegroundColor Cyan
+    Write-Host '========================================================================' -ForegroundColor Cyan
+
+    $auditFailed = $false
+    $auditErrors = @()
+
+    # -------------------------------------------------------------------------
+    # PARTE 1: VERIFICACION REAL DEL PREFLIGHT TOKEN (OFFLINE)
+    # -------------------------------------------------------------------------
+    Write-Host ''
+    Write-Host '[1/3] AUDITORIA DE INTEGRIDAD Y AUTENTICIDAD DEL PREFLIGHT TOKEN' -ForegroundColor Cyan
+    Write-Host '------------------------------------------------------------------------'
+
+    # 1.1 Comprobación de existencia de ambos archivos
+    Write-Host ' - Verificando presencia de preflight-token.json...' -NoNewline
+    if (-not (Test-Path -Path $preflightTokenPath)) {
+        Write-Host ' FALTA' -ForegroundColor Red
+        $auditFailed = $true
+        $auditErrors += 'PREFLIGHT_JSON_MISSING: preflight-token.json no encontrado.'
+    } else {
+        $jsonLen = (Get-Item -Path $preflightTokenPath).Length
+        if ($jsonLen -eq 0) {
+            Write-Host ' VACIO' -ForegroundColor Red
+            $auditFailed = $true
+            $auditErrors += 'PREFLIGHT_JSON_EMPTY: preflight-token.json tiene 0 bytes.'
+        } else {
+            Write-Host (' OK ({0} bytes)' -f $jsonLen) -ForegroundColor Green
+        }
+    }
+
+    Write-Host ' - Verificando presencia de preflight-token.bin...' -NoNewline
+    if (-not (Test-Path -Path $preflightTokenBinPath)) {
+        Write-Host ' FALTA' -ForegroundColor Red
+        $auditFailed = $true
+        $auditErrors += 'PREFLIGHT_BINARY_MISSING: preflight-token.bin no encontrado. No se autogenera silenciosamente.'
+    } else {
+        $binLen = (Get-Item -Path $preflightTokenBinPath).Length
+        if ($binLen -eq 0) {
+            Write-Host ' VACIO' -ForegroundColor Red
+            $auditFailed = $true
+            $auditErrors += 'PREFLIGHT_BINARY_EMPTY: preflight-token.bin tiene 0 bytes.'
+        } else {
+            Write-Host (' OK ({0} bytes)' -f $binLen) -ForegroundColor Green
+        }
+    }
+
+    # 1.2 Lectura y descifrado real DPAPI CurrentUser si ambos existen
+    if (-not $auditFailed) {
+        Write-Host ' - Descifrando sobre binario autenticado con DPAPI CurrentUser...' -NoNewline
+        $authPlainBytes = $null
+        try {
+            $authCipherBytes = [System.IO.File]::ReadAllBytes($preflightTokenBinPath)
+            $authPlainBytes = Unprotect-DpapiBytes -CipherBytes $authCipherBytes
+            Write-Host ' OK' -ForegroundColor Green
+        } catch {
+            Write-Host ' ERROR' -ForegroundColor Red
+            $auditFailed = $true
+            $auditErrors += ('PREFLIGHT_BINARY_DECRYPT_ERROR: Falló el descifrado DPAPI: ' + $_.Exception.Message)
+        }
+
+        if ($authPlainBytes) {
+            $authEnvelope = [System.Text.Encoding]::UTF8.GetString($authPlainBytes) | ConvertFrom-Json
+            $tokenContent = Get-Content -Path $preflightTokenPath -Raw | ConvertFrom-Json
+            $tokenRawJson = Get-Content -Path $preflightTokenPath -Raw
+
+            # 1.3 Verificación de hash canónico contra sobre DPAPI
+            Write-Host ' - Verificando firma SHA-256 de preflight-token.json...' -NoNewline
+            $recomputedJson = $tokenContent | ConvertTo-Json -Depth 6 -Compress
+            $recomputedSha256 = Compute-Sha256Hex -InputString $recomputedJson
+
+            if ($recomputedSha256 -ne $authEnvelope.tokenSha256) {
+                Write-Host ' ALTERADO' -ForegroundColor Red
+                $auditFailed = $true
+                $auditErrors += 'PREFLIGHT_TOKEN_TAMPERED: El contenido JSON no coincide con la firma autenticada DPAPI.'
+            } else {
+                Write-Host ' OK (Firma y contenido coinciden)' -ForegroundColor Green
+            }
+
+            # 1.4 Verificación de correspondencia de ProjectId y DatabaseId
+            Write-Host ' - Verificando correspondencia de ProjectId...' -NoNewline
+            if ($authEnvelope.projectId -ne $ProjectId -or $tokenContent.projectId -ne $ProjectId) {
+                Write-Host ' DISCREPANCIA' -ForegroundColor Red
+                $auditFailed = $true
+                $auditErrors += ('PREFLIGHT_PROJECT_MISMATCH: Esperado {0}, encontrado {1}' -f $ProjectId, $authEnvelope.projectId)
+            } else {
+                Write-Host (' OK ({0})' -f $ProjectId) -ForegroundColor Green
+            }
+
+            Write-Host ' - Verificando correspondencia de DatabaseId...' -NoNewline
+            if ($authEnvelope.databaseId -ne $DatabaseId -or $tokenContent.databaseId -ne $DatabaseId) {
+                Write-Host ' DISCREPANCIA' -ForegroundColor Red
+                $auditFailed = $true
+                $auditErrors += ('PREFLIGHT_DATABASE_MISMATCH: Esperado {0}, encontrado {1}' -f $DatabaseId, $authEnvelope.databaseId)
+            } else {
+                Write-Host (' OK ({0})' -f $DatabaseId) -ForegroundColor Green
+            }
+
+            # 1.5 Estado PREFLIGHT_PASS
+            Write-Host ' - Verificando estado del preflight...' -NoNewline
+            if ($authEnvelope.status -ne 'PREFLIGHT_PASS' -or $tokenContent.status -ne 'PREFLIGHT_PASS') {
+                Write-Host (' NO PASS ({0})' -f $authEnvelope.status) -ForegroundColor Red
+                $auditFailed = $true
+                $auditErrors += ('PREFLIGHT_STATUS_NOT_PASS: Estado actual es ' + $authEnvelope.status)
+            } else {
+                Write-Host ' OK (PREFLIGHT_PASS)' -ForegroundColor Green
+            }
+
+            # 1.6 Antigüedad (< 60 minutos)
+            Write-Host ' - Comprobando frescura temporal (< 60 min)...' -NoNewline
+            $tokenDate = [DateTime]::Parse($authEnvelope.timestampUtc)
+            $ageMinutes = ((Get-Date).ToUniversalTime() - $tokenDate).TotalMinutes
+            if ($ageMinutes -gt 60) {
+                Write-Host (' VENCIDO ({0:F1} min)' -f $ageMinutes) -ForegroundColor Red
+                $auditFailed = $true
+                $auditErrors += ('PREFLIGHT_TOKEN_EXPIRED: Antigüedad de {0:F1} min supera el umbral de 60 min.' -f $ageMinutes)
+            } else {
+                Write-Host (' OK ({0:F1} min de antigüedad)' -f $ageMinutes) -ForegroundColor Green
+            }
+
+            # 1.7 Ausencia de errores o conteos null
+            Write-Host ' - Comprobando ausencia de errores o conteos null...' -NoNewline
+            $hasNullOrError = $false
+            if ($tokenContent.errors -and $tokenContent.errors.Count -gt 0) {
+                $hasNullOrError = $true
+            }
+            if ($tokenContent.countsByUser) {
+                foreach ($prop in $tokenContent.countsByUser.PSObject.Properties) {
+                    $userCounts = $prop.Value
+                    if ($userCounts) {
+                        foreach ($subProp in $userCounts.PSObject.Properties) {
+                            if ($subProp.Value -eq $null) {
+                                $hasNullOrError = $true
+                            }
+                        }
+                    }
+                }
+            }
+            if ($hasNullOrError) {
+                Write-Host ' DETECTADO ERROR O NULL' -ForegroundColor Red
+                $auditFailed = $true
+                $auditErrors += 'PREFLIGHT_CONTAINS_NULL_OR_ERRORS: Se encontraron conteos nulos o errores registrados.'
+            } else {
+                Write-Host ' OK (Conteos íntegros y cero errores)' -ForegroundColor Green
+            }
+
+            # 1.8 Ausencia de tokens ADC
+            Write-Host ' - Inspeccionando ausencia de tokens ADC en preflight...' -NoNewline
+            if ($tokenRawJson -match 'ya29\.[a-zA-Z0-9_-]+' -or ([System.Text.Encoding]::UTF8.GetString($authPlainBytes)) -match 'ya29\.[a-zA-Z0-9_-]+') {
+                Write-Host ' ALERTA DE FUGA' -ForegroundColor Red
+                $auditFailed = $true
+                $auditErrors += 'SECURITY_LEAK_ADC_TOKEN_FOUND: Se detectó token ADC dentro de los archivos de preflight.'
+            } else {
+                Write-Host ' OK (Cero tokens ADC)' -ForegroundColor Green
+            }
+        }
+    }
+
+    # -------------------------------------------------------------------------
+    # PARTE 2: VERIFICACION REAL DE ACL NTFS (DIRECTORIO SINTETICO)
+    # -------------------------------------------------------------------------
+    Write-Host ''
+    Write-Host '[2/3] AUDITORIA RUNTIME DE PERMISOS ACL NTFS EN DIRECTORIO SINTETICO' -ForegroundColor Cyan
+    Write-Host '------------------------------------------------------------------------'
+
+    # Verificación de existencia del directorio de extracción definitivo (no crearlo!)
+    Write-Host ' - Inspeccionando estado del directorio definitivo firestore-export...' -NoNewline
+    if (Test-Path -Path $resolvedCacheDir) {
+        Write-Host ' EXISTE PREVIAMENTE' -ForegroundColor Yellow
+    } else {
+        Write-Host ' NO CREADO (Preservado sin crear según mandato)' -ForegroundColor Green
+    }
+
+    # Uso de directorio sintético para prueba de ACL
+    $syntheticAclDir = Join-Path $pocDir '.data\security-selftest'
+    Write-Host (' - Creando directorio sintético de prueba: ' + $syntheticAclDir)
+    if (-not (Test-Path -Path $syntheticAclDir)) {
+        New-Item -ItemType Directory -Path $syntheticAclDir -Force | Out-Null
+    }
+
+    try {
+        Write-Host ' - Aplicando reglas ACL de producción en directorio sintético...' -NoNewline
+        $acl = Get-Acl -Path $syntheticAclDir
+        $acl.SetAccessRuleProtection($true, $false) # Deshabilitar herencia y remover reglas heredadas
+        $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+        $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+            $currentUser,
+            'FullControl',
+            'ContainerInherit,ObjectInherit',
+            'None',
+            'Allow'
+        )
+        $acl.ResetAccessRule($rule)
+        Set-Acl -Path $syntheticAclDir -AclObject $acl
+        Write-Host ' OK' -ForegroundColor Green
+
+        # Comprobación de Get-Acl
+        Write-Host ' - Verificando Get-Acl sobre directorio sintético...' -NoNewline
+        $verifiedAcl = Get-Acl -Path $syntheticAclDir
+        $isProtected = $verifiedAcl.AreAccessRulesProtected
+        if (-not $isProtected) {
+            Write-Host ' FALLA' -ForegroundColor Red
+            $auditFailed = $true
+            $auditErrors += 'ACL_INHERITANCE_NOT_DISABLED: La herencia de permisos no quedó deshabilitada.'
+        } else {
+            Write-Host ' OK (Herencia deshabilitada)' -ForegroundColor Green
+        }
+
+        # Comprobar identidad y ausencia de Users/Everyone
+        $hasEveryoneOrUsers = $false
+        foreach ($accessRule in $verifiedAcl.Access) {
+            $idRef = $accessRule.IdentityReference.Value
+            if ($idRef -match 'Everyone|Todos|Users|Usuarios|BUILTIN\\Users') {
+                $hasEveryoneOrUsers = $true
+            }
+        }
+        Write-Host ' - Comprobando ausencia de reglas Everyone/Users ordinarios...' -NoNewline
+        if ($hasEveryoneOrUsers) {
+            Write-Host ' DETECTADO PERMISO INNECESARIO' -ForegroundColor Yellow
+            $auditErrors += 'ACL_EXCESSIVE_PERMISSIONS: Se detectaron reglas para Everyone o Users.'
+        } else {
+            Write-Host ' OK (Sin reglas genéricas Everyone/Users)' -ForegroundColor Green
+        }
+
+        # Comprobar capacidad efectiva de lectura y escritura del usuario actual
+        Write-Host ' - Probando capacidad efectiva de lectura y escritura local...' -NoNewline
+        $testFile = Join-Path $syntheticAclDir 'acl-write-test.tmp'
+        $testPayload = [System.Text.Encoding]::UTF8.GetBytes('VIGORCORE_ACL_TEST')
+        [System.IO.File]::WriteAllBytes($testFile, $testPayload)
+        $readBytes = [System.IO.File]::ReadAllBytes($testFile)
+        Remove-Item -Path $testFile -Force
+
+        if ($readBytes.Length -eq $testPayload.Length) {
+            Write-Host ' OK (Lectura/Escritura verificada)' -ForegroundColor Green
+        } else {
+            Write-Host ' ERROR' -ForegroundColor Red
+            $auditFailed = $true
+            $auditErrors += 'ACL_IO_TEST_FAILED: No se pudo verificar la lectura y escritura efectiva.'
+        }
+    } catch {
+        Write-Host ' ERROR CRITICO' -ForegroundColor Red
+        $auditFailed = $true
+        $auditErrors += ('ACL_RUNTIME_EXCEPTION: ' + $_.Exception.Message)
+    } finally {
+        # Limpieza obligatoria del directorio sintético
+        Write-Host ' - Limpiando y eliminando directorio sintético de prueba...' -NoNewline
+        if (Test-Path -Path $syntheticAclDir) {
+            Remove-Item -Path $syntheticAclDir -Recurse -Force
+        }
+        if (-not (Test-Path -Path $syntheticAclDir)) {
+            Write-Host ' OK (Directorio temporal eliminado)' -ForegroundColor Green
+        } else {
+            Write-Host ' ADVERTENCIA (No se pudo eliminar directorio temporal)' -ForegroundColor Yellow
+        }
+    }
+
+    # -------------------------------------------------------------------------
+    # PARTE 3: AUDITORIA DE EXCLUSION GIT
+    # -------------------------------------------------------------------------
+    Write-Host ''
+    Write-Host '[3/3] AUDITORIA DE EXCLUSION GIT Y ARCHIVOS SENSIBLES' -ForegroundColor Cyan
+    Write-Host '------------------------------------------------------------------------'
+
+    Write-Host ' - Comprobando directivas .data/ y *.bin en .gitignore...' -NoNewline
+    if (-not $gitignoreOk) {
+        Write-Host ' FALLA' -ForegroundColor Red
+        $auditFailed = $true
+        $auditErrors += 'GITIGNORE_MISSING_EXCLUSION: poc/catalyst-3-2/.gitignore no contiene .data/'
+    } else {
+        Write-Host ' OK (.data/ y *.bin excluidos)' -ForegroundColor Green
+    }
+
+    # Comprobación de que no existan archivos .bin fuera de .data/ en el árbol de la POC
+    Write-Host ' - Escaneando posibles binarios .bin huérfanos fuera de .data/...' -NoNewline
+    $strayBinFiles = Get-ChildItem -Path $pocDir -Filter '*.bin' -Recurse -ErrorAction SilentlyContinue | Where-Object {
+        $_.FullName -notmatch '\\\.data\\' -and $_.FullName -notmatch '/\.data/'
+    }
+    if ($strayBinFiles -and $strayBinFiles.Count -gt 0) {
+        Write-Host (' DETECTADOS {0} ARCHIVOS' -f $strayBinFiles.Count) -ForegroundColor Yellow
+        foreach ($sb in $strayBinFiles) {
+            Write-Host ('   [!] Binario fuera de .data/: ' + $sb.FullName) -ForegroundColor Yellow
+        }
+    } else {
+        Write-Host ' OK (Cero binarios fuera de .data/)' -ForegroundColor Green
+    }
+
+    # -------------------------------------------------------------------------
+    # DICTAMEN FINAL DE LA AUDITORIA LOCAL
+    # -------------------------------------------------------------------------
+    Write-Host ''
+    Write-Host '========================================================================' -ForegroundColor Cyan
+    Write-Host ' DICTAMEN DE LA AUDITORIA DE SEGURIDAD LOCAL FASE 3.5.0.2' -ForegroundColor Cyan
+    Write-Host '========================================================================' -ForegroundColor Cyan
+    if ($auditFailed) {
+        Write-Host ' ESTADO: PARTIALLY VERIFIED — BLOCKERS REMAIN' -ForegroundColor Red
+        Write-Host ' Errores detectados:' -ForegroundColor Red
+        foreach ($ae in $auditErrors) {
+            Write-Host ('  - ' + $ae) -ForegroundColor Red
+        }
+    } else {
+        Write-Host ' ESTADO: LOCAL SECURITY VERIFIED — EXTRACTION REVIEW READY' -ForegroundColor Green
+        Write-Host ' Todos los controles locales (Preflight Token, ACL NTFS y Git) verificados.' -ForegroundColor Green
+    }
     Write-Host '========================================================================' -ForegroundColor Cyan
 }

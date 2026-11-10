@@ -35,6 +35,7 @@ import {
   verifyPreflightTokenAuthenticity,
   auditExtractGates,
   executeCryptoSelfTest,
+  executeLocalSecurityAudit,
 } from '../src/etl/firestoreExtractor.js';
 
 console.log('========================================================================');
@@ -944,10 +945,364 @@ runMock('9.14: auditExtractGates aprueba extracción cuando todas las 10 compuer
   assert.equal(audit.failedGateCode, undefined);
 });
 
+// -----------------------------------------------------------------------------
+// 10. Auditoría Runtime de Seguridad Local (FASE 3.5.0.2)
+// -----------------------------------------------------------------------------
+function createStandardValidPreflight() {
+  const provider = new MockDpapiProvider();
+  const tokenReport: PreflightReport = {
+    executionId: 'exec-sec-audit',
+    timestamp: new Date().toISOString(),
+    projectId: 'gen-lang-client-0041212770',
+    databaseId: 'ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c',
+    usersDiscovered: 5,
+    totalDocumentsDiscovered: 73,
+    countsByUser: {
+      USER_001: { biometrics: 1, groceries: 1 },
+      USER_002: { biometrics: 1, groceries: 1 },
+    },
+    administrativeCounts: { adminUserDirectory: 0 },
+    errors: [],
+    status: 'PREFLIGHT_PASS',
+  };
+
+  const { envelope, rawJson } = createPreflightAuthEnvelope(tokenReport);
+  const binBytes = provider.protect(Buffer.from(JSON.stringify(envelope), 'utf8'));
+
+  return { provider, rawJson, binBytes };
+}
+
+runUnit('10.1: executeLocalSecurityAudit aprueba con preflight dual íntegro, ACL sintética y Git protegido', () => {
+  const { provider, rawJson, binBytes } = createStandardValidPreflight();
+  const res = executeLocalSecurityAudit({
+    jsonExists: true,
+    binExists: true,
+    jsonLength: Buffer.byteLength(rawJson),
+    binLength: binBytes.length,
+    plainJson: rawJson,
+    binBytes,
+    cryptoProvider: provider,
+    expectedProjectId: 'gen-lang-client-0041212770',
+    expectedDatabaseId: 'ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c',
+    syntheticAclTested: true,
+    gitExclusionActive: true,
+    strayBinFilesCount: 0,
+  });
+
+  assert.equal(res.passed, true);
+  assert.equal(res.verdict, 'LOCAL SECURITY VERIFIED — EXTRACTION REVIEW READY');
+  assert.equal(res.errors.length, 0);
+  assert.equal(res.checks['TOKEN_AUTHENTICITY'].status, 'PASS');
+  assert.equal(res.checks['NTFS_ACL'].status, 'PASS');
+  assert.equal(res.checks['GIT_EXCLUSION'].status, 'PASS');
+});
+
+runMock('10.2: executeLocalSecurityAudit reporta PREFLIGHT_BINARY_MISSING si falta preflight-token.bin', () => {
+  const { provider, rawJson } = createStandardValidPreflight();
+  const res = executeLocalSecurityAudit({
+    jsonExists: true,
+    binExists: false,
+    jsonLength: Buffer.byteLength(rawJson),
+    binLength: 0,
+    plainJson: rawJson,
+    binBytes: Buffer.alloc(0),
+    cryptoProvider: provider,
+    expectedProjectId: 'gen-lang-client-0041212770',
+    expectedDatabaseId: 'ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c',
+    syntheticAclTested: true,
+    gitExclusionActive: true,
+    strayBinFilesCount: 0,
+  });
+
+  assert.equal(res.passed, false);
+  assert.equal(res.verdict, 'PARTIALLY VERIFIED — BLOCKERS REMAIN');
+  assert.ok(res.errors.includes('PREFLIGHT_BINARY_MISSING'));
+});
+
+runMock('10.3: executeLocalSecurityAudit reporta PREFLIGHT_BINARY_DECRYPT_ERROR si preflight-token.bin está corrupto', () => {
+  const { provider, rawJson, binBytes } = createStandardValidPreflight();
+  const corruptedBin = Buffer.from(binBytes);
+  corruptedBin[corruptedBin.length - 2] ^= 0xaa;
+
+  const res = executeLocalSecurityAudit({
+    jsonExists: true,
+    binExists: true,
+    jsonLength: Buffer.byteLength(rawJson),
+    binLength: corruptedBin.length,
+    plainJson: rawJson,
+    binBytes: corruptedBin,
+    cryptoProvider: provider,
+    expectedProjectId: 'gen-lang-client-0041212770',
+    expectedDatabaseId: 'ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c',
+    syntheticAclTested: true,
+    gitExclusionActive: true,
+    strayBinFilesCount: 0,
+  });
+
+  assert.equal(res.passed, false);
+  assert.ok(res.errors.includes('PREFLIGHT_BINARY_DECRYPT_ERROR'));
+});
+
+runMock('10.4: executeLocalSecurityAudit reporta PREFLIGHT_TOKEN_TAMPERED si el JSON fue alterado respecto al hash autenticado', () => {
+  const { provider, rawJson, binBytes } = createStandardValidPreflight();
+  const tamperedJson = rawJson.replace('"totalDocumentsDiscovered":73', '"totalDocumentsDiscovered":74');
+
+  const res = executeLocalSecurityAudit({
+    jsonExists: true,
+    binExists: true,
+    jsonLength: Buffer.byteLength(tamperedJson),
+    binLength: binBytes.length,
+    plainJson: tamperedJson,
+    binBytes,
+    cryptoProvider: provider,
+    expectedProjectId: 'gen-lang-client-0041212770',
+    expectedDatabaseId: 'ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c',
+    syntheticAclTested: true,
+    gitExclusionActive: true,
+    strayBinFilesCount: 0,
+  });
+
+  assert.equal(res.passed, false);
+  assert.ok(res.errors.includes('PREFLIGHT_TOKEN_TAMPERED'));
+});
+
+runMock('10.5: executeLocalSecurityAudit reporta PREFLIGHT_PROJECT_MISMATCH si el proyecto GCP no coincide', () => {
+  const { provider, rawJson, binBytes } = createStandardValidPreflight();
+  const res = executeLocalSecurityAudit({
+    jsonExists: true,
+    binExists: true,
+    jsonLength: Buffer.byteLength(rawJson),
+    binLength: binBytes.length,
+    plainJson: rawJson,
+    binBytes,
+    cryptoProvider: provider,
+    expectedProjectId: 'other-unauthorized-gcp-project',
+    expectedDatabaseId: 'ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c',
+    syntheticAclTested: true,
+    gitExclusionActive: true,
+    strayBinFilesCount: 0,
+  });
+
+  assert.equal(res.passed, false);
+  assert.ok(res.errors.includes('PREFLIGHT_PROJECT_MISMATCH'));
+});
+
+runMock('10.6: executeLocalSecurityAudit reporta PREFLIGHT_DATABASE_MISMATCH si la base Firestore no coincide', () => {
+  const { provider, rawJson, binBytes } = createStandardValidPreflight();
+  const res = executeLocalSecurityAudit({
+    jsonExists: true,
+    binExists: true,
+    jsonLength: Buffer.byteLength(rawJson),
+    binLength: binBytes.length,
+    plainJson: rawJson,
+    binBytes,
+    cryptoProvider: provider,
+    expectedProjectId: 'gen-lang-client-0041212770',
+    expectedDatabaseId: '(default)',
+    syntheticAclTested: true,
+    gitExclusionActive: true,
+    strayBinFilesCount: 0,
+  });
+
+  assert.equal(res.passed, false);
+  assert.ok(res.errors.includes('PREFLIGHT_DATABASE_MISMATCH'));
+});
+
+runMock('10.7: executeLocalSecurityAudit reporta PREFLIGHT_STATUS_NOT_PASS si el estado no es PREFLIGHT_PASS', () => {
+  const provider = new MockDpapiProvider();
+  const tokenReport: PreflightReport = {
+    executionId: 'exec-drift',
+    timestamp: new Date().toISOString(),
+    projectId: 'gen-lang-client-0041212770',
+    databaseId: 'ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c',
+    usersDiscovered: 5,
+    totalDocumentsDiscovered: 74,
+    countsByUser: {},
+    administrativeCounts: {},
+    errors: [],
+    status: 'BASELINE_DRIFT',
+  };
+  const { envelope, rawJson } = createPreflightAuthEnvelope(tokenReport);
+  const binBytes = provider.protect(Buffer.from(JSON.stringify(envelope), 'utf8'));
+
+  const res = executeLocalSecurityAudit({
+    jsonExists: true,
+    binExists: true,
+    jsonLength: Buffer.byteLength(rawJson),
+    binLength: binBytes.length,
+    plainJson: rawJson,
+    binBytes,
+    cryptoProvider: provider,
+    expectedProjectId: 'gen-lang-client-0041212770',
+    expectedDatabaseId: 'ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c',
+    syntheticAclTested: true,
+    gitExclusionActive: true,
+    strayBinFilesCount: 0,
+  });
+
+  assert.equal(res.passed, false);
+  assert.ok(res.errors.includes('PREFLIGHT_STATUS_NOT_PASS'));
+});
+
+runMock('10.8: executeLocalSecurityAudit reporta PREFLIGHT_TOKEN_EXPIRED si la antigüedad supera 60 minutos', () => {
+  const provider = new MockDpapiProvider();
+  const oldDate = new Date(Date.now() - 75 * 60 * 1000).toISOString();
+  const tokenReport: PreflightReport = {
+    executionId: 'exec-old',
+    timestamp: oldDate,
+    projectId: 'gen-lang-client-0041212770',
+    databaseId: 'ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c',
+    usersDiscovered: 5,
+    totalDocumentsDiscovered: 73,
+    countsByUser: {},
+    administrativeCounts: {},
+    errors: [],
+    status: 'PREFLIGHT_PASS',
+  };
+  const { envelope, rawJson } = createPreflightAuthEnvelope(tokenReport);
+  const binBytes = provider.protect(Buffer.from(JSON.stringify(envelope), 'utf8'));
+
+  const res = executeLocalSecurityAudit({
+    jsonExists: true,
+    binExists: true,
+    jsonLength: Buffer.byteLength(rawJson),
+    binLength: binBytes.length,
+    plainJson: rawJson,
+    binBytes,
+    cryptoProvider: provider,
+    expectedProjectId: 'gen-lang-client-0041212770',
+    expectedDatabaseId: 'ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c',
+    maxAgeMinutes: 60,
+    syntheticAclTested: true,
+    gitExclusionActive: true,
+    strayBinFilesCount: 0,
+  });
+
+  assert.equal(res.passed, false);
+  assert.ok(res.errors.includes('PREFLIGHT_TOKEN_EXPIRED'));
+});
+
+runMock('10.9: executeLocalSecurityAudit reporta PREFLIGHT_CONTAINS_NULL_OR_ERRORS si hay conteo null o errores en JSON', () => {
+  const provider = new MockDpapiProvider();
+  const tokenReport: PreflightReport = {
+    executionId: 'exec-err',
+    timestamp: new Date().toISOString(),
+    projectId: 'gen-lang-client-0041212770',
+    databaseId: 'ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c',
+    usersDiscovered: 5,
+    totalDocumentsDiscovered: 73,
+    countsByUser: {
+      USER_001: { biometrics: null },
+    },
+    administrativeCounts: {},
+    errors: [sanitizeErrorMessage('HTTP 500 internal server error', 500)],
+    status: 'PREFLIGHT_PASS',
+  };
+  const { envelope, rawJson } = createPreflightAuthEnvelope(tokenReport);
+  const binBytes = provider.protect(Buffer.from(JSON.stringify(envelope), 'utf8'));
+
+  const res = executeLocalSecurityAudit({
+    jsonExists: true,
+    binExists: true,
+    jsonLength: Buffer.byteLength(rawJson),
+    binLength: binBytes.length,
+    plainJson: rawJson,
+    binBytes,
+    cryptoProvider: provider,
+    expectedProjectId: 'gen-lang-client-0041212770',
+    expectedDatabaseId: 'ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c',
+    syntheticAclTested: true,
+    gitExclusionActive: true,
+    strayBinFilesCount: 0,
+  });
+
+  assert.equal(res.passed, false);
+  assert.ok(res.errors.includes('PREFLIGHT_CONTAINS_NULL_OR_ERRORS'));
+});
+
+runMock('10.10: executeLocalSecurityAudit reporta SECURITY_LEAK_ADC_TOKEN_FOUND si detecta patrón ya29...', () => {
+  const provider = new MockDpapiProvider();
+  const tokenReport: PreflightReport = {
+    executionId: 'exec-leak',
+    timestamp: new Date().toISOString(),
+    projectId: 'gen-lang-client-0041212770',
+    databaseId: 'ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c',
+    usersDiscovered: 5,
+    totalDocumentsDiscovered: 73,
+    countsByUser: {},
+    administrativeCounts: {},
+    errors: ['ya29.a0AfH6SMD_leak_token_sample_string_12345'],
+    status: 'PREFLIGHT_PASS',
+  };
+  const { envelope, rawJson } = createPreflightAuthEnvelope(tokenReport);
+  const binBytes = provider.protect(Buffer.from(JSON.stringify(envelope), 'utf8'));
+
+  const res = executeLocalSecurityAudit({
+    jsonExists: true,
+    binExists: true,
+    jsonLength: Buffer.byteLength(rawJson),
+    binLength: binBytes.length,
+    plainJson: rawJson,
+    binBytes,
+    cryptoProvider: provider,
+    expectedProjectId: 'gen-lang-client-0041212770',
+    expectedDatabaseId: 'ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c',
+    syntheticAclTested: true,
+    gitExclusionActive: true,
+    strayBinFilesCount: 0,
+  });
+
+  assert.equal(res.passed, false);
+  assert.ok(res.errors.includes('SECURITY_LEAK_ADC_TOKEN_FOUND'));
+});
+
+runMock('10.11: executeLocalSecurityAudit reporta ACL_TEST_FAILED si la comprobación de ACL sintética falla', () => {
+  const { provider, rawJson, binBytes } = createStandardValidPreflight();
+  const res = executeLocalSecurityAudit({
+    jsonExists: true,
+    binExists: true,
+    jsonLength: Buffer.byteLength(rawJson),
+    binLength: binBytes.length,
+    plainJson: rawJson,
+    binBytes,
+    cryptoProvider: provider,
+    expectedProjectId: 'gen-lang-client-0041212770',
+    expectedDatabaseId: 'ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c',
+    syntheticAclTested: false,
+    gitExclusionActive: true,
+    strayBinFilesCount: 0,
+  });
+
+  assert.equal(res.passed, false);
+  assert.ok(res.errors.includes('ACL_TEST_FAILED'));
+});
+
+runMock('10.12: executeLocalSecurityAudit reporta STRAY_BIN_FILES_FOUND si existen archivos binarios fuera de .data/', () => {
+  const { provider, rawJson, binBytes } = createStandardValidPreflight();
+  const res = executeLocalSecurityAudit({
+    jsonExists: true,
+    binExists: true,
+    jsonLength: Buffer.byteLength(rawJson),
+    binLength: binBytes.length,
+    plainJson: rawJson,
+    binBytes,
+    cryptoProvider: provider,
+    expectedProjectId: 'gen-lang-client-0041212770',
+    expectedDatabaseId: 'ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c',
+    syntheticAclTested: true,
+    gitExclusionActive: true,
+    strayBinFilesCount: 2,
+  });
+
+  assert.equal(res.passed, false);
+  assert.ok(res.errors.includes('STRAY_BIN_FILES_FOUND'));
+});
+
 console.log('========================================================================');
-console.log(` RESULTADOS DE LAS PRUEBAS FASE 3.5.0 Y 3.5.0.1:`);
+console.log(` RESULTADOS DE LAS PRUEBAS FASES 3.5.0, 3.5.0.1 Y 3.5.0.2:`);
 console.log(`   PASS-UNIT:   ${passUnitCount}`);
 console.log(`   PASS-MOCK:   ${passMockCount}`);
 console.log(`   PASS-STATIC: ${passStaticCount}`);
 console.log(`   TOTAL:       ${passUnitCount + passMockCount + passStaticCount} PRUEBAS EXITOSAS (100%)`);
 console.log('========================================================================');
+
