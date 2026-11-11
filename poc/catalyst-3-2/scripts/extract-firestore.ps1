@@ -1,7 +1,7 @@
 # =============================================================================
-# VIGORCORE ETL — EXTRACTOR FORENSE CONTROLADO FIRESTORE -> CACHE LOCAL CIFRADO
+# VIGORCORE ETL -- EXTRACTOR FORENSE CONTROLADO FIRESTORE -> CACHE LOCAL CIFRADO
 # Archivo: poc/catalyst-3-2/scripts/extract-firestore.ps1
-# Version: 1.0.4 (Fase 3.5.0.4: DateTimeOffset UTC Fix & Hardened Cache Root ACL)
+# Version: 1.0.5 (Fase 3.5.0.5: Parser fix, single-element arrays, hash exacto)
 # Compatibilidad: Windows PowerShell 5.1+
 # =============================================================================
 
@@ -53,7 +53,7 @@ $checkpointBinPath = Join-Path $controlDir 'checkpoint.bin'
 $idMappingBinPath  = Join-Path $controlDir 'id-mapping.bin'
 $manifestAuditPath = Join-Path $reportsDir 'manifest-audit.json'
 
-# Colecciones y subcolecciones canónicas según inventario forense
+# Colecciones y subcolecciones canonicas segun inventario forense
 $candidateSubcollections = @(
     'biometrics', 'groceries', 'preferences', 'mealLogs',
     'notifications', 'waterLogs', 'progressPhotos', 'workouts',
@@ -135,7 +135,7 @@ function Get-GcpAccessToken {
         throw 'ERROR: No se pudo obtener el token de acceso ADC. Ejecute "gcloud auth application-default login" previamente.'
     }
 
-    $token = $rawToken.Trim()
+    $token = ([string]($rawToken | Select-Object -First 1)).Trim()
     if ($token.Length -lt 20) {
         Write-Host ' FORMATO INVALIDO' -ForegroundColor Red
         throw 'ERROR: Token obtenido tiene un formato inesperado o vacio.'
@@ -201,15 +201,20 @@ function Invoke-FirestoreRestSafe {
             $statusCode = 0
             $errBodyText = ''
             if ($_.Exception.Response) {
-                $statusCode = [int]$_.Exception.Response.StatusCode
+                try { $statusCode = [int]$_.Exception.Response.StatusCode } catch { $statusCode = 0 }
+            }
+            if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
+                $errBodyText = $_.ErrorDetails.Message
+            } elseif ($_.Exception.Response -and ($_.Exception.Response -is [System.Net.WebResponse])) {
                 try {
                     $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
                     $errBodyText = $reader.ReadToEnd()
+                    $reader.Close()
                 } catch { }
             }
             $category = Categorize-HttpError -StatusCode $statusCode -ErrorBody $errBodyText
 
-            # Reintentos sólo en casos transitorios
+            # Reintentos solo en casos transitorios
             if ($category -in @('RESOURCE_EXHAUSTED', 'UNAVAILABLE') -and $attempt -lt $maxRetries) {
                 $backoffSec = [Math]::Pow(2, $attempt)
                 Start-Sleep -Seconds $backoffSec
@@ -217,21 +222,21 @@ function Invoke-FirestoreRestSafe {
             }
 
             return [ordered]@{
-                StatusCode = $statusCode
-                Body       = $null
-                Error      = $_.Exception.Message
+                StatusCode  = $statusCode
+                Body        = $null
+                Error       = $_.Exception.Message
                 ErrorDetail = $errBodyText
-                Category   = $category
+                Category    = $category
             }
         }
     }
 
     return [ordered]@{
-        StatusCode = 0
-        Body       = $null
-        Error      = $lastException.Exception.Message
+        StatusCode  = 0
+        Body        = $null
+        Error       = $lastException.Exception.Message
         ErrorDetail = ''
-        Category   = 'RETRY_EXHAUSTED'
+        Category    = 'RETRY_EXHAUSTED'
     }
 }
 
@@ -240,7 +245,7 @@ function Invoke-FirestoreRestSafe {
 # -----------------------------------------------------------------------------
 if ($Mode -eq 'CryptoSelfTest') {
     Write-Host '========================================================================' -ForegroundColor Cyan
-    Write-Host 'VIGORCORE ETL — PRUEBA CRIPTOGRAFICA WINDOWS DPAPI (DataProtectionScope.CurrentUser)' -ForegroundColor Cyan
+    Write-Host 'VIGORCORE ETL -- PRUEBA CRIPTOGRAFICA WINDOWS DPAPI (DataProtectionScope.CurrentUser)' -ForegroundColor Cyan
     Write-Host '========================================================================' -ForegroundColor Cyan
 
     $testPayload = 'VIGORCORE_DPAPI_VERIFICATION_PAYLOAD_' + [System.Guid]::NewGuid().ToString() + '_' + [DateTimeOffset]::UtcNow.ToString('o')
@@ -318,11 +323,11 @@ if ($Mode -eq 'CryptoSelfTest') {
 }
 
 # -----------------------------------------------------------------------------
-# MODO 2: PREFLIGHT (Inspección estructural no extractiva)
+# MODO 2: PREFLIGHT (Inspeccion estructural no extractiva)
 # -----------------------------------------------------------------------------
 if ($Mode -eq 'Preflight') {
     Write-Host '========================================================================' -ForegroundColor Cyan
-    Write-Host 'VIGORCORE ETL — EJECUCION DE PREFLIGHT ESTRUCTURAL REMOTO' -ForegroundColor Cyan
+    Write-Host 'VIGORCORE ETL -- EJECUCION DE PREFLIGHT ESTRUCTURAL REMOTO' -ForegroundColor Cyan
     Write-Host '========================================================================' -ForegroundColor Cyan
     Write-Host ('Proyecto GCP : ' + $ProjectId)
     Write-Host ('Base Datos   : ' + $DatabaseId)
@@ -345,10 +350,10 @@ if ($Mode -eq 'Preflight') {
     $usersRunQueryUrl = $databaseRootUrl + ':runQuery'
     $usersBody = [ordered]@{
         structuredQuery = [ordered]@{
-            select = @{ fields = @( @{ fieldPath = '__name__' } ) }
-            from   = @( @{ collectionId = 'users' } )
+            select  = @{ fields = @( @{ fieldPath = '__name__' } ) }
+            from    = @( @{ collectionId = 'users' } )
             orderBy = @( @{ field = @{ fieldPath = '__name__' }; direction = 'ASCENDING' } )
-            limit  = 100
+            limit   = 100
         }
     }
 
@@ -359,8 +364,8 @@ if ($Mode -eq 'Preflight') {
     }
 
     $userDocNames = @()
-    if ($usersRes.Body -is [System.Array]) {
-        foreach ($item in $usersRes.Body) {
+    if ($usersRes.Body) {
+        foreach ($item in @($usersRes.Body)) {
             if ($item -and $item.document -and $item.document.name) {
                 $userDocNames += $item.document.name
             }
@@ -399,17 +404,17 @@ if ($Mode -eq 'Preflight') {
             $subQueryUrl = $userSubParentUrl + ':runQuery'
             $subBody = [ordered]@{
                 structuredQuery = [ordered]@{
-                    select = @{ fields = @( @{ fieldPath = '__name__' } ) }
-                    from   = @( @{ collectionId = $subCol } )
-                    orderBy = @{ field = @{ fieldPath = '__name__' }; direction = 'ASCENDING' } )
-                    limit  = 200
+                    select  = @{ fields = @( @{ fieldPath = '__name__' } ) }
+                    from    = @( @{ collectionId = $subCol } )
+                    orderBy = @( @{ field = @{ fieldPath = '__name__' }; direction = 'ASCENDING' } )
+                    limit   = 200
                 }
             }
             $subRes = Invoke-FirestoreRestSafe -Method 'POST' -Url $subQueryUrl -Body $subBody -AccessToken $token
             if ($subRes.StatusCode -eq 200) {
                 $subDocCount = 0
-                if ($subRes.Body -is [System.Array]) {
-                    foreach ($dItem in $subRes.Body) {
+                if ($subRes.Body) {
+                    foreach ($dItem in @($subRes.Body)) {
                         if ($dItem -and $dItem.document -and $dItem.document.name) {
                             $subDocCount++
                         }
@@ -430,6 +435,7 @@ if ($Mode -eq 'Preflight') {
     # Consultar colecciones administrativas
     Write-Host ' - Consultando colecciones administrativas candidatas...' -NoNewline
     $adminCounts = [ordered]@{}
+    $adminTotal = 0
     foreach ($adminCol in $candidateAdminCollections) {
         $adminQueryUrl = $databaseRootUrl + ':runQuery'
         $adminBody = [ordered]@{
@@ -441,16 +447,17 @@ if ($Mode -eq 'Preflight') {
         }
         $admRes = Invoke-FirestoreRestSafe -Method 'POST' -Url $adminQueryUrl -Body $adminBody -AccessToken $token
         $admCount = 0
-        if ($admRes.StatusCode -eq 200 -and $admRes.Body -is [System.Array]) {
-            foreach ($aItem in $admRes.Body) {
+        if ($admRes.StatusCode -eq 200 -and $admRes.Body) {
+            foreach ($aItem in @($admRes.Body)) {
                 if ($aItem -and $aItem.document -and $aItem.document.name) {
                     $admCount++
                 }
             }
         }
         $adminCounts[$adminCol] = $admCount
+        $adminTotal += $admCount
     }
-    Write-Host ' OK (0 administrativas)' -ForegroundColor Green
+    Write-Host (' OK ({0} documentos administrativos)' -f $adminTotal) -ForegroundColor Green
 
     $totalDocs = $userDocNames.Count + $totalSecondaryDocs
     $diffFromBaseline = $totalDocs - 73
@@ -462,11 +469,11 @@ if ($Mode -eq 'Preflight') {
         $status = 'BASELINE_DRIFT'
     }
 
-    # Usar [DateTimeOffset]::UtcNow para timestamp ISO 8601 estricto con zona horaria UTC
+    # Timestamp ISO 8601 estricto con zona horaria UTC
     $timestampUtc = [DateTimeOffset]::UtcNow.ToString('o')
 
     $tokenContent = [ordered]@{
-        version              = '1.0.4'
+        version              = '1.0.5'
         projectId            = $ProjectId
         databaseId           = $DatabaseId
         status               = $status
@@ -478,16 +485,19 @@ if ($Mode -eq 'Preflight') {
         countsByCollection   = $countsByCol
         countsByUser         = $countsByUser
         adminCollections     = $adminCounts
-        errors               = $recordedErrors
+        errors               = @($recordedErrors)
     }
 
     $tokenJson = $tokenContent | ConvertTo-Json -Depth 8
-    $tokenJson | Set-Content -Path $preflightTokenJsonPath -Encoding UTF8
+
+    # Escritura EXACTA (UTF-8 sin BOM, sin salto de linea extra) para que el hash coincida al releer
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($preflightTokenJsonPath, $tokenJson, $utf8NoBom)
 
     $tokenSha256 = Get-Sha256String -InputString $tokenJson
 
     $authEnvelope = [ordered]@{
-        version            = '1.0.4'
+        version            = '1.0.5'
         projectId          = $ProjectId
         databaseId         = $DatabaseId
         status             = $status
@@ -518,11 +528,11 @@ if ($Mode -eq 'Preflight') {
 }
 
 # -----------------------------------------------------------------------------
-# MODO 3: EXTRACT (Extracción forense protegida)
+# MODO 3: EXTRACT (Extraccion forense protegida)
 # -----------------------------------------------------------------------------
 if ($Mode -eq 'Extract') {
     Write-Host '========================================================================' -ForegroundColor Cyan
-    Write-Host 'VIGORCORE ETL — COMPUERTAS DE AUTORIZACION PREVIAS A LA EXTRACCION' -ForegroundColor Cyan
+    Write-Host 'VIGORCORE ETL -- COMPUERTAS DE AUTORIZACION PREVIAS A LA EXTRACCION' -ForegroundColor Cyan
     Write-Host '========================================================================' -ForegroundColor Cyan
 
     # Control 1: Existencia de archivos de control
@@ -533,12 +543,12 @@ if ($Mode -eq 'Extract') {
         throw ('BLOQUEO: preflight-token.bin no existe en ' + $preflightTokenBinPath)
     }
 
-    # Control 2: Descifrado DPAPI y verificación de integridad
+    # Control 2: Descifrado DPAPI y verificacion de integridad
     $authCipherBytes = [System.IO.File]::ReadAllBytes($preflightTokenBinPath)
     $authPlainBytes = Unprotect-DpapiBytes -CipherBytes $authCipherBytes
     $authEnvelope = [System.Text.Encoding]::UTF8.GetString($authPlainBytes) | ConvertFrom-Json
 
-    $tokenRawJson = Get-Content -Path $preflightTokenJsonPath -Raw -Encoding UTF8
+    $tokenRawJson = [System.IO.File]::ReadAllText($preflightTokenJsonPath, (New-Object System.Text.UTF8Encoding($false)))
     $tokenContent = $tokenRawJson | ConvertFrom-Json
     $expectedHash = Get-Sha256String -InputString $tokenRawJson
 
@@ -554,14 +564,14 @@ if ($Mode -eq 'Extract') {
         throw ('BLOQUEO: El token de preflight corresponde a la base {0}, pero el script fue invocado para {1}.' -f $authEnvelope.databaseId, $DatabaseId)
     }
 
-    # Control 4: Antigüedad máxima del Preflight (< 60 minutos) usando DateTimeOffset
+    # Control 4: Antiguedad maxima del Preflight (< 60 minutos) usando DateTimeOffset
     $preflightOffset = [DateTimeOffset]::MinValue
     try {
-        $preflightOffset = [DateTimeOffset]::Parse($authEnvelope.timestampUtc)
+        $preflightOffset = [DateTimeOffset]::Parse([string]$authEnvelope.timestampUtc, [System.Globalization.CultureInfo]::InvariantCulture)
     } catch {
-        throw ('BLOQUEO: Formato de timestamp inválido en preflight: ' + $authEnvelope.timestampUtc)
+        throw ('BLOQUEO: Formato de timestamp invalido en preflight: ' + $authEnvelope.timestampUtc)
     }
-    if ($authEnvelope.timestampUtc -ne $tokenContent.timestampUtc) {
+    if ([string]$authEnvelope.timestampUtc -ne [string]$tokenContent.timestampUtc) {
         throw 'BLOQUEO: timestampUtc en JSON y sobre DPAPI difieren.'
     }
     $ageMinutes = ([DateTimeOffset]::UtcNow - $preflightOffset).TotalMinutes
@@ -569,40 +579,40 @@ if ($Mode -eq 'Extract') {
         throw ('BLOQUEO: El token de preflight tiene fecha en el futuro ({0:F1} min).' -f [Math]::Abs($ageMinutes))
     }
     if ($ageMinutes -gt 60.0) {
-        throw ('BLOQUEO: El token de preflight tiene {0:F1} minutos de antigüedad (> 60 min). Ejecute un nuevo Preflight.' -f $ageMinutes)
+        throw ('BLOQUEO: El token de preflight tiene {0:F1} minutos de antiguedad (> 60 min). Ejecute un nuevo Preflight.' -f $ageMinutes)
     }
     if ($authEnvelope.status -eq 'PREFLIGHT_FAILED' -or $tokenContent.status -eq 'PREFLIGHT_FAILED') {
-        throw 'BLOQUEO: El preflight reportó errores de consulta (PREFLIGHT_FAILED). Extracción denegada.'
+        throw 'BLOQUEO: El preflight reporto errores de consulta (PREFLIGHT_FAILED). Extraccion denegada.'
     }
-    if ($tokenContent.errors -and $tokenContent.errors.Count -gt 0) {
-        throw 'BLOQUEO: El preflight contiene errores de consulta registrados. Extracción denegada.'
+    if ($tokenContent.errors -and @($tokenContent.errors).Count -gt 0) {
+        throw 'BLOQUEO: El preflight contiene errores de consulta registrados. Extraccion denegada.'
     }
 
     # Control 5: Baseline drift acknowledgment
     if ($authEnvelope.status -eq 'BASELINE_DRIFT' -and -not $DriftAcknowledged) {
-        throw 'BLOQUEO: Existe BASELINE_DRIFT y no se especificó el parámetro -DriftAcknowledged.'
+        throw 'BLOQUEO: Existe BASELINE_DRIFT y no se especifico el parametro -DriftAcknowledged.'
     }
 
-    # Control 6: Verificación de caché previo y regla anti-sobrescritura
+    # Control 6: Verificacion de cache previo y regla anti-sobrescritura
     if (Test-Path -Path $resolvedCacheDir) {
-        $existingDocBins = Get-ChildItem -Path $resolvedCacheDir -Filter 'doc-*.bin' -File -ErrorAction SilentlyContinue
-        if ($existingDocBins -and $existingDocBins.Count -gt 0 -and -not $AllowOverwrite) {
+        $existingDocBins = @(Get-ChildItem -Path $resolvedCacheDir -Filter 'doc-*.bin' -File -ErrorAction SilentlyContinue)
+        if ($existingDocBins.Count -gt 0 -and -not $AllowOverwrite) {
             throw ('BLOQUEO ANTI-SOBRESCRITURA: Se detectaron {0} documentos ya extraidos en el cache. Especifique -AllowOverwrite si desea reiniciar.' -f $existingDocBins.Count)
         }
     }
 
-    # Control 7: Verificación de ACL en caché definitivo
+    # Control 7: Verificacion de ACL en cache definitivo
     if (Test-Path -Path $resolvedCacheDir) {
         try {
             $acl = Get-Acl -Path $resolvedCacheDir
             if (-not $acl.AreAccessRulesProtected) {
-                Write-Host 'ADVERTENCIA: La herencia de permisos NTFS no está deshabilitada en el caché definitivo.' -ForegroundColor Yellow
+                Write-Host 'ADVERTENCIA: La herencia de permisos NTFS no esta deshabilitada en el cache definitivo.' -ForegroundColor Yellow
             }
         } catch { }
     }
 
     Write-Host 'TODAS LAS COMPUERTAS DE AUTORIZACION FUERON VALIDADAS EXITOSAMENTE.' -ForegroundColor Green
-    Write-Host 'AVISO DE GOBERNANZA: La extracción de documentos completos está restringida a la Fase 3.5.1.' -ForegroundColor Yellow
+    Write-Host 'AVISO DE GOBERNANZA: La extraccion de documentos completos esta restringida a la Fase 3.5.1.' -ForegroundColor Yellow
     return
 }
 
@@ -611,7 +621,7 @@ if ($Mode -eq 'Extract') {
 # -----------------------------------------------------------------------------
 if ($Mode -eq 'LocalSecurityAudit') {
     Write-Host '========================================================================' -ForegroundColor Cyan
-    Write-Host 'VIGORCORE ETL — AUDITORIA DE SEGURIDAD LOCAL, RUNTIME ACL Y PREFLIGHT' -ForegroundColor Cyan
+    Write-Host 'VIGORCORE ETL -- AUDITORIA DE SEGURIDAD LOCAL, RUNTIME ACL Y PREFLIGHT' -ForegroundColor Cyan
     Write-Host '========================================================================' -ForegroundColor Cyan
 
     $auditFailed = $false
@@ -622,7 +632,7 @@ if ($Mode -eq 'LocalSecurityAudit') {
     Write-Host '[1/3] VERIFICACION DEL PREFLIGHT TOKEN Y SOBRE CIFRADO DPAPI' -ForegroundColor Cyan
     Write-Host '------------------------------------------------------------------------'
 
-    # 1.1 Existencia y ubicación
+    # 1.1 Existencia y ubicacion
     Write-Host ' - Verificando existencia de preflight-token.json...' -NoNewline
     if (-not (Test-Path -Path $preflightTokenJsonPath)) {
         Write-Host ' NO ENCONTRADO' -ForegroundColor Red
@@ -633,7 +643,7 @@ if ($Mode -eq 'LocalSecurityAudit') {
         Write-Host (' OK ({0} bytes en {1})' -f $jsonSize, $preflightTokenJsonPath) -ForegroundColor Green
     }
 
-    Write-Host ' - Verificando ubicación de preflight-token.bin...' -NoNewline
+    Write-Host ' - Verificando ubicacion de preflight-token.bin...' -NoNewline
     $binFound = $false
     $activeBinPath = $null
 
@@ -652,7 +662,7 @@ if ($Mode -eq 'LocalSecurityAudit') {
     } else {
         Write-Host ' NO ENCONTRADO' -ForegroundColor Red
         $auditFailed = $true
-        $auditErrors += 'PREFLIGHT_BIN_MISSING: preflight-token.bin no existe en ninguna ubicación.'
+        $auditErrors += 'PREFLIGHT_BIN_MISSING: preflight-token.bin no existe en ninguna ubicacion.'
     }
 
     # 1.2 Descifrado DPAPI
@@ -676,7 +686,7 @@ if ($Mode -eq 'LocalSecurityAudit') {
     $tokenContent = $null
     $tokenRawJson = $null
     if (Test-Path -Path $preflightTokenJsonPath) {
-        $tokenRawJson = Get-Content -Path $preflightTokenJsonPath -Raw -Encoding UTF8
+        $tokenRawJson = [System.IO.File]::ReadAllText($preflightTokenJsonPath, (New-Object System.Text.UTF8Encoding($false)))
         try {
             $tokenContent = $tokenRawJson | ConvertFrom-Json
         } catch {
@@ -685,7 +695,7 @@ if ($Mode -eq 'LocalSecurityAudit') {
         }
     }
 
-    if ($authEnvelope -and $tokenRawJson) {
+    if ($authEnvelope -and $tokenRawJson -and $tokenContent) {
         Write-Host ' - Verificando integridad SHA-256 entre JSON y BIN...' -NoNewline
         $actualSha256 = Get-Sha256String -InputString $tokenRawJson
         if ($actualSha256 -ne $authEnvelope.tokenSha256) {
@@ -725,9 +735,9 @@ if ($Mode -eq 'LocalSecurityAudit') {
             Write-Host ' OK (PREFLIGHT_PASS)' -ForegroundColor Green
         }
 
-        # 1.7 Antigüedad (< 60 minutos) usando DateTimeOffset - Sin regeneración artificial
+        # 1.7 Antiguedad (< 60 minutos) usando DateTimeOffset
         Write-Host ' - Comprobando correspondencia de timestampUtc en JSON y BIN...' -NoNewline
-        if ($authEnvelope.timestampUtc -ne $tokenContent.timestampUtc) {
+        if ([string]$authEnvelope.timestampUtc -ne [string]$tokenContent.timestampUtc) {
             Write-Host ' DISCREPANCIA' -ForegroundColor Red
             $auditFailed = $true
             $auditErrors += ('PREFLIGHT_TIMESTAMP_MISMATCH: JSON ({0}) y sobre BIN ({1}) difieren.' -f $tokenContent.timestampUtc, $authEnvelope.timestampUtc)
@@ -739,12 +749,12 @@ if ($Mode -eq 'LocalSecurityAudit') {
         $preflightOffset = [DateTimeOffset]::MinValue
         $parseSuccess = $false
         try {
-            $preflightOffset = [DateTimeOffset]::Parse($authEnvelope.timestampUtc)
+            $preflightOffset = [DateTimeOffset]::Parse([string]$authEnvelope.timestampUtc, [System.Globalization.CultureInfo]::InvariantCulture)
             $parseSuccess = $true
         } catch {
             Write-Host ' FORMATO INVALIDO' -ForegroundColor Red
             $auditFailed = $true
-            $auditErrors += ('PREFLIGHT_TOKEN_INVALID_TIMESTAMP: Formato de timestamp inválido: ' + $authEnvelope.timestampUtc)
+            $auditErrors += ('PREFLIGHT_TOKEN_INVALID_TIMESTAMP: Formato de timestamp invalido: ' + $authEnvelope.timestampUtc)
         }
 
         if ($parseSuccess) {
@@ -756,16 +766,16 @@ if ($Mode -eq 'LocalSecurityAudit') {
             } elseif ($ageMinutes -gt 60.0) {
                 Write-Host (' VENCIDO ({0:F1} min)' -f $ageMinutes) -ForegroundColor Red
                 $auditFailed = $true
-                $auditErrors += ('PREFLIGHT_TOKEN_EXPIRED: Antigüedad de {0:F1} min supera el umbral de 60 min.' -f $ageMinutes)
+                $auditErrors += ('PREFLIGHT_TOKEN_EXPIRED: Antiguedad de {0:F1} min supera el umbral de 60 min.' -f $ageMinutes)
             } else {
-                Write-Host (' OK ({0:F1} min de antigüedad)' -f $ageMinutes) -ForegroundColor Green
+                Write-Host (' OK ({0:F1} min de antiguedad)' -f $ageMinutes) -ForegroundColor Green
             }
         }
 
         # 1.8 Ausencia de errores o conteos null
         Write-Host ' - Comprobando ausencia de errores o conteos null...' -NoNewline
         $hasNullOrError = $false
-        if ($tokenContent.errors -and $tokenContent.errors.Count -gt 0) {
+        if ($tokenContent.errors -and @($tokenContent.errors).Count -gt 0) {
             $hasNullOrError = $true
         }
         if ($tokenContent.countsByUser) {
@@ -785,15 +795,17 @@ if ($Mode -eq 'LocalSecurityAudit') {
             $auditFailed = $true
             $auditErrors += 'PREFLIGHT_CONTAINS_NULL_OR_ERRORS: Se encontraron conteos nulos o errores registrados.'
         } else {
-            Write-Host ' OK (Conteos íntegros y cero errores)' -ForegroundColor Green
+            Write-Host ' OK (Conteos integros y cero errores)' -ForegroundColor Green
         }
 
         # 1.9 Ausencia de tokens ADC
         Write-Host ' - Inspeccionando ausencia de tokens ADC en preflight...' -NoNewline
-        if ($tokenRawJson -match 'ya29\.[a-zA-Z0-9_-]+' -or ([System.Text.Encoding]::UTF8.GetString($authPlainBytes)) -match 'ya29\.[a-zA-Z0-9_-]+') {
+        $plainEnvelopeText = ''
+        if ($authPlainBytes) { $plainEnvelopeText = [System.Text.Encoding]::UTF8.GetString($authPlainBytes) }
+        if ($tokenRawJson -match 'ya29\.[a-zA-Z0-9_-]+' -or $plainEnvelopeText -match 'ya29\.[a-zA-Z0-9_-]+') {
             Write-Host ' ALERTA DE FUGA' -ForegroundColor Red
             $auditFailed = $true
-            $auditErrors += 'SECURITY_LEAK_ADC_TOKEN_FOUND: Se detectó token ADC dentro de los archivos de preflight.'
+            $auditErrors += 'SECURITY_LEAK_ADC_TOKEN_FOUND: Se detecto token ADC dentro de los archivos de preflight.'
         } else {
             Write-Host ' OK (Cero tokens ADC)' -ForegroundColor Green
         }
@@ -818,40 +830,36 @@ if ($Mode -eq 'LocalSecurityAudit') {
         $definitiveDirState = 'DIRECTORY_ABSENT'
         Write-Host ' DIRECTORY_ABSENT' -ForegroundColor Green
     } else {
-        $allItems = Get-ChildItem -Path $resolvedCacheDir -Force -ErrorAction SilentlyContinue
-        $cacheFiles = $allItems | Where-Object { -not $_.PSIsContainer }
-        $cacheDirs  = $allItems | Where-Object { $_.PSIsContainer }
+        $allItems = @(Get-ChildItem -Path $resolvedCacheDir -Force -ErrorAction SilentlyContinue)
+        $cacheFiles = @($allItems | Where-Object { -not $_.PSIsContainer })
+        $cacheDirs  = @($allItems | Where-Object { $_.PSIsContainer })
 
-        $defFileCount = if ($cacheFiles) { $cacheFiles.Count } else { 0 }
-        $defDirCount  = if ($cacheDirs)  { $cacheDirs.Count } else { 0 }
+        $defFileCount = $cacheFiles.Count
+        $defDirCount  = $cacheDirs.Count
 
         if ($defFileCount -eq 0 -and $defDirCount -eq 0) {
             $definitiveDirState = 'DIRECTORY_PRESENT_EMPTY'
             Write-Host ' DIRECTORY_PRESENT_EMPTY' -ForegroundColor Green
         } else {
-            if ($cacheFiles) {
-                foreach ($cf in $cacheFiles) {
-                    $defTotalBytes += $cf.Length
-                    $ext = $cf.Extension.ToLower()
-                    if (-not $ext) { $ext = '[sin_extension]' }
-                    $defExtensions[$ext] = ($defExtensions[$ext] + 1)
-                    $defOpaqueNames += $cf.Name
+            foreach ($cf in $cacheFiles) {
+                $defTotalBytes += $cf.Length
+                $ext = $cf.Extension.ToLower()
+                if (-not $ext) { $ext = '[sin_extension]' }
+                $defExtensions[$ext] = ($defExtensions[$ext] + 1)
+                $defOpaqueNames += $cf.Name
 
-                    if ($cf.Name -match '^doc-\d{6}\.bin$') {
-                        $hasDocBins = $true
-                    } elseif ($cf.Name -match '^(checkpoint|id-mapping)\.bin$' -or $cf.Name -match '^manifest-audit\.json$') {
-                        # Artefactos esperados
-                    } else {
-                        $hasUnexpectedFiles = $true
-                    }
+                if ($cf.Name -match '^doc-\d{6}\.bin$') {
+                    $hasDocBins = $true
+                } elseif ($cf.Name -match '^(checkpoint|id-mapping)\.bin$' -or $cf.Name -match '^manifest-audit\.json$') {
+                    # Artefactos esperados
+                } else {
+                    $hasUnexpectedFiles = $true
                 }
             }
-            if ($cacheDirs) {
-                foreach ($cd in $cacheDirs) {
-                    $defOpaqueNames += ($cd.Name + '/')
-                    if ($cd.Name -ne 'control') {
-                        $hasUnexpectedFiles = $true
-                    }
+            foreach ($cd in $cacheDirs) {
+                $defOpaqueNames += ($cd.Name + '/')
+                if ($cd.Name -ne 'control') {
+                    $hasUnexpectedFiles = $true
                 }
             }
 
@@ -859,11 +867,11 @@ if ($Mode -eq 'LocalSecurityAudit') {
                 $definitiveDirState = 'DIRECTORY_PRESENT_WITH_UNEXPECTED_FILES'
                 Write-Host ' DIRECTORY_PRESENT_WITH_UNEXPECTED_FILES' -ForegroundColor Red
                 $auditFailed = $true
-                $auditErrors += 'DIRECTORY_PRESENT_WITH_UNEXPECTED_FILES: Elementos con nombres o extensiones inesperadas en caché definitivo.'
+                $auditErrors += 'DIRECTORY_PRESENT_WITH_UNEXPECTED_FILES: Elementos con nombres o extensiones inesperadas en cache definitivo.'
             } elseif ($hasDocBins) {
                 $definitiveDirState = 'DIRECTORY_PRESENT_WITH_UNVERIFIED_CACHE'
                 Write-Host ' DIRECTORY_PRESENT_WITH_UNVERIFIED_CACHE' -ForegroundColor Yellow
-                Write-Host '   [AVISO ANTI-SOBRESCRITURA]: Caché previo detectado. Bloqueada cualquier operación que pueda sobrescribir documentos.' -ForegroundColor Yellow
+                Write-Host '   [AVISO ANTI-SOBRESCRITURA]: Cache previo detectado. Bloqueada cualquier operacion que pueda sobrescribir documentos.' -ForegroundColor Yellow
             } else {
                 $definitiveDirState = 'DIRECTORY_PRESENT_WITH_FILES'
                 Write-Host ' DIRECTORY_PRESENT_WITH_FILES' -ForegroundColor Green
@@ -876,7 +884,7 @@ if ($Mode -eq 'LocalSecurityAudit') {
             Write-Host ('   - Nombres opacos:    {0}' -f ($defOpaqueNames -join ', '))
         }
 
-        # 2.2 Auditoría de ACL del directorio definitivo (Get-Acl pasivo, sin modificarlo)
+        # 2.2 Auditoria de ACL del directorio definitivo (Get-Acl pasivo)
         Write-Host ' - Auditando ACL del directorio definitivo (Get-Acl pasivo)...' -NoNewline
         try {
             $defAcl = Get-Acl -Path $resolvedCacheDir
@@ -900,7 +908,7 @@ if ($Mode -eq 'LocalSecurityAudit') {
         }
     }
 
-    # 2.3 Auditoría de ACL del subdirectorio control (Get-Acl pasivo, si existe)
+    # 2.3 Auditoria de ACL del subdirectorio control (Get-Acl pasivo, si existe)
     if (Test-Path -Path $controlDir) {
         Write-Host ' - Auditando ACL del subdirectorio control (Get-Acl pasivo)...' -NoNewline
         try {
@@ -924,9 +932,9 @@ if ($Mode -eq 'LocalSecurityAudit') {
         }
     }
 
-    # 2.4 Prueba de ACL en directorio sintético (.data/security-selftest/)
+    # 2.4 Prueba de ACL en directorio sintetico (.data/security-selftest/)
     $syntheticAclDir = Join-Path $pocDir '.data\security-selftest'
-    Write-Host (' - Creando directorio sintético de prueba: ' + $syntheticAclDir)
+    Write-Host (' - Creando directorio sintetico de prueba: ' + $syntheticAclDir)
     if (-not (Test-Path -Path $syntheticAclDir)) {
         New-Item -ItemType Directory -Path $syntheticAclDir -Force | Out-Null
     }
@@ -949,9 +957,9 @@ if ($Mode -eq 'LocalSecurityAudit') {
         if (-not $verAcl.AreAccessRulesProtected) {
             throw 'Falla al deshabilitar herencia en directorio de prueba.'
         }
-        Write-Host ' - Prueba sintética de ACL: EXITOSA' -ForegroundColor Green
+        Write-Host ' - Prueba sintetica de ACL: EXITOSA' -ForegroundColor Green
     } catch {
-        Write-Host (' - Prueba sintética de ACL FALLO: ' + $_.Exception.Message) -ForegroundColor Yellow
+        Write-Host (' - Prueba sintetica de ACL FALLO: ' + $_.Exception.Message) -ForegroundColor Yellow
     } finally {
         if (Test-Path -Path $syntheticAclDir) {
             Remove-Item -Path $syntheticAclDir -Recurse -Force -ErrorAction SilentlyContinue
@@ -969,9 +977,9 @@ if ($Mode -eq 'LocalSecurityAudit') {
     }
 
     if (Test-Path -Path $gitignorePath) {
-        $gitLines = Get-Content -Path $gitignorePath
-        $hasDataIgnore = ($gitLines -match '^\s*\.data/').Count -gt 0
-        $hasBinIgnore  = ($gitLines -match '^\s*\*?\.bin').Count -gt 0
+        $gitLines = @(Get-Content -Path $gitignorePath)
+        $hasDataIgnore = (@($gitLines | Where-Object { $_ -match '^\s*\.data/' })).Count -gt 0
+        $hasBinIgnore  = (@($gitLines | Where-Object { $_ -match '^\s*\*?\.bin' })).Count -gt 0
 
         Write-Host ' - Comprobando regla .data/ en .gitignore...' -NoNewline
         if ($hasDataIgnore) { Write-Host ' OK' -ForegroundColor Green } else {
@@ -990,10 +998,10 @@ if ($Mode -eq 'LocalSecurityAudit') {
 
     # Buscar archivos .bin fuera de .data/
     Write-Host ' - Buscando binarios (.bin) fuera de .data/ en la POC...' -NoNewline
-    $strayBins = Get-ChildItem -Path $pocDir -Filter '*.bin' -Recurse -File -ErrorAction SilentlyContinue |
-        Where-Object { $_.FullName -notmatch '[\\/]\.data[\\/]' }
+    $strayBins = @(Get-ChildItem -Path $pocDir -Filter '*.bin' -Recurse -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.FullName -notmatch '[\\/]\.data[\\/]' -and $_.FullName -notmatch '[\\/]node_modules[\\/]' })
 
-    if ($strayBins -and $strayBins.Count -gt 0) {
+    if ($strayBins.Count -gt 0) {
         Write-Host (' DETECTADO ({0} archivo(s))' -f $strayBins.Count) -ForegroundColor Red
         foreach ($sb in $strayBins) {
             Write-Host ('   ALERTA: ' + $sb.FullName) -ForegroundColor Red
