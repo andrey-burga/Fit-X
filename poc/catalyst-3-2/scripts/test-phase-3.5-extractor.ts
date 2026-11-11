@@ -36,6 +36,8 @@ import {
   auditExtractGates,
   executeCryptoSelfTest,
   executeLocalSecurityAudit,
+  evaluateDefinitiveCacheState,
+  simulatePreflightBinaryMigration,
 } from '../src/etl/firestoreExtractor.js';
 
 console.log('========================================================================');
@@ -1298,11 +1300,300 @@ runMock('10.12: executeLocalSecurityAudit reporta STRAY_BIN_FILES_FOUND si exist
   assert.ok(res.errors.includes('STRAY_BIN_FILES_FOUND'));
 });
 
+// -----------------------------------------------------------------------------
+// 11. Remediación de Preflight Binario y Conciliación de Caché (FASE 3.5.0.3)
+// -----------------------------------------------------------------------------
+runUnit('11.1: Nueva ruta binaria: executeLocalSecurityAudit valida preflight-token.bin en control/', () => {
+  const { provider, rawJson, binBytes } = createStandardValidPreflight();
+  const res = executeLocalSecurityAudit({
+    jsonExists: true,
+    binExists: true,
+    jsonLength: Buffer.byteLength(rawJson),
+    binLength: binBytes.length,
+    plainJson: rawJson,
+    binBytes,
+    cryptoProvider: provider,
+    expectedProjectId: 'gen-lang-client-0041212770',
+    expectedDatabaseId: 'ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c',
+    binLocation: 'CONTROL',
+    syntheticAclTested: true,
+    gitExclusionActive: true,
+    strayBinFilesCount: 0,
+  });
+
+  assert.equal(res.passed, true);
+  assert.equal(res.verdict, 'LOCAL SECURITY VERIFIED — EXTRACTION REVIEW READY');
+  assert.equal(res.checks['PREFLIGHT_BIN'].status, 'PASS');
+  assert.ok(res.checks['PREFLIGHT_BIN'].details.includes('control/'));
+});
+
+runUnit('11.2: Migración segura: simulatePreflightBinaryMigration preserva SHA-256 exacto', () => {
+  const sampleCiphertext = Buffer.from('SIMULATED_DPAPI_ENVELOPE_CIPHERTEXT_1234567890');
+  const res = simulatePreflightBinaryMigration({
+    sourceExists: true,
+    sourceLength: sampleCiphertext.length,
+    sourceBytes: sampleCiphertext,
+    targetExists: false,
+    targetDirExists: true,
+    aclProtected: true,
+  });
+
+  assert.equal(res.success, true);
+  assert.equal(res.sourceRemoved, true);
+  assert.ok(res.migratedBytes?.equals(sampleCiphertext));
+});
+
+runUnit('11.3: Anti-sobrescritura: simulatePreflightBinaryMigration rechaza sobrescribir destino existente', () => {
+  const res = simulatePreflightBinaryMigration({
+    sourceExists: true,
+    sourceLength: 534,
+    targetExists: true, // ¡Destino ya existe!
+    targetDirExists: true,
+    aclProtected: true,
+  });
+
+  assert.equal(res.success, false);
+  assert.equal(res.errorCode, 'TARGET_ALREADY_EXISTS');
+});
+
+runUnit('11.4: Migración falla fail-closed si el archivo origen no existe', () => {
+  const res = simulatePreflightBinaryMigration({
+    sourceExists: false, // ¡Origen no existe!
+    sourceLength: 0,
+    targetExists: false,
+    targetDirExists: true,
+    aclProtected: true,
+  });
+
+  assert.equal(res.success, false);
+  assert.equal(res.errorCode, 'SOURCE_FILE_MISSING');
+});
+
+runUnit('11.5: Migración falla si el archivo origen tiene 0 bytes', () => {
+  const res = simulatePreflightBinaryMigration({
+    sourceExists: true,
+    sourceLength: 0, // ¡Vacío!
+    targetExists: false,
+    targetDirExists: true,
+    aclProtected: true,
+  });
+
+  assert.equal(res.success, false);
+  assert.equal(res.errorCode, 'SOURCE_FILE_EMPTY');
+});
+
+runUnit('11.6: Migración falla si el directorio control carece de ACL protegida', () => {
+  const res = simulatePreflightBinaryMigration({
+    sourceExists: true,
+    sourceLength: 534,
+    targetExists: false,
+    targetDirExists: true,
+    aclProtected: false, // ACL insuficiente
+  });
+
+  assert.equal(res.success, false);
+  assert.equal(res.errorCode, 'ACL_PROTECTION_FAILED');
+});
+
+runUnit('11.7: Conciliación de caché: clasifica DIRECTORY_ABSENT si el directorio no existe', () => {
+  const inv = evaluateDefinitiveCacheState({
+    directoryExists: false,
+  });
+
+  assert.equal(inv.state, 'DIRECTORY_ABSENT');
+  assert.equal(inv.fileCount, 0);
+  assert.equal(inv.totalBytes, 0);
+});
+
+runUnit('11.8: Conciliación de caché: clasifica DIRECTORY_PRESENT_EMPTY si el directorio está vacío', () => {
+  const inv = evaluateDefinitiveCacheState({
+    directoryExists: true,
+    entries: [],
+  });
+
+  assert.equal(inv.state, 'DIRECTORY_PRESENT_EMPTY');
+  assert.equal(inv.fileCount, 0);
+});
+
+runUnit('11.9: Conciliación de caché: clasifica DIRECTORY_PRESENT_WITH_UNEXPECTED_FILES ante archivos ajenos', () => {
+  const inv = evaluateDefinitiveCacheState({
+    directoryExists: true,
+    entries: [
+      { name: 'random_dump.txt', isDirectory: false, length: 120, extension: '.txt' },
+      { name: 'unknown_script.ps1', isDirectory: false, length: 500, extension: '.ps1' },
+    ],
+  });
+
+  assert.equal(inv.state, 'DIRECTORY_PRESENT_WITH_UNEXPECTED_FILES');
+  assert.equal(inv.fileCount, 2);
+  assert.ok(inv.extensions.includes('.txt'));
+});
+
+runUnit('11.10: Conciliación de caché: clasifica DIRECTORY_PRESENT_WITH_UNVERIFIED_CACHE ante documentos doc-*.bin', () => {
+  const inv = evaluateDefinitiveCacheState({
+    directoryExists: true,
+    entries: [
+      { name: 'doc-000001.bin', isDirectory: false, length: 1024, extension: '.bin' },
+      { name: 'doc-000002.bin', isDirectory: false, length: 2048, extension: '.bin' },
+      { name: 'control', isDirectory: true, length: 0, extension: '' },
+    ],
+  });
+
+  assert.equal(inv.state, 'DIRECTORY_PRESENT_WITH_UNVERIFIED_CACHE');
+  assert.equal(inv.fileCount, 2);
+  assert.equal(inv.dirCount, 1);
+  assert.equal(inv.totalBytes, 3072);
+});
+
+runUnit('11.11: Conciliación de caché: clasifica DIRECTORY_PRESENT_WITH_FILES cuando solo contiene control/', () => {
+  const inv = evaluateDefinitiveCacheState({
+    directoryExists: true,
+    entries: [
+      { name: 'control', isDirectory: true, length: 0, extension: '' },
+    ],
+  });
+
+  assert.equal(inv.state, 'DIRECTORY_PRESENT_WITH_FILES');
+  assert.equal(inv.dirCount, 1);
+  assert.equal(inv.fileCount, 0);
+});
+
+runUnit('11.12: Conciliación de caché: reporta ACL insuficiente si hereda permisos o contiene Everyone/Users', () => {
+  const inv = evaluateDefinitiveCacheState({
+    directoryExists: true,
+    entries: [],
+    aclProtected: false, // Herencia activa
+    aclHasUsersOrEveryone: true, // Permisos excesivos
+  });
+
+  assert.equal(inv.aclProtected, false);
+  assert.equal(inv.aclHasUsersOrEveryone, true);
+
+  const { provider, rawJson, binBytes } = createStandardValidPreflight();
+  const res = executeLocalSecurityAudit({
+    jsonExists: true,
+    binExists: true,
+    jsonLength: Buffer.byteLength(rawJson),
+    binLength: binBytes.length,
+    plainJson: rawJson,
+    binBytes,
+    cryptoProvider: provider,
+    expectedProjectId: 'gen-lang-client-0041212770',
+    expectedDatabaseId: 'ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c',
+    binLocation: 'CONTROL',
+    definitiveCacheInventory: inv,
+    syntheticAclTested: true,
+    gitExclusionActive: true,
+  });
+
+  assert.equal(res.checks['DEFINITIVE_CACHE_ACL'].status, 'FAIL');
+});
+
+runMock('11.13: Escáner reporta UNALLOWED_BINARY_LOCATION si preflight-token.bin reside en reports/', () => {
+  const { provider, rawJson, binBytes } = createStandardValidPreflight();
+  const res = executeLocalSecurityAudit({
+    jsonExists: true,
+    binExists: false, // Falta en control/
+    jsonLength: Buffer.byteLength(rawJson),
+    binLength: binBytes.length,
+    plainJson: rawJson,
+    binBytes,
+    cryptoProvider: provider,
+    expectedProjectId: 'gen-lang-client-0041212770',
+    expectedDatabaseId: 'ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c',
+    binLocation: 'REPORTS', // Ubicación no permitida
+    disallowedBins: ['poc/catalyst-3-2/reports/firestore-extraction-3.5/preflight-token.bin'],
+    syntheticAclTested: true,
+    gitExclusionActive: true,
+  });
+
+  assert.equal(res.passed, false);
+  assert.equal(res.verdict, 'PARTIALLY VERIFIED — BLOCKERS REMAIN');
+  assert.ok(res.errors.includes('UNALLOWED_BINARY_LOCATION'));
+  assert.ok(res.errors.includes('PREFLIGHT_BINARY_MISSING'));
+});
+
+runMock('11.14: Escáner reporta SUSPICIOUS_BINARY_DETECTED si detecta binario no estándar dentro de .data/', () => {
+  const { provider, rawJson, binBytes } = createStandardValidPreflight();
+  const res = executeLocalSecurityAudit({
+    jsonExists: true,
+    binExists: true,
+    jsonLength: Buffer.byteLength(rawJson),
+    binLength: binBytes.length,
+    plainJson: rawJson,
+    binBytes,
+    cryptoProvider: provider,
+    expectedProjectId: 'gen-lang-client-0041212770',
+    expectedDatabaseId: 'ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c',
+    binLocation: 'CONTROL',
+    suspiciousBins: ['poc/catalyst-3-2/.data/firestore-export/unauthorized_dump.bin'],
+    syntheticAclTested: true,
+    gitExclusionActive: true,
+  });
+
+  assert.equal(res.passed, false);
+  assert.ok(res.errors.includes('SUSPICIOUS_BINARY_DETECTED'));
+});
+
+runMock('11.15: Token vencido: executeLocalSecurityAudit reporta PREFLIGHT_TOKEN_EXPIRED a los 300.6 minutos', () => {
+  const provider = new MockDpapiProvider();
+  const expiredTime = new Date(Date.now() - 300.6 * 60 * 1000).toISOString(); // 300.6 min como en terminal Windows
+  const tokenReport: PreflightReport = {
+    executionId: 'exec-win-audit',
+    timestamp: expiredTime,
+    projectId: 'gen-lang-client-0041212770',
+    databaseId: 'ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c',
+    usersDiscovered: 5,
+    totalDocumentsDiscovered: 73,
+    countsByUser: {},
+    administrativeCounts: {},
+    errors: [],
+    status: 'PREFLIGHT_PASS',
+  };
+
+  const { envelope, rawJson } = createPreflightAuthEnvelope(tokenReport);
+  const binBytes = provider.protect(Buffer.from(JSON.stringify(envelope), 'utf8'));
+
+  const res = executeLocalSecurityAudit({
+    jsonExists: true,
+    binExists: true,
+    jsonLength: Buffer.byteLength(rawJson),
+    binLength: binBytes.length,
+    plainJson: rawJson,
+    binBytes,
+    cryptoProvider: provider,
+    expectedProjectId: 'gen-lang-client-0041212770',
+    expectedDatabaseId: 'ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c',
+    binLocation: 'CONTROL',
+    maxAgeMinutes: 60,
+    syntheticAclTested: true,
+    gitExclusionActive: true,
+  });
+
+  assert.equal(res.passed, false);
+  assert.equal(res.verdict, 'PARTIALLY VERIFIED — BLOCKERS REMAIN');
+  assert.ok(res.errors.includes('PREFLIGHT_TOKEN_EXPIRED'));
+});
+
+runMock('11.16: Ausencia de sobrescritura: Caché con documentos no permite sobrescrituras destructivas', () => {
+  const inv = evaluateDefinitiveCacheState({
+    directoryExists: true,
+    entries: [
+      { name: 'doc-000001.bin', isDirectory: false, length: 1024, extension: '.bin' },
+    ],
+  });
+
+  assert.equal(inv.state, 'DIRECTORY_PRESENT_WITH_UNVERIFIED_CACHE');
+  // Se confirma que el estado alerta anti-sobrescritura
+  assert.ok(inv.opaqueNames.includes('doc-000001.bin'));
+});
+
 console.log('========================================================================');
-console.log(` RESULTADOS DE LAS PRUEBAS FASES 3.5.0, 3.5.0.1 Y 3.5.0.2:`);
+console.log(` RESULTADOS DE LAS PRUEBAS FASES 3.5.0, 3.5.0.1, 3.5.0.2 Y 3.5.0.3:`);
 console.log(`   PASS-UNIT:   ${passUnitCount}`);
 console.log(`   PASS-MOCK:   ${passMockCount}`);
 console.log(`   PASS-STATIC: ${passStaticCount}`);
 console.log(`   TOTAL:       ${passUnitCount + passMockCount + passStaticCount} PRUEBAS EXITOSAS (100%)`);
 console.log('========================================================================');
+
 

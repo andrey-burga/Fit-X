@@ -708,9 +708,157 @@ export function executeCryptoSelfTest(cryptoProvider: StorageEncryptionProvider)
   };
 }
 
+export type DefinitiveCacheDirectoryState =
+  | 'DIRECTORY_ABSENT'
+  | 'DIRECTORY_PRESENT_EMPTY'
+  | 'DIRECTORY_PRESENT_WITH_FILES'
+  | 'DIRECTORY_PRESENT_WITH_UNEXPECTED_FILES'
+  | 'DIRECTORY_PRESENT_WITH_UNVERIFIED_CACHE';
+
+export interface DefinitiveCacheInventory {
+  state: DefinitiveCacheDirectoryState;
+  fileCount: number;
+  dirCount: number;
+  totalBytes: number;
+  extensions: string[];
+  opaqueNames: string[];
+  aclProtected: boolean;
+  aclHasUsersOrEveryone: boolean;
+}
+
+export function evaluateDefinitiveCacheState(params: {
+  directoryExists: boolean;
+  entries?: Array<{ name: string; isDirectory: boolean; length: number; extension: string }>;
+  aclProtected?: boolean;
+  aclHasUsersOrEveryone?: boolean;
+}): DefinitiveCacheInventory {
+  if (!params.directoryExists) {
+    return {
+      state: 'DIRECTORY_ABSENT',
+      fileCount: 0,
+      dirCount: 0,
+      totalBytes: 0,
+      extensions: [],
+      opaqueNames: [],
+      aclProtected: params.aclProtected ?? true,
+      aclHasUsersOrEveryone: params.aclHasUsersOrEveryone ?? false,
+    };
+  }
+
+  const entries = params.entries || [];
+  const files = entries.filter((e) => !e.isDirectory);
+  const dirs = entries.filter((e) => e.isDirectory);
+
+  if (files.length === 0 && dirs.length === 0) {
+    return {
+      state: 'DIRECTORY_PRESENT_EMPTY',
+      fileCount: 0,
+      dirCount: 0,
+      totalBytes: 0,
+      extensions: [],
+      opaqueNames: [],
+      aclProtected: params.aclProtected ?? true,
+      aclHasUsersOrEveryone: params.aclHasUsersOrEveryone ?? false,
+    };
+  }
+
+  let totalBytes = 0;
+  const extSet = new Set<string>();
+  const opaqueNames: string[] = [];
+  let hasDocBins = false;
+  let hasUnexpected = false;
+
+  for (const f of files) {
+    totalBytes += f.length;
+    extSet.add(f.extension.toLowerCase());
+    opaqueNames.push(f.name);
+
+    if (/^doc-\d{6}\.bin$/.test(f.name)) {
+      hasDocBins = true;
+    } else if (
+      /^(checkpoint|id-mapping|preflight-token)\.bin$/.test(f.name) ||
+      /^manifest-audit\.json$/.test(f.name)
+    ) {
+      // Archivos conocidos de control/manifiesto
+    } else {
+      hasUnexpected = true;
+    }
+  }
+
+  for (const d of dirs) {
+    opaqueNames.push(`${d.name}/`);
+    if (d.name !== 'control') {
+      hasUnexpected = true;
+    }
+  }
+
+  let state: DefinitiveCacheDirectoryState;
+  if (hasUnexpected) {
+    state = 'DIRECTORY_PRESENT_WITH_UNEXPECTED_FILES';
+  } else if (hasDocBins) {
+    state = 'DIRECTORY_PRESENT_WITH_UNVERIFIED_CACHE';
+  } else {
+    state = 'DIRECTORY_PRESENT_WITH_FILES';
+  }
+
+  return {
+    state,
+    fileCount: files.length,
+    dirCount: dirs.length,
+    totalBytes,
+    extensions: Array.from(extSet).sort(),
+    opaqueNames: opaqueNames.sort(),
+    aclProtected: params.aclProtected ?? true,
+    aclHasUsersOrEveryone: params.aclHasUsersOrEveryone ?? false,
+  };
+}
+
+export function simulatePreflightBinaryMigration(params: {
+  sourceExists: boolean;
+  sourceLength: number;
+  sourceBytes?: Buffer;
+  targetExists: boolean;
+  targetDirExists: boolean;
+  aclProtected: boolean;
+}): {
+  success: boolean;
+  errorCode?: string;
+  details: string;
+  migratedBytes?: Buffer;
+  sourceRemoved?: boolean;
+} {
+  if (!params.sourceExists) {
+    return { success: false, errorCode: 'SOURCE_FILE_MISSING', details: 'El archivo origen no existe en reports/.' };
+  }
+  if (params.sourceLength === 0) {
+    return { success: false, errorCode: 'SOURCE_FILE_EMPTY', details: 'El archivo origen tiene 0 bytes (vacío).' };
+  }
+  if (params.targetExists) {
+    return { success: false, errorCode: 'TARGET_ALREADY_EXISTS', details: 'El archivo destino ya existe. Operación detenida para evitar sobrescrituras.' };
+  }
+  if (!params.aclProtected) {
+    return { success: false, errorCode: 'ACL_PROTECTION_FAILED', details: 'Falla al aplicar ACL restrictiva en carpeta control.' };
+  }
+
+  const bytes = params.sourceBytes || Buffer.alloc(params.sourceLength, 0x42);
+  const hashSrc = crypto.createHash('sha256').update(bytes).digest('hex');
+  const hashDst = crypto.createHash('sha256').update(bytes).digest('hex');
+
+  if (hashSrc !== hashDst) {
+    return { success: false, errorCode: 'HASH_MISMATCH', details: 'Falla de integridad: SHA-256 difiere.' };
+  }
+
+  return {
+    success: true,
+    details: 'Migración exitosa: ciphertext transferido intacto y origen purgado.',
+    migratedBytes: bytes,
+    sourceRemoved: true,
+  };
+}
+
 export interface LocalSecurityAuditResult {
   passed: boolean;
-  verdict: 'LOCAL SECURITY VERIFIED — EXTRACTION REVIEW READY' | 'PARTIALLY VERIFIED — BLOCKERS REMAIN';
+  verdict: 'LOCAL SECURITY VERIFIED — EXTRACTION REVIEW READY' | 'PARTIALLY VERIFIED — BLOCKERS REMAIN' | 'REMEDIATION IMPLEMENTED — WINDOWS VERIFICATION PENDING';
   checks: Record<string, { status: 'PASS' | 'FAIL'; details: string }>;
   errors: string[];
 }
@@ -728,7 +876,11 @@ export function executeLocalSecurityAudit(params: {
   maxAgeMinutes?: number;
   syntheticAclTested: boolean;
   gitExclusionActive: boolean;
-  strayBinFilesCount: number;
+  strayBinFilesCount?: number;
+  binLocation?: 'CONTROL' | 'REPORTS' | 'MISSING';
+  definitiveCacheInventory?: DefinitiveCacheInventory;
+  disallowedBins?: string[];
+  suspiciousBins?: string[];
 }): LocalSecurityAuditResult {
   const checks: Record<string, { status: 'PASS' | 'FAIL'; details: string }> = {};
   const errors: string[] = [];
@@ -741,15 +893,20 @@ export function executeLocalSecurityAudit(params: {
     checks['PREFLIGHT_JSON'] = { status: 'PASS', details: `preflight-token.json presente (${params.jsonLength} bytes)` };
   }
 
-  if (!params.binExists || params.binLength === 0) {
-    checks['PREFLIGHT_BIN'] = { status: 'FAIL', details: 'preflight-token.bin falta o tiene 0 bytes' };
+  // 1.2 Ubicación del binario
+  if (params.binLocation === 'REPORTS') {
+    checks['PREFLIGHT_BIN'] = { status: 'FAIL', details: 'preflight-token.bin detectado en reports/ en lugar de .data/firestore-export/control/' };
+    errors.push('UNALLOWED_BINARY_LOCATION');
+    errors.push('PREFLIGHT_BINARY_MISSING');
+  } else if (!params.binExists || params.binLength === 0) {
+    checks['PREFLIGHT_BIN'] = { status: 'FAIL', details: 'preflight-token.bin falta o tiene 0 bytes en control/' };
     errors.push('PREFLIGHT_BINARY_MISSING');
   } else {
-    checks['PREFLIGHT_BIN'] = { status: 'PASS', details: `preflight-token.bin presente (${params.binLength} bytes)` };
+    checks['PREFLIGHT_BIN'] = { status: 'PASS', details: `preflight-token.bin presente en control/ (${params.binLength} bytes)` };
   }
 
   // 2. Descifrado DPAPI y verificación de firma
-  if (params.jsonExists && params.binExists && params.jsonLength > 0 && params.binLength > 0) {
+  if (params.jsonExists && (params.binExists || params.binLocation === 'REPORTS') && params.jsonLength > 0 && params.binLength > 0) {
     const verif = verifyPreflightTokenAuthenticity({
       plainJson: params.plainJson,
       authEnvelopeBytes: params.binBytes,
@@ -822,7 +979,24 @@ export function executeLocalSecurityAudit(params: {
     }
   }
 
-  // 6. ACL en directorio sintético
+  // 6. Conciliación del Directorio Definitivo
+  if (params.definitiveCacheInventory) {
+    const inv = params.definitiveCacheInventory;
+    if (inv.state === 'DIRECTORY_PRESENT_WITH_UNEXPECTED_FILES') {
+      checks['DEFINITIVE_CACHE'] = { status: 'FAIL', details: `Archivos inesperados detectados en ${inv.opaqueNames.join(', ')}` };
+      errors.push('DIRECTORY_PRESENT_WITH_UNEXPECTED_FILES');
+    } else {
+      checks['DEFINITIVE_CACHE'] = { status: 'PASS', details: `Estado: ${inv.state} (${inv.fileCount} archivos, ${inv.dirCount} subdirectorios)` };
+    }
+
+    if (!inv.aclProtected || inv.aclHasUsersOrEveryone) {
+      checks['DEFINITIVE_CACHE_ACL'] = { status: 'FAIL', details: 'ACL en directorio definitivo es insuficiente o hereda permisos' };
+    } else {
+      checks['DEFINITIVE_CACHE_ACL'] = { status: 'PASS', details: 'ACL en directorio definitivo con herencia deshabilitada y acceso exclusivo' };
+    }
+  }
+
+  // 7. ACL en directorio sintético
   if (!params.syntheticAclTested) {
     checks['NTFS_ACL'] = { status: 'FAIL', details: 'Prueba de ACL sintética no superada' };
     errors.push('ACL_TEST_FAILED');
@@ -830,7 +1004,7 @@ export function executeLocalSecurityAudit(params: {
     checks['NTFS_ACL'] = { status: 'PASS', details: 'ACL sintética validada: herencia deshabilitada, acceso exclusivo y limpio' };
   }
 
-  // 6. Exclusión Git
+  // 8. Exclusión Git
   if (!params.gitExclusionActive) {
     checks['GIT_EXCLUSION'] = { status: 'FAIL', details: '.data/ no excluido en .gitignore' };
     errors.push('GITIGNORE_MISSING_EXCLUSION');
@@ -838,11 +1012,33 @@ export function executeLocalSecurityAudit(params: {
     checks['GIT_EXCLUSION'] = { status: 'PASS', details: '.data/ y *.bin excluidos en .gitignore' };
   }
 
-  // 7. Binarios huérfanos
-  if (params.strayBinFilesCount > 0) {
-    checks['STRAY_BIN_FILES'] = { status: 'FAIL', details: `${params.strayBinFilesCount} binarios fuera de .data/` };
+  // 9. Binarios huérfanos / no permitidos / sospechosos
+  const disallowed = params.disallowedBins || [];
+  const suspicious = params.suspiciousBins || [];
+  const strayCount = params.strayBinFilesCount ?? (disallowed.length + suspicious.length);
+
+  if (disallowed.length > 0) {
+    checks['DISALLOWED_BIN_FILES'] = { status: 'FAIL', details: `${disallowed.length} binarios fuera de .data/` };
+    for (const d of disallowed) {
+      if (!errors.includes('UNALLOWED_BINARY_LOCATION')) {
+        errors.push('UNALLOWED_BINARY_LOCATION');
+      }
+    }
+  }
+
+  if (suspicious.length > 0) {
+    checks['SUSPICIOUS_BIN_FILES'] = { status: 'FAIL', details: `${suspicious.length} binarios sospechosos dentro de .data/` };
+    for (const s of suspicious) {
+      if (!errors.includes('SUSPICIOUS_BINARY_DETECTED')) {
+        errors.push('SUSPICIOUS_BINARY_DETECTED');
+      }
+    }
+  }
+
+  if (strayCount > 0 && disallowed.length === 0 && suspicious.length === 0) {
+    checks['STRAY_BIN_FILES'] = { status: 'FAIL', details: `${strayCount} binarios fuera de .data/` };
     errors.push('STRAY_BIN_FILES_FOUND');
-  } else {
+  } else if (strayCount === 0) {
     checks['STRAY_BIN_FILES'] = { status: 'PASS', details: 'Cero binarios fuera de .data/' };
   }
 

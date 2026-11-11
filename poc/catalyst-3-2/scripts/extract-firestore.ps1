@@ -108,13 +108,21 @@ if (-not (Test-Path -Path $resolvedReportDir)) {
     New-Item -ItemType Directory -Path $resolvedReportDir -Force | Out-Null
 }
 
-$preflightTokenPath    = Join-Path $resolvedReportDir 'preflight-token.json'
-$preflightTokenBinPath = Join-Path $resolvedReportDir 'preflight-token.bin'
-$manifestAuditPath     = Join-Path $resolvedReportDir 'manifest-audit.json'
-$verifyReportPath   = Join-Path $resolvedReportDir 'verify-report.json'
+$controlDir = Join-Path $resolvedCacheDir 'control'
+$preflightTokenPath          = Join-Path $resolvedReportDir 'preflight-token.json'
+$preflightTokenBinPath       = Join-Path $controlDir 'preflight-token.bin'
+$legacyPreflightTokenBinPath = Join-Path $resolvedReportDir 'preflight-token.bin'
+$manifestAuditPath           = Join-Path $resolvedReportDir 'manifest-audit.json'
+$verifyReportPath            = Join-Path $resolvedReportDir 'verify-report.json'
 
-$checkpointBinPath  = Join-Path $resolvedCacheDir 'checkpoint.bin'
-$idMappingBinPath   = Join-Path $resolvedCacheDir 'id-mapping.bin'
+$checkpointBinPath = Join-Path $controlDir 'checkpoint.bin'
+if (-not (Test-Path -Path $checkpointBinPath) -and (Test-Path -Path (Join-Path $resolvedCacheDir 'checkpoint.bin'))) {
+    $checkpointBinPath = Join-Path $resolvedCacheDir 'checkpoint.bin'
+}
+$idMappingBinPath = Join-Path $controlDir 'id-mapping.bin'
+if (-not (Test-Path -Path $idMappingBinPath) -and (Test-Path -Path (Join-Path $resolvedCacheDir 'id-mapping.bin'))) {
+    $idMappingBinPath = Join-Path $resolvedCacheDir 'id-mapping.bin'
+}
 
 # -----------------------------------------------------------------------------
 # 2. Verificación de Exclusión en Git para .data/
@@ -583,6 +591,18 @@ if ($Mode -eq 'Preflight') {
     $authEnvelopeJson = $authEnvelope | ConvertTo-Json -Depth 8 -Compress
     $authEnvelopeBytes = [System.Text.Encoding]::UTF8.GetBytes($authEnvelopeJson)
     $authEnvelopeCipher = Protect-DpapiBytes -PlainBytes $authEnvelopeBytes
+
+    if (-not (Test-Path -Path $controlDir)) {
+        New-Item -ItemType Directory -Path $controlDir -Force | Out-Null
+        try {
+            $aclCtrl = Get-Acl -Path $controlDir
+            $aclCtrl.SetAccessRuleProtection($true, $false)
+            $cUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+            $rCtrl = New-Object System.Security.AccessControl.FileSystemAccessRule($cUser, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+            $aclCtrl.ResetAccessRule($rCtrl)
+            Set-Acl -Path $controlDir -AclObject $aclCtrl
+        } catch { }
+    }
     [System.IO.File]::WriteAllBytes($preflightTokenBinPath, $authEnvelopeCipher)
 
     Write-Host ''
@@ -601,7 +621,8 @@ if ($Mode -eq 'Preflight') {
     } else {
         Write-Host (' - Estado:                      PREFLIGHT_FAILED (' + $driftReason + ')') -ForegroundColor Red
     }
-    Write-Host (' - Token de Preflight:          ' + $preflightTokenPath)
+    Write-Host (' - Token Preflight (JSON):      ' + $preflightTokenPath)
+    Write-Host (' - Sobre Cifrado (BIN):         ' + $preflightTokenBinPath)
     Write-Host '========================================================================' -ForegroundColor Cyan
 }
 
@@ -628,7 +649,10 @@ elseif ($Mode -eq 'Extract') {
         throw 'BLOQUEO: No se encontró preflight-token.json reciente. Ejecute primero -Mode Preflight.'
     }
     if (-not (Test-Path -Path $preflightTokenBinPath)) {
-        throw 'BLOQUEO: No se encontró preflight-token.bin autenticado. Preflight no verificado criptográficamente.'
+        if (Test-Path -Path $legacyPreflightTokenBinPath) {
+            throw ('BLOQUEO: preflight-token.bin se encuentra en la ubicación no permitida reports/. Requiere migración hacia: ' + $preflightTokenBinPath)
+        }
+        throw ('BLOQUEO: No se encontró preflight-token.bin en la ubicación requerida: ' + $preflightTokenBinPath + '. Ejecute la migración o un nuevo Preflight.')
     }
 
     # Descifrado DPAPI del sobre autenticado de preflight
@@ -1237,12 +1261,12 @@ elseif ($Mode -eq 'CryptoSelfTest') {
 }
 
 # -----------------------------------------------------------------------------
-# 11. Modo E: LOCALSECURITYAUDIT (Auditoría Runtime de ACL NTFS, Preflight Token y Seguridad)
+# 11. Modo E: LOCALSECURITYAUDIT (Auditoría Runtime de ACL NTFS, Preflight Token y Caché Local)
 # -----------------------------------------------------------------------------
 elseif ($Mode -eq 'LocalSecurityAudit') {
     Write-Host ''
     Write-Host '========================================================================' -ForegroundColor Cyan
-    Write-Host ' VIGORCORE -- FASE 3.5.0.2: AUDITORIA RUNTIME DE SEGURIDAD LOCAL         ' -ForegroundColor Cyan
+    Write-Host ' VIGORCORE -- FASE 3.5.0.3: AUDITORIA RUNTIME DE SEGURIDAD LOCAL         ' -ForegroundColor Cyan
     Write-Host '========================================================================' -ForegroundColor Cyan
 
     $auditFailed = $false
@@ -1255,8 +1279,8 @@ elseif ($Mode -eq 'LocalSecurityAudit') {
     Write-Host '[1/3] AUDITORIA DE INTEGRIDAD Y AUTENTICIDAD DEL PREFLIGHT TOKEN' -ForegroundColor Cyan
     Write-Host '------------------------------------------------------------------------'
 
-    # 1.1 Comprobación de existencia de ambos archivos
-    Write-Host ' - Verificando presencia de preflight-token.json...' -NoNewline
+    # 1.1 Comprobación de existencia de preflight-token.json
+    Write-Host ' - Verificando presencia de preflight-token.json en reports/...' -NoNewline
     if (-not (Test-Path -Path $preflightTokenPath)) {
         Write-Host ' FALTA' -ForegroundColor Red
         $auditFailed = $true
@@ -1272,28 +1296,41 @@ elseif ($Mode -eq 'LocalSecurityAudit') {
         }
     }
 
-    Write-Host ' - Verificando presencia de preflight-token.bin...' -NoNewline
-    if (-not (Test-Path -Path $preflightTokenBinPath)) {
-        Write-Host ' FALTA' -ForegroundColor Red
-        $auditFailed = $true
-        $auditErrors += 'PREFLIGHT_BINARY_MISSING: preflight-token.bin no encontrado. No se autogenera silenciosamente.'
-    } else {
+    # 1.2 Comprobación de preflight-token.bin en la nueva ubicación (.data/firestore-export/control/)
+    Write-Host ' - Verificando preflight-token.bin en .data/firestore-export/control/...' -NoNewline
+    $targetBinToRead = $null
+    if (Test-Path -Path $preflightTokenBinPath) {
         $binLen = (Get-Item -Path $preflightTokenBinPath).Length
         if ($binLen -eq 0) {
             Write-Host ' VACIO' -ForegroundColor Red
             $auditFailed = $true
-            $auditErrors += 'PREFLIGHT_BINARY_EMPTY: preflight-token.bin tiene 0 bytes.'
+            $auditErrors += 'PREFLIGHT_BINARY_EMPTY: preflight-token.bin en control/ tiene 0 bytes.'
         } else {
-            Write-Host (' OK ({0} bytes)' -f $binLen) -ForegroundColor Green
+            Write-Host (' OK ({0} bytes en control/)' -f $binLen) -ForegroundColor Green
+            $targetBinToRead = $preflightTokenBinPath
+        }
+    } else {
+        # Verificar si reside en la ubicación antigua no permitida (reports/)
+        if (Test-Path -Path $legacyPreflightTokenBinPath) {
+            $legacyBinLen = (Get-Item -Path $legacyPreflightTokenBinPath).Length
+            Write-Host (' UBICACION NO PERMITIDA ({0} bytes en reports/)' -f $legacyBinLen) -ForegroundColor Yellow
+            $auditFailed = $true
+            $auditErrors += ('UNALLOWED_BINARY_LOCATION: ' + $legacyPreflightTokenBinPath + ' (debe migrarse a .data/firestore-export/control/)')
+            $auditErrors += 'PREFLIGHT_BINARY_MISSING: preflight-token.bin no encontrado en .data/firestore-export/control/.'
+            $targetBinToRead = $legacyPreflightTokenBinPath
+        } else {
+            Write-Host ' FALTA' -ForegroundColor Red
+            $auditFailed = $true
+            $auditErrors += 'PREFLIGHT_BINARY_MISSING: preflight-token.bin no encontrado en .data/firestore-export/control/ ni en reports/.'
         }
     }
 
-    # 1.2 Lectura y descifrado real DPAPI CurrentUser si ambos existen
-    if (-not $auditFailed) {
+    # 1.3 Lectura y descifrado real DPAPI CurrentUser
+    if ($targetBinToRead -and (Test-Path -Path $preflightTokenPath)) {
         Write-Host ' - Descifrando sobre binario autenticado con DPAPI CurrentUser...' -NoNewline
         $authPlainBytes = $null
         try {
-            $authCipherBytes = [System.IO.File]::ReadAllBytes($preflightTokenBinPath)
+            $authCipherBytes = [System.IO.File]::ReadAllBytes($targetBinToRead)
             $authPlainBytes = Unprotect-DpapiBytes -CipherBytes $authCipherBytes
             Write-Host ' OK' -ForegroundColor Green
         } catch {
@@ -1307,7 +1344,7 @@ elseif ($Mode -eq 'LocalSecurityAudit') {
             $tokenContent = Get-Content -Path $preflightTokenPath -Raw | ConvertFrom-Json
             $tokenRawJson = Get-Content -Path $preflightTokenPath -Raw
 
-            # 1.3 Verificación de hash canónico contra sobre DPAPI
+            # 1.4 Verificación de hash canónico contra sobre DPAPI
             Write-Host ' - Verificando firma SHA-256 de preflight-token.json...' -NoNewline
             $recomputedJson = $tokenContent | ConvertTo-Json -Depth 6 -Compress
             $recomputedSha256 = Compute-Sha256Hex -InputString $recomputedJson
@@ -1320,7 +1357,7 @@ elseif ($Mode -eq 'LocalSecurityAudit') {
                 Write-Host ' OK (Firma y contenido coinciden)' -ForegroundColor Green
             }
 
-            # 1.4 Verificación de correspondencia de ProjectId y DatabaseId
+            # 1.5 Verificación de correspondencia de ProjectId y DatabaseId
             Write-Host ' - Verificando correspondencia de ProjectId...' -NoNewline
             if ($authEnvelope.projectId -ne $ProjectId -or $tokenContent.projectId -ne $ProjectId) {
                 Write-Host ' DISCREPANCIA' -ForegroundColor Red
@@ -1339,7 +1376,7 @@ elseif ($Mode -eq 'LocalSecurityAudit') {
                 Write-Host (' OK ({0})' -f $DatabaseId) -ForegroundColor Green
             }
 
-            # 1.5 Estado PREFLIGHT_PASS
+            # 1.6 Estado PREFLIGHT_PASS
             Write-Host ' - Verificando estado del preflight...' -NoNewline
             if ($authEnvelope.status -ne 'PREFLIGHT_PASS' -or $tokenContent.status -ne 'PREFLIGHT_PASS') {
                 Write-Host (' NO PASS ({0})' -f $authEnvelope.status) -ForegroundColor Red
@@ -1349,7 +1386,7 @@ elseif ($Mode -eq 'LocalSecurityAudit') {
                 Write-Host ' OK (PREFLIGHT_PASS)' -ForegroundColor Green
             }
 
-            # 1.6 Antigüedad (< 60 minutos)
+            # 1.7 Antigüedad (< 60 minutos) - Sin regeneración artificial
             Write-Host ' - Comprobando frescura temporal (< 60 min)...' -NoNewline
             $tokenDate = [DateTime]::Parse($authEnvelope.timestampUtc)
             $ageMinutes = ((Get-Date).ToUniversalTime() - $tokenDate).TotalMinutes
@@ -1361,7 +1398,7 @@ elseif ($Mode -eq 'LocalSecurityAudit') {
                 Write-Host (' OK ({0:F1} min de antigüedad)' -f $ageMinutes) -ForegroundColor Green
             }
 
-            # 1.7 Ausencia de errores o conteos null
+            # 1.8 Ausencia de errores o conteos null
             Write-Host ' - Comprobando ausencia de errores o conteos null...' -NoNewline
             $hasNullOrError = $false
             if ($tokenContent.errors -and $tokenContent.errors.Count -gt 0) {
@@ -1387,7 +1424,7 @@ elseif ($Mode -eq 'LocalSecurityAudit') {
                 Write-Host ' OK (Conteos íntegros y cero errores)' -ForegroundColor Green
             }
 
-            # 1.8 Ausencia de tokens ADC
+            # 1.9 Ausencia de tokens ADC
             Write-Host ' - Inspeccionando ausencia de tokens ADC en preflight...' -NoNewline
             if ($tokenRawJson -match 'ya29\.[a-zA-Z0-9_-]+' -or ([System.Text.Encoding]::UTF8.GetString($authPlainBytes)) -match 'ya29\.[a-zA-Z0-9_-]+') {
                 Write-Host ' ALERTA DE FUGA' -ForegroundColor Red
@@ -1400,21 +1437,130 @@ elseif ($Mode -eq 'LocalSecurityAudit') {
     }
 
     # -------------------------------------------------------------------------
-    # PARTE 2: VERIFICACION REAL DE ACL NTFS (DIRECTORIO SINTETICO)
+    # PARTE 2: CONCILIACION DEL DIRECTORIO DEFINITIVO Y AUDITORIA RUNTIME DE ACL
     # -------------------------------------------------------------------------
     Write-Host ''
-    Write-Host '[2/3] AUDITORIA RUNTIME DE PERMISOS ACL NTFS EN DIRECTORIO SINTETICO' -ForegroundColor Cyan
+    Write-Host '[2/3] CONCILIACION DEL DIRECTORIO DEFINITIVO Y AUDITORIA DE ACL' -ForegroundColor Cyan
     Write-Host '------------------------------------------------------------------------'
 
-    # Verificación de existencia del directorio de extracción definitivo (no crearlo!)
-    Write-Host ' - Inspeccionando estado del directorio definitivo firestore-export...' -NoNewline
-    if (Test-Path -Path $resolvedCacheDir) {
-        Write-Host ' EXISTE PREVIAMENTE' -ForegroundColor Yellow
+    # 2.1 Clasificación forense del directorio definitivo (.data/firestore-export/)
+    Write-Host ' - Conciliando estado del directorio definitivo firestore-export...' -NoNewline
+    $definitiveDirState = 'DIRECTORY_ABSENT'
+    $defFileCount = 0
+    $defDirCount = 0
+    $defTotalBytes = 0
+    $defExtensions = @{}
+    $defOpaqueNames = @()
+    $hasDocBins = $false
+    $hasUnexpectedFiles = $false
+
+    if (-not (Test-Path -Path $resolvedCacheDir)) {
+        $definitiveDirState = 'DIRECTORY_ABSENT'
+        Write-Host ' DIRECTORY_ABSENT' -ForegroundColor Green
     } else {
-        Write-Host ' NO CREADO (Preservado sin crear según mandato)' -ForegroundColor Green
+        $allItems = Get-ChildItem -Path $resolvedCacheDir -Force -ErrorAction SilentlyContinue
+        $cacheFiles = $allItems | Where-Object { -not $_.PSIsContainer }
+        $cacheDirs  = $allItems | Where-Object { $_.PSIsContainer }
+
+        $defFileCount = if ($cacheFiles) { $cacheFiles.Count } else { 0 }
+        $defDirCount  = if ($cacheDirs)  { $cacheDirs.Count } else { 0 }
+
+        if ($defFileCount -eq 0 -and $defDirCount -eq 0) {
+            $definitiveDirState = 'DIRECTORY_PRESENT_EMPTY'
+            Write-Host ' DIRECTORY_PRESENT_EMPTY' -ForegroundColor Green
+        } else {
+            # Inspección exclusiva de metadatos (sin descifrado)
+            if ($cacheFiles) {
+                foreach ($cf in $cacheFiles) {
+                    $defTotalBytes += $cf.Length
+                    $ext = $cf.Extension.ToLower()
+                    if (-not $ext) { $ext = '[sin_extension]' }
+                    $defExtensions[$ext] = ($defExtensions[$ext] + 1)
+                    $defOpaqueNames += $cf.Name
+
+                    if ($cf.Name -match '^doc-\d{6}\.bin$') {
+                        $hasDocBins = $true
+                    } elseif ($cf.Name -match '^(checkpoint|id-mapping)\.bin$' -or $cf.Name -match '^manifest-audit\.json$') {
+                        # Artefactos conocidos
+                    } else {
+                        $hasUnexpectedFiles = $true
+                    }
+                }
+            }
+            if ($cacheDirs) {
+                foreach ($cd in $cacheDirs) {
+                    $defOpaqueNames += ($cd.Name + '/')
+                    if ($cd.Name -ne 'control') {
+                        $hasUnexpectedFiles = $true
+                    }
+                }
+            }
+
+            if ($hasUnexpectedFiles) {
+                $definitiveDirState = 'DIRECTORY_PRESENT_WITH_UNEXPECTED_FILES'
+                Write-Host ' DIRECTORY_PRESENT_WITH_UNEXPECTED_FILES' -ForegroundColor Yellow
+                $auditErrors += 'DIRECTORY_PRESENT_WITH_UNEXPECTED_FILES: Elementos con nombres o extensiones inesperadas en caché definitivo.'
+            } elseif ($hasDocBins) {
+                $definitiveDirState = 'DIRECTORY_PRESENT_WITH_UNVERIFIED_CACHE'
+                Write-Host ' DIRECTORY_PRESENT_WITH_UNVERIFIED_CACHE' -ForegroundColor Yellow
+                Write-Host '   [AVISO ANTI-SOBRESCRITURA]: Caché previo detectado. Bloqueada cualquier operación que pueda sobrescribir documentos.' -ForegroundColor Yellow
+            } else {
+                $definitiveDirState = 'DIRECTORY_PRESENT_WITH_FILES'
+                Write-Host ' DIRECTORY_PRESENT_WITH_FILES' -ForegroundColor Green
+            }
+
+            Write-Host ('   - Archivos:          {0}' -f $defFileCount)
+            Write-Host ('   - Subdirectorios:    {0}' -f $defDirCount)
+            Write-Host ('   - Bytes agregados:   {0}' -f $defTotalBytes)
+            Write-Host ('   - Extensiones:       {0}' -f ($defExtensions.Keys -join ', '))
+            Write-Host ('   - Nombres opacos:    {0}' -f ($defOpaqueNames -join ', '))
+        }
+
+        # 2.2 Auditoría de ACL del directorio definitivo (Get-Acl pasivo, sin modificarlo)
+        Write-Host ' - Auditando ACL del directorio definitivo (Get-Acl pasivo)...' -NoNewline
+        try {
+            $defAcl = Get-Acl -Path $resolvedCacheDir
+            $defProtected = $defAcl.AreAccessRulesProtected
+            $defHasUsers = $false
+            foreach ($ar in $defAcl.Access) {
+                if ($ar.IdentityReference.Value -match 'Everyone|Todos|Users|Usuarios|BUILTIN\\Users') {
+                    $defHasUsers = $true
+                }
+            }
+            if (-not $defProtected -or $defHasUsers) {
+                Write-Host ' ACL INSUFICIENTE / HEREDADA' -ForegroundColor Yellow
+                Write-Host '   [ACCION REQUERIDA]: Ejecutar endurecimiento de ACL sobre .data\firestore-export (herencia no desactivada)' -ForegroundColor Yellow
+            } else {
+                Write-Host ' OK (Herencia deshabilitada y acceso exclusivo)' -ForegroundColor Green
+            }
+        } catch {
+            Write-Host (' [WARN]: ' + $_.Exception.Message) -ForegroundColor Yellow
+        }
     }
 
-    # Uso de directorio sintético para prueba de ACL
+    # 2.3 Auditoría de ACL del subdirectorio control (Get-Acl pasivo, si existe)
+    if (Test-Path -Path $controlDir) {
+        Write-Host ' - Auditando ACL del subdirectorio control (Get-Acl pasivo)...' -NoNewline
+        try {
+            $ctrlAcl = Get-Acl -Path $controlDir
+            $ctrlProtected = $ctrlAcl.AreAccessRulesProtected
+            $ctrlHasUsers = $false
+            foreach ($ar in $ctrlAcl.Access) {
+                if ($ar.IdentityReference.Value -match 'Everyone|Todos|Users|Usuarios|BUILTIN\\Users') {
+                    $ctrlHasUsers = $true
+                }
+            }
+            if (-not $ctrlProtected -or $ctrlHasUsers) {
+                Write-Host ' ACL INSUFICIENTE' -ForegroundColor Yellow
+            } else {
+                Write-Host ' OK (Herencia deshabilitada y acceso exclusivo)' -ForegroundColor Green
+            }
+        } catch {
+            Write-Host (' [WARN]: ' + $_.Exception.Message) -ForegroundColor Yellow
+        }
+    }
+
+    # 2.4 Prueba de ACL en directorio sintético (.data/security-selftest/)
     $syntheticAclDir = Join-Path $pocDir '.data\security-selftest'
     Write-Host (' - Creando directorio sintético de prueba: ' + $syntheticAclDir)
     if (-not (Test-Path -Path $syntheticAclDir)) {
@@ -1422,9 +1568,9 @@ elseif ($Mode -eq 'LocalSecurityAudit') {
     }
 
     try {
-        Write-Host ' - Aplicando reglas ACL de producción en directorio sintético...' -NoNewline
+        Write-Host ' - Aplicando reglas ACL de prueba en directorio sintético...' -NoNewline
         $acl = Get-Acl -Path $syntheticAclDir
-        $acl.SetAccessRuleProtection($true, $false) # Deshabilitar herencia y remover reglas heredadas
+        $acl.SetAccessRuleProtection($true, $false)
         $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
         $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
             $currentUser,
@@ -1437,19 +1583,17 @@ elseif ($Mode -eq 'LocalSecurityAudit') {
         Set-Acl -Path $syntheticAclDir -AclObject $acl
         Write-Host ' OK' -ForegroundColor Green
 
-        # Comprobación de Get-Acl
         Write-Host ' - Verificando Get-Acl sobre directorio sintético...' -NoNewline
         $verifiedAcl = Get-Acl -Path $syntheticAclDir
         $isProtected = $verifiedAcl.AreAccessRulesProtected
         if (-not $isProtected) {
             Write-Host ' FALLA' -ForegroundColor Red
             $auditFailed = $true
-            $auditErrors += 'ACL_INHERITANCE_NOT_DISABLED: La herencia de permisos no quedó deshabilitada.'
+            $auditErrors += 'ACL_INHERITANCE_NOT_DISABLED: La herencia de permisos no quedó deshabilitada en sintético.'
         } else {
             Write-Host ' OK (Herencia deshabilitada)' -ForegroundColor Green
         }
 
-        # Comprobar identidad y ausencia de Users/Everyone
         $hasEveryoneOrUsers = $false
         foreach ($accessRule in $verifiedAcl.Access) {
             $idRef = $accessRule.IdentityReference.Value
@@ -1457,15 +1601,15 @@ elseif ($Mode -eq 'LocalSecurityAudit') {
                 $hasEveryoneOrUsers = $true
             }
         }
-        Write-Host ' - Comprobando ausencia de reglas Everyone/Users ordinarios...' -NoNewline
+        Write-Host ' - Comprobando ausencia de reglas Everyone/Users en sintético...' -NoNewline
         if ($hasEveryoneOrUsers) {
             Write-Host ' DETECTADO PERMISO INNECESARIO' -ForegroundColor Yellow
-            $auditErrors += 'ACL_EXCESSIVE_PERMISSIONS: Se detectaron reglas para Everyone o Users.'
+            $auditErrors += 'ACL_EXCESSIVE_PERMISSIONS: Se detectaron reglas para Everyone o Users en sintético.'
         } else {
             Write-Host ' OK (Sin reglas genéricas Everyone/Users)' -ForegroundColor Green
         }
 
-        # Comprobar capacidad efectiva de lectura y escritura del usuario actual
+        # Prueba de E/S local
         Write-Host ' - Probando capacidad efectiva de lectura y escritura local...' -NoNewline
         $testFile = Join-Path $syntheticAclDir 'acl-write-test.tmp'
         $testPayload = [System.Text.Encoding]::UTF8.GetBytes('VIGORCORE_ACL_TEST')
@@ -1485,23 +1629,22 @@ elseif ($Mode -eq 'LocalSecurityAudit') {
         $auditFailed = $true
         $auditErrors += ('ACL_RUNTIME_EXCEPTION: ' + $_.Exception.Message)
     } finally {
-        # Limpieza obligatoria del directorio sintético
         Write-Host ' - Limpiando y eliminando directorio sintético de prueba...' -NoNewline
         if (Test-Path -Path $syntheticAclDir) {
             Remove-Item -Path $syntheticAclDir -Recurse -Force
         }
         if (-not (Test-Path -Path $syntheticAclDir)) {
-            Write-Host ' OK (Directorio temporal eliminado)' -ForegroundColor Green
+            Write-Host ' OK (Directorio sintético eliminado)' -ForegroundColor Green
         } else {
-            Write-Host ' ADVERTENCIA (No se pudo eliminar directorio temporal)' -ForegroundColor Yellow
+            Write-Host ' ADVERTENCIA (No se pudo eliminar directorio sintético)' -ForegroundColor Yellow
         }
     }
 
     # -------------------------------------------------------------------------
-    # PARTE 3: AUDITORIA DE EXCLUSION GIT
+    # PARTE 3: AUDITORIA DE EXCLUSION GIT Y ESCANEO DE BINARIOS
     # -------------------------------------------------------------------------
     Write-Host ''
-    Write-Host '[3/3] AUDITORIA DE EXCLUSION GIT Y ARCHIVOS SENSIBLES' -ForegroundColor Cyan
+    Write-Host '[3/3] AUDITORIA DE EXCLUSION GIT Y ESCANEO DE BINARIOS' -ForegroundColor Cyan
     Write-Host '------------------------------------------------------------------------'
 
     Write-Host ' - Comprobando directivas .data/ y *.bin en .gitignore...' -NoNewline
@@ -1513,18 +1656,41 @@ elseif ($Mode -eq 'LocalSecurityAudit') {
         Write-Host ' OK (.data/ y *.bin excluidos)' -ForegroundColor Green
     }
 
-    # Comprobación de que no existan archivos .bin fuera de .data/ en el árbol de la POC
-    Write-Host ' - Escaneando posibles binarios .bin huérfanos fuera de .data/...' -NoNewline
-    $strayBinFiles = Get-ChildItem -Path $pocDir -Filter '*.bin' -Recurse -ErrorAction SilentlyContinue | Where-Object {
-        $_.FullName -notmatch '\\\.data\\' -and $_.FullName -notmatch '/\.data/'
+    # Escaneo exhaustivo de binarios en todo el ámbito de la POC
+    Write-Host ' - Escaneando binarios en el árbol de la POC...' -NoNewline
+    $allBinFiles = Get-ChildItem -Path $pocDir -Filter '*.bin' -Recurse -Force -ErrorAction SilentlyContinue
+    $disallowedBins = @()
+    $suspiciousBins = @()
+
+    if ($allBinFiles) {
+        foreach ($bf in $allBinFiles) {
+            $normPath = $bf.FullName.Replace('\', '/')
+            if ($normPath -match '/\.data/') {
+                if ($bf.Name -match '^doc-\d{6}\.bin$' -or $bf.Name -match '^(checkpoint|id-mapping|preflight-token)\.bin$') {
+                    # Binario confidencial permitido en .data/
+                } else {
+                    $suspiciousBins += $bf.FullName
+                }
+            } else {
+                # Cualquier binario fuera de .data/ es ubicación no permitida
+                $disallowedBins += $bf.FullName
+            }
+        }
     }
-    if ($strayBinFiles -and $strayBinFiles.Count -gt 0) {
-        Write-Host (' DETECTADOS {0} ARCHIVOS' -f $strayBinFiles.Count) -ForegroundColor Yellow
-        foreach ($sb in $strayBinFiles) {
-            Write-Host ('   [!] Binario fuera de .data/: ' + $sb.FullName) -ForegroundColor Yellow
+
+    if ($disallowedBins.Count -gt 0 -or $suspiciousBins.Count -gt 0) {
+        Write-Host (' DETECTADOS {0} BINARIOS IRREGULARES' -f ($disallowedBins.Count + $suspiciousBins.Count)) -ForegroundColor Red
+        $auditFailed = $true
+        foreach ($db in $disallowedBins) {
+            Write-Host ('   [!] Binario en ubicación no permitida (fuera de .data/): ' + $db) -ForegroundColor Red
+            $auditErrors += ('UNALLOWED_BINARY_LOCATION: ' + $db)
+        }
+        foreach ($sb in $suspiciousBins) {
+            Write-Host ('   [!] Binario sospechoso o con nombre desconocido: ' + $sb) -ForegroundColor Yellow
+            $auditErrors += ('SUSPICIOUS_BINARY_DETECTED: ' + $sb)
         }
     } else {
-        Write-Host ' OK (Cero binarios fuera de .data/)' -ForegroundColor Green
+        Write-Host ' OK (Cero binarios fuera de .data/ y binarios internos válidos)' -ForegroundColor Green
     }
 
     # -------------------------------------------------------------------------
@@ -1532,17 +1698,17 @@ elseif ($Mode -eq 'LocalSecurityAudit') {
     # -------------------------------------------------------------------------
     Write-Host ''
     Write-Host '========================================================================' -ForegroundColor Cyan
-    Write-Host ' DICTAMEN DE LA AUDITORIA DE SEGURIDAD LOCAL FASE 3.5.0.2' -ForegroundColor Cyan
+    Write-Host ' DICTAMEN DE LA AUDITORIA DE SEGURIDAD LOCAL FASE 3.5.0.3' -ForegroundColor Cyan
     Write-Host '========================================================================' -ForegroundColor Cyan
     if ($auditFailed) {
         Write-Host ' ESTADO: PARTIALLY VERIFIED — BLOCKERS REMAIN' -ForegroundColor Red
-        Write-Host ' Errores detectados:' -ForegroundColor Red
+        Write-Host ' Bloqueos detectados que impiden autorizar la extracción:' -ForegroundColor Red
         foreach ($ae in $auditErrors) {
             Write-Host ('  - ' + $ae) -ForegroundColor Red
         }
     } else {
-        Write-Host ' ESTADO: LOCAL SECURITY VERIFIED — EXTRACTION REVIEW READY' -ForegroundColor Green
-        Write-Host ' Todos los controles locales (Preflight Token, ACL NTFS y Git) verificados.' -ForegroundColor Green
+        Write-Host ' ESTADO: REMEDIATION IMPLEMENTED — WINDOWS VERIFICATION PENDING' -ForegroundColor Green
+        Write-Host ' Todos los controles locales auditados exitosamente.' -ForegroundColor Green
     }
     Write-Host '========================================================================' -ForegroundColor Cyan
 }
