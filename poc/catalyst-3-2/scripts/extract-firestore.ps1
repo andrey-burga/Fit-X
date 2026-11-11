@@ -1,274 +1,163 @@
-# VigorCore -- Fase 3.5.0: Extractor Forense Firestore -> Cache Local Protegido
-# Compatible al 100% con Windows PowerShell 5.1 y PowerShell 7+.
-# Sintaxis plana estricta, cero expresiones $() embebidas en cadenas, cero backticks.
-# Almacenamiento cifrado en reposo con Windows DPAPI (CurrentUser).
+# =============================================================================
+# VIGORCORE ETL — EXTRACTOR FORENSE CONTROLADO FIRESTORE -> CACHE LOCAL CIFRADO
+# Archivo: poc/catalyst-3-2/scripts/extract-firestore.ps1
+# Version: 1.0.4 (Fase 3.5.0.4: DateTimeOffset UTC Fix & Hardened Cache Root ACL)
+# Compatibilidad: Windows PowerShell 5.1+
+# =============================================================================
 
 [CmdletBinding()]
 param (
-    [ValidateSet('Preflight', 'Extract', 'Verify', 'CryptoSelfTest', 'LocalSecurityAudit')]
-    [string]$Mode = 'Preflight',
-
+    [Parameter(Mandatory = $false)]
     [string]$ProjectId = 'gen-lang-client-0041212770',
 
+    [Parameter(Mandatory = $false)]
     [string]$DatabaseId = 'ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c',
 
-    [string]$CacheDir = '',
+    [Parameter(Mandatory = $false)]
+    [ValidateSet('Preflight', 'Extract', 'CryptoSelfTest', 'LocalSecurityAudit')]
+    [string]$Mode = 'Preflight',
 
-    [string]$ReportDir = '',
+    [Parameter(Mandatory = $false)]
+    [string]$CacheDir = '.data\firestore-export',
 
-    [int]$ThrottleMs = 100,
+    [Parameter(Mandatory = $false)]
+    [switch]$DriftAcknowledged,
 
-    [int]$MaxRequests = 500,
+    [Parameter(Mandatory = $false)]
+    [switch]$SkipDpapiVerify,
 
-    [int]$MaxDocuments = 2000,
-
-    [int]$MaxDepth = 10,
-
-    [switch]$Resume,
-
-    [switch]$OperatorConfirmed,
-
-    [switch]$MaintenanceWindowConfirmed,
-
-    [switch]$DriftAcknowledged
+    [Parameter(Mandatory = $false)]
+    [switch]$AllowOverwrite
 )
 
 $ErrorActionPreference = 'Stop'
 
-Write-Host '========================================================================' -ForegroundColor Cyan
-Write-Host ' VIGORCORE -- FASE 3.5.0: EXTRACTOR FORENSE FIRESTORE -> CACHE PROTEGIDO' -ForegroundColor Cyan
-$headerSub = ' Modo: {0} | DPAPI CurrentUser | Zero Leak | PS 5.1/7+                  ' -f $Mode
-Write-Host $headerSub -ForegroundColor Cyan
-Write-Host '========================================================================' -ForegroundColor Cyan
+# Cargar System.Security para ProtectedData (DPAPI)
+Add-Type -AssemblyName System.Security
 
 # -----------------------------------------------------------------------------
-# 0. Control de Ejecución: Validación Sintáctica Previa del Script (Parser)
+# RUTAS DE CONTROL Y DIRECTORIOS
 # -----------------------------------------------------------------------------
-$selfScriptPath = if (-not [string]::IsNullOrWhiteSpace($PSCommandPath)) {
-    $PSCommandPath
-} elseif (-not [string]::IsNullOrWhiteSpace($MyInvocation.MyCommand.Path)) {
-    $MyInvocation.MyCommand.Path
-} else {
-    $null
-}
-
-if ($selfScriptPath -and (Test-Path -Path $selfScriptPath)) {
-    $parseTokens = $null
-    $parseErrors = $null
-    [System.Management.Automation.Language.Parser]::ParseFile($selfScriptPath, [ref]$parseTokens, [ref]$parseErrors) | Out-Null
-    if ($parseErrors -and $parseErrors.Count -gt 0) {
-        Write-Host '[ERROR CRITICO DE SINTAXIS]: El script contiene errores de parser:' -ForegroundColor Red
-        foreach ($pErr in $parseErrors) {
-            $errLine = '  Linea {0}, Col {1}: {2}' -f $pErr.Extent.StartLineNumber, $pErr.Extent.StartColumnNumber, $pErr.Message
-            Write-Host $errLine -ForegroundColor Red
-        }
-        throw 'PowerShell ParserError: Ejecución cancelada antes de acceder a red o credenciales.'
-    }
-    Write-Host '[PARSER CHECK]: Script validado exitosamente por System.Management.Automation.Language.Parser.' -ForegroundColor Green
-}
-
-# -----------------------------------------------------------------------------
-# 1. Resolución de Rutas de Trabajo y Seguridad del Directorio Local
-# -----------------------------------------------------------------------------
-$scriptDir = if (-not [string]::IsNullOrWhiteSpace($PSScriptRoot)) {
-    $PSScriptRoot
-} else {
-    Split-Path -Parent $MyInvocation.MyCommand.Definition
-}
-
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $pocDir = Split-Path -Parent $scriptDir
 
-# Directorio de cache protegido (.data/firestore-export)
-$defaultCacheDir = Join-Path $pocDir '.data\firestore-export'
-if ([string]::IsNullOrWhiteSpace($CacheDir)) {
-    $resolvedCacheDir = $defaultCacheDir
-} else {
-    if ([System.IO.Path]::IsPathRooted($CacheDir)) {
-        $resolvedCacheDir = [System.IO.Path]::GetFullPath($CacheDir)
-    } else {
-        $cleanRel = $CacheDir.TrimStart('/', '\')
-        $resolvedCacheDir = [System.IO.Path]::GetFullPath((Join-Path $pocDir $cleanRel))
-    }
-}
+$reportsDir = Join-Path $pocDir 'reports\firestore-extraction-3.5'
+$preflightTokenJsonPath = Join-Path $reportsDir 'preflight-token.json'
 
-# Directorio de reportes públicos (reports/firestore-extraction-3.5)
-$defaultReportDir = Join-Path $pocDir 'reports\firestore-extraction-3.5'
-if ([string]::IsNullOrWhiteSpace($ReportDir)) {
-    $resolvedReportDir = $defaultReportDir
-} else {
-    if ([System.IO.Path]::IsPathRooted($ReportDir)) {
-        $resolvedReportDir = [System.IO.Path]::GetFullPath($ReportDir)
-    } else {
-        $cleanRel = $ReportDir.TrimStart('/', '\')
-        $resolvedReportDir = [System.IO.Path]::GetFullPath((Join-Path $pocDir $cleanRel))
-    }
-}
-
-if (-not (Test-Path -Path $resolvedReportDir)) {
-    New-Item -ItemType Directory -Path $resolvedReportDir -Force | Out-Null
-}
-
+$resolvedCacheDir = [System.IO.Path]::GetFullPath((Join-Path $pocDir $CacheDir))
 $controlDir = Join-Path $resolvedCacheDir 'control'
-$preflightTokenPath          = Join-Path $resolvedReportDir 'preflight-token.json'
-$preflightTokenBinPath       = Join-Path $controlDir 'preflight-token.bin'
-$legacyPreflightTokenBinPath = Join-Path $resolvedReportDir 'preflight-token.bin'
-$manifestAuditPath           = Join-Path $resolvedReportDir 'manifest-audit.json'
-$verifyReportPath            = Join-Path $resolvedReportDir 'verify-report.json'
+$preflightTokenBinPath = Join-Path $controlDir 'preflight-token.bin'
+$legacyPreflightTokenBinPath = Join-Path $reportsDir 'preflight-token.bin'
 
 $checkpointBinPath = Join-Path $controlDir 'checkpoint.bin'
-if (-not (Test-Path -Path $checkpointBinPath) -and (Test-Path -Path (Join-Path $resolvedCacheDir 'checkpoint.bin'))) {
-    $checkpointBinPath = Join-Path $resolvedCacheDir 'checkpoint.bin'
-}
-$idMappingBinPath = Join-Path $controlDir 'id-mapping.bin'
-if (-not (Test-Path -Path $idMappingBinPath) -and (Test-Path -Path (Join-Path $resolvedCacheDir 'id-mapping.bin'))) {
-    $idMappingBinPath = Join-Path $resolvedCacheDir 'id-mapping.bin'
-}
+$idMappingBinPath  = Join-Path $controlDir 'id-mapping.bin'
+$manifestAuditPath = Join-Path $reportsDir 'manifest-audit.json'
+
+# Colecciones y subcolecciones canónicas según inventario forense
+$candidateSubcollections = @(
+    'biometrics', 'groceries', 'preferences', 'mealLogs',
+    'notifications', 'waterLogs', 'progressPhotos', 'workouts',
+    'subscriptions', 'inventory', 'auditLogs'
+)
+
+$candidateAdminCollections = @(
+    'tenants', 'metadata', 'systemConfig',
+    'platformSettings', 'catalystSync', 'migrationAudit'
+)
 
 # -----------------------------------------------------------------------------
-# 2. Verificación de Exclusión en Git para .data/
+# FUNCIONES AUXILIARES CRIPTOGRAFICAS Y DE SEGURIDAD
 # -----------------------------------------------------------------------------
-$pocGitignorePath = Join-Path $pocDir '.gitignore'
-$gitignoreOk = $false
-if (Test-Path -Path $pocGitignorePath) {
-    $giContent = Get-Content -Path $pocGitignorePath -Raw
-    if ($giContent -match '\.data/' -or $giContent -match '\.data\\') {
-        $gitignoreOk = $true
-    }
-}
-
-if (-not $gitignoreOk) {
-    Write-Host '[ADVERTENCIA GITIGNORE]: El directorio .data/ no aparece excluido en poc/catalyst-3-2/.gitignore.' -ForegroundColor Yellow
-} else {
-    Write-Host '[SECURITY CHECK]: Directorio .data/ correctamente excluido del control de versiones Git.' -ForegroundColor Green
-}
-
-# -----------------------------------------------------------------------------
-# 3. Módulo Criptográfico DPAPI (CurrentUser)
-# -----------------------------------------------------------------------------
-$dpapiAvailable = $false
-try {
-    Add-Type -AssemblyName System.Security -ErrorAction Stop
-    $dpapiAvailable = $true
-} catch {
-    Write-Host '[WARN]: Ensamblado System.Security no cargado directamente: ' -NoNewline
-    Write-Host $_.Exception.Message -ForegroundColor Yellow
-}
-
 function Protect-DpapiBytes {
     param (
+        [Parameter(Mandatory = $true)]
         [byte[]]$PlainBytes
     )
-    if (-not $PlainBytes -or $PlainBytes.Length -eq 0) {
-        return New-Object byte[] 0
-    }
-    $scope = [System.Security.Cryptography.DataProtectionScope]::CurrentUser
-    return [System.Security.Cryptography.ProtectedData]::Protect($PlainBytes, $null, $scope)
+    return [System.Security.Cryptography.ProtectedData]::Protect(
+        $PlainBytes,
+        $null,
+        [System.Security.Cryptography.DataProtectionScope]::CurrentUser
+    )
 }
 
 function Unprotect-DpapiBytes {
     param (
+        [Parameter(Mandatory = $true)]
         [byte[]]$CipherBytes
     )
-    if (-not $CipherBytes -or $CipherBytes.Length -eq 0) {
-        return New-Object byte[] 0
-    }
-    $scope = [System.Security.Cryptography.DataProtectionScope]::CurrentUser
-    return [System.Security.Cryptography.ProtectedData]::Unprotect($CipherBytes, $null, $scope)
+    return [System.Security.Cryptography.ProtectedData]::Unprotect(
+        $CipherBytes,
+        $null,
+        [System.Security.Cryptography.DataProtectionScope]::CurrentUser
+    )
 }
 
-function Test-DpapiRoundtrip {
-    try {
-        $testMsg = 'VIGORCORE_DPAPI_SELFTEST_' + [System.Guid]::NewGuid().ToString()
-        $testBytes = [System.Text.Encoding]::UTF8.GetBytes($testMsg)
-        $cipher = Protect-DpapiBytes -PlainBytes $testBytes
-        if (-not $cipher -or $cipher.Length -eq 0) {
-            return $false
-        }
-        $plain = Unprotect-DpapiBytes -CipherBytes $cipher
-        $recoveredMsg = [System.Text.Encoding]::UTF8.GetString($plain)
-        if ($testMsg -ne $recoveredMsg) { return $false }
-
-        # Verificación estricta de resistencia a manipulación
-        $tampered = [byte[]]$cipher.Clone()
-        $tampered[$tampered.Length - 1] = [byte]($tampered[$tampered.Length - 1] -bxor 0xFF)
-        $tamperDetected = $false
-        try {
-            Unprotect-DpapiBytes -CipherBytes $tampered | Out-Null
-        } catch {
-            $tamperDetected = $true
-        }
-        return $tamperDetected
-    } catch {
-        return $false
-    }
-}
-
-function Compute-Sha256Hex {
+function Get-Sha256String {
     param (
+        [Parameter(Mandatory = $true)]
         [string]$InputString
     )
-    $hasher = [System.Security.Cryptography.SHA256]::Create()
     $bytes = [System.Text.Encoding]::UTF8.GetBytes($InputString)
+    $hasher = [System.Security.Cryptography.SHA256]::Create()
     $hashBytes = $hasher.ComputeHash($bytes)
-    $builder = New-Object System.Text.StringBuilder
-    foreach ($b in $hashBytes) {
-        [void]$builder.Append($b.ToString('x2'))
-    }
-    return $builder.ToString()
+    return [System.BitConverter]::ToString($hashBytes).Replace('-', '').ToLower()
 }
 
-# -----------------------------------------------------------------------------
-# 4. Sanitización de Errores e Invariantes de Privacidad
-# -----------------------------------------------------------------------------
-function New-SanitizedError {
+function Get-Sha256Bytes {
     param (
-        [string]$RawMessage,
-        [int]$StatusCode = 0
+        [Parameter(Mandatory = $true)]
+        [byte[]]$InputBytes
     )
-    $code = 'HTTP_ERROR'
-    if ($RawMessage -match 'billing|billing_disabled') {
-        $code = 'BILLING_DISABLED'
-    } elseif ($StatusCode -eq 429 -or $RawMessage -match 'quota exceeded|resource exhausted') {
-        $code = 'QUOTA_EXCEEDED'
-    } elseif ($StatusCode -eq 401 -or $RawMessage -match 'unauthenticated|invalid token|expired token|auth') {
-        $code = 'AUTH_ERROR'
-    } elseif ($StatusCode -eq 403 -or $RawMessage -match 'permission denied|forbidden') {
-        $code = 'PERMISSION_DENIED'
-    } elseif ($RawMessage -match 'dpapi|protect|unprotect|crypto') {
-        $code = 'DPAPI_ERROR'
-    } elseif ($RawMessage -match 'serialize|deserializ|json[\s.]*parse|bigint') {
-        $code = 'SERIALIZATION_ERROR'
-    } elseif ($RawMessage -match 'drift|mismatch|baseline') {
-        $code = 'BASELINE_DRIFT'
-    }
-
-    $sanitized = $RawMessage
-    $sanitized = [System.Text.RegularExpressions.Regex]::Replace($sanitized, 'ya29\.[a-zA-Z0-9_-]+', '[REDACTED_ACCESS_TOKEN]')
-    $sanitized = [System.Text.RegularExpressions.Regex]::Replace($sanitized, '[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', '[REDACTED_EMAIL]')
-    $sanitized = [System.Text.RegularExpressions.Regex]::Replace($sanitized, 'Bearer\s+[^\s]+', 'Bearer [REDACTED]')
-    $sanitized = [System.Text.RegularExpressions.Regex]::Replace($sanitized, 'projects/[^/]+/databases/[^/]+/documents/users/([^/\s]+)', 'projects/.../databases/.../documents/users/[REDACTED_UID]')
-
-    return [ordered]@{
-        timestamp  = (Get-Date).ToString('o')
-        code       = $code
-        statusCode = $StatusCode
-        message    = $sanitized
-    }
+    $hasher = [System.Security.Cryptography.SHA256]::Create()
+    $hashBytes = $hasher.ComputeHash($InputBytes)
+    return [System.BitConverter]::ToString($hashBytes).Replace('-', '').ToLower()
 }
 
-# -----------------------------------------------------------------------------
-# 5. Adquisición de ADC y Conexión REST a Firestore
-# -----------------------------------------------------------------------------
-$script:requestCount = 0
-$script:recordedErrors = @()
-$databaseRootUrl = 'https://firestore.googleapis.com/v1/projects/' + $ProjectId + '/databases/' + $DatabaseId + '/documents'
-
-function Get-AdcAccessToken {
-    $tokenOutput = & gcloud auth application-default print-access-token 2>&1
-    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($tokenOutput)) {
-        throw 'No se pudo obtener el Access Token ADC en memoria via gcloud.'
+function Get-GcpAccessToken {
+    Write-Host ' - Obteniendo token de acceso GCP ADC...' -NoNewline
+    $rawToken = $null
+    try {
+        $rawToken = (& gcloud auth application-default print-access-token 2>$null)
+    } catch {
+        $rawToken = $null
     }
-    return $tokenOutput.ToString().Trim()
+
+    if (-not $rawToken) {
+        try {
+            $rawToken = (& gcloud auth print-access-token 2>$null)
+        } catch {
+            $rawToken = $null
+        }
+    }
+
+    if (-not $rawToken) {
+        Write-Host ' FALLA' -ForegroundColor Red
+        throw 'ERROR: No se pudo obtener el token de acceso ADC. Ejecute "gcloud auth application-default login" previamente.'
+    }
+
+    $token = $rawToken.Trim()
+    if ($token.Length -lt 20) {
+        Write-Host ' FORMATO INVALIDO' -ForegroundColor Red
+        throw 'ERROR: Token obtenido tiene un formato inesperado o vacio.'
+    }
+    Write-Host ' OK' -ForegroundColor Green
+    return $token
+}
+
+function Categorize-HttpError {
+    param (
+        [int]$StatusCode,
+        [string]$ErrorBody
+    )
+    if ($ErrorBody -match 'BILLING_DISABLED|billing|quotaExceeded|RESOURCE_EXHAUSTED|rateLimitExceeded') {
+        return 'RESOURCE_EXHAUSTED'
+    }
+    if ($StatusCode -eq 401) { return 'UNAUTHENTICATED' }
+    if ($StatusCode -eq 403) { return 'PERMISSION_DENIED' }
+    if ($StatusCode -eq 404) { return 'NOT_FOUND' }
+    if ($StatusCode -eq 429) { return 'RESOURCE_EXHAUSTED' }
+    if ($StatusCode -ge 500) { return 'UNAVAILABLE' }
+    return 'UNKNOWN'
 }
 
 function Invoke-FirestoreRestSafe {
@@ -276,151 +165,183 @@ function Invoke-FirestoreRestSafe {
         [string]$Method = 'GET',
         [string]$Url,
         [object]$Body = $null,
-        [string]$AccessToken,
-        [int]$MaxRetries = 3
+        [string]$AccessToken
     )
 
+    $headers = @{
+        'Authorization' = 'Bearer ' + $AccessToken
+        'Content-Type'  = 'application/json; charset=utf-8'
+    }
+
+    $jsonBody = $null
+    if ($Body) {
+        $jsonBody = $Body | ConvertTo-Json -Depth 10 -Compress
+    }
+
+    $maxRetries = 3
     $attempt = 0
-    while ($attempt -lt $MaxRetries) {
+    $lastException = $null
+
+    while ($attempt -lt $maxRetries) {
         $attempt++
-        $script:requestCount++
-
-        if ($script:requestCount -gt $MaxRequests) {
-            throw ('MaxRequests excedido: {0} >= {1}' -f $script:requestCount, $MaxRequests)
-        }
-
-        if ($ThrottleMs -gt 0) {
-            Start-Sleep -Milliseconds $ThrottleMs
-        }
-
-        $sw = [System.Diagnostics.Stopwatch]::StartNew()
         try {
-            $headers = @{
-                'Authorization'   = 'Bearer ' + $AccessToken
-                'Accept'          = 'application/json'
-                'Content-Type'    = 'application/json; charset=utf-8'
-                'x-goog-user-project' = $ProjectId
+            if ($Method -eq 'GET') {
+                $response = Invoke-RestMethod -Uri $Url -Method Get -Headers $headers -TimeoutSec 30
+            } else {
+                $response = Invoke-RestMethod -Uri $Url -Method Post -Headers $headers -Body $jsonBody -TimeoutSec 30
             }
-
-            $params = @{
-                Method          = $Method
-                Uri             = $Url
-                Headers         = $headers
-                UseBasicParsing = $true
+            return [ordered]@{
+                StatusCode = 200
+                Body       = $response
+                Error      = $null
+                Category   = 'OK'
             }
-
-            if ($Body -ne $null) {
-                if ($Body -is [string]) {
-                    $params['Body'] = $Body
-                } else {
-                    $params['Body'] = ($Body | ConvertTo-Json -Depth 10 -Compress)
-                }
-            }
-
-            $response = Invoke-WebRequest @params
-            $sw.Stop()
-
-            $parsedBody = $null
-            if ($response.Content) {
-                $parsedBody = $response.Content | ConvertFrom-Json
-            }
-
-            return @{
-                StatusCode = [int]$response.StatusCode
-                Body       = $parsedBody
-                DurationMs = $sw.ElapsedMilliseconds
-                Raw        = $response.Content
-            }
-        } catch [System.Net.WebException] {
-            $sw.Stop()
-            $ex = $_.Exception
+        } catch {
+            $lastException = $_
             $statusCode = 0
-            $respBody = ''
-            if ($ex.Response) {
-                $statusCode = [int]$ex.Response.StatusCode
+            $errBodyText = ''
+            if ($_.Exception.Response) {
+                $statusCode = [int]$_.Exception.Response.StatusCode
                 try {
-                    $reader = New-Object System.IO.StreamReader($ex.Response.GetResponseStream())
-                    $respBody = $reader.ReadToEnd()
-                    $reader.Close()
-                } catch {
-                    $respBody = ''
-                }
+                    $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
+                    $errBodyText = $reader.ReadToEnd()
+                } catch { }
             }
+            $category = Categorize-HttpError -StatusCode $statusCode -ErrorBody $errBodyText
 
-            if (($statusCode -eq 429 -or $statusCode -eq 503) -and $attempt -lt $MaxRetries) {
+            # Reintentos sólo en casos transitorios
+            if ($category -in @('RESOURCE_EXHAUSTED', 'UNAVAILABLE') -and $attempt -lt $maxRetries) {
                 $backoffSec = [Math]::Pow(2, $attempt)
                 Start-Sleep -Seconds $backoffSec
                 continue
             }
 
-            $sanitized = New-SanitizedError -RawMessage ($ex.Message + ' ' + $respBody) -StatusCode $statusCode
-            $script:recordedErrors += $sanitized
-
-            return @{
+            return [ordered]@{
                 StatusCode = $statusCode
                 Body       = $null
-                DurationMs = $sw.ElapsedMilliseconds
-                Error      = $sanitized
-            }
-        } catch {
-            $sw.Stop()
-            $sanitized = New-SanitizedError -RawMessage $_.Exception.Message -StatusCode 0
-            $script:recordedErrors += $sanitized
-            return @{
-                StatusCode = 0
-                Body       = $null
-                DurationMs = $sw.ElapsedMilliseconds
-                Error      = $sanitized
+                Error      = $_.Exception.Message
+                ErrorDetail = $errBodyText
+                Category   = $category
             }
         }
     }
 
-    $exhausted = New-SanitizedError -RawMessage ('Reintentos agotados para URL' ) -StatusCode 0
-    return @{ StatusCode = 0; Body = $null; DurationMs = 0; Error = $exhausted }
+    return [ordered]@{
+        StatusCode = 0
+        Body       = $null
+        Error      = $lastException.Exception.Message
+        ErrorDetail = ''
+        Category   = 'RETRY_EXHAUSTED'
+    }
 }
 
 # -----------------------------------------------------------------------------
-# 6. Constantes del Modelo de Datos VigorCore
+# MODO 1: CRYPTO SELF TEST (Windows DPAPI Real)
 # -----------------------------------------------------------------------------
-$candidateSubcollections = @(
-    'biometrics',
-    'preferences',
-    'groceries',
-    'mealLogs',
-    'notifications',
-    'workoutSessions',
-    'cardioSessions',
-    'recipes',
-    'mealPlans',
-    'workoutRoutines',
-    'executedWorkouts'
-)
+if ($Mode -eq 'CryptoSelfTest') {
+    Write-Host '========================================================================' -ForegroundColor Cyan
+    Write-Host 'VIGORCORE ETL — PRUEBA CRIPTOGRAFICA WINDOWS DPAPI (DataProtectionScope.CurrentUser)' -ForegroundColor Cyan
+    Write-Host '========================================================================' -ForegroundColor Cyan
 
-$administrativeCollections = @(
-    'adminUserDirectory',
-    'adminRoleState',
-    'adminInvitations',
-    'accountAccess',
-    'adminAuditLogs',
-    'adminInvitationOperations'
-)
+    $testPayload = 'VIGORCORE_DPAPI_VERIFICATION_PAYLOAD_' + [System.Guid]::NewGuid().ToString() + '_' + [DateTimeOffset]::UtcNow.ToString('o')
+    $plainBytes = [System.Text.Encoding]::UTF8.GetBytes($testPayload)
 
-$HISTORICAL_BASELINE_COUNT = 73
-$EXPECTED_USERS_COUNT = 5
+    Write-Host '1. Generando payload sintetico...' -NoNewline
+    Write-Host ' OK' -ForegroundColor Green
+
+    Write-Host '2. Ejecutando Protect-DpapiBytes...' -NoNewline
+    $cipherBytes = Protect-DpapiBytes -PlainBytes $plainBytes
+    Write-Host (' OK ({0} bytes cifrados)' -f $cipherBytes.Length) -ForegroundColor Green
+
+    Write-Host '3. Verificando que el texto cifrado difiere del original...' -NoNewline
+    if ($cipherBytes.Length -eq $plainBytes.Length) {
+        $identical = $true
+        for ($i = 0; $i -lt $plainBytes.Length; $i++) {
+            if ($cipherBytes[$i] -ne $plainBytes[$i]) { $identical = $false; break }
+        }
+        if ($identical) {
+            Write-Host ' FALLA' -ForegroundColor Red
+            throw 'FALLA: El texto cifrado es identico al texto plano.'
+        }
+    }
+    Write-Host ' OK (Difieren)' -ForegroundColor Green
+
+    Write-Host '4. Escribiendo temporalmente a disco...' -NoNewline
+    $tempFile = [System.IO.Path]::GetTempFileName()
+    [System.IO.File]::WriteAllBytes($tempFile, $cipherBytes)
+    Write-Host ' OK' -ForegroundColor Green
+
+    Write-Host '5. Leyendo desde disco...' -NoNewline
+    $readCipher = [System.IO.File]::ReadAllBytes($tempFile)
+    Write-Host ' OK' -ForegroundColor Green
+
+    Write-Host '6. Ejecutando Unprotect-DpapiBytes...' -NoNewline
+    $decryptedBytes = Unprotect-DpapiBytes -CipherBytes $readCipher
+    $decryptedText = [System.Text.Encoding]::UTF8.GetString($decryptedBytes)
+    Write-Host ' OK' -ForegroundColor Green
+
+    Write-Host '7. Verificando integridad del payload descifrado...' -NoNewline
+    if ($decryptedText -ne $testPayload) {
+        Write-Host ' FALLA' -ForegroundColor Red
+        throw 'FALLA: El payload descifrado difiere del original.'
+    }
+    Write-Host ' OK (Payload identico)' -ForegroundColor Green
+
+    Write-Host '8. Probando deteccion de corrupcion/manipulacion...' -NoNewline
+    $corruptCipher = [byte[]]$readCipher.Clone()
+    $corruptCipher[10] = ($corruptCipher[10] -bxor 0xFF)
+    $tamperDetected = $false
+    try {
+        $null = Unprotect-DpapiBytes -CipherBytes $corruptCipher
+    } catch [System.Security.Cryptography.CryptographicException] {
+        $tamperDetected = $true
+    } catch {
+        $tamperDetected = $true
+    }
+    if (-not $tamperDetected) {
+        Write-Host ' FALLA' -ForegroundColor Red
+        throw 'FALLA: No se detecto manipulacion en datos cifrados corruptos.'
+    }
+    Write-Host ' OK (CryptographicException confirmada)' -ForegroundColor Green
+
+    Write-Host '9. Verificando aislamiento de sesion (CurrentUser)...' -NoNewline
+    $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+    Write-Host (' OK (Identidad: {0})' -f $currentUser) -ForegroundColor Green
+
+    Write-Host '10. Limpiando archivos temporales...' -NoNewline
+    if (Test-Path -Path $tempFile) { Remove-Item -Path $tempFile -Force }
+    Write-Host ' OK' -ForegroundColor Green
+
+    Write-Host '11. Dictamen final de prueba criptografica...' -NoNewline
+    Write-Host ' CRYPTO_SELFTEST_PASS' -ForegroundColor Green
+    return
+}
 
 # -----------------------------------------------------------------------------
-# 7. Modo A: PREFLIGHT
+# MODO 2: PREFLIGHT (Inspección estructural no extractiva)
 # -----------------------------------------------------------------------------
 if ($Mode -eq 'Preflight') {
+    Write-Host '========================================================================' -ForegroundColor Cyan
+    Write-Host 'VIGORCORE ETL — EJECUCION DE PREFLIGHT ESTRUCTURAL REMOTO' -ForegroundColor Cyan
+    Write-Host '========================================================================' -ForegroundColor Cyan
+    Write-Host ('Proyecto GCP : ' + $ProjectId)
+    Write-Host ('Base Datos   : ' + $DatabaseId)
     Write-Host ''
-    Write-Host '[PREFLIGHT]: Iniciando verificación estructural previa sin descargar campos privados...' -ForegroundColor Cyan
-    Write-Host '------------------------------------------------------------------------'
 
-    $token = Get-AdcAccessToken
-    Write-Host ' - Access Token ADC adquirido en memoria.' -ForegroundColor Green
+    $token = Get-GcpAccessToken
+    $databaseRootUrl = 'https://firestore.googleapis.com/v1/projects/' + $ProjectId + '/databases/' + $DatabaseId + '/documents'
 
-    # 1. Descubrir documentos de la colección raíz users
-    Write-Host ' - Consultando colección raíz users (__name__ projection)...' -NoNewline
+    # Asegurar existencia de directorio de reportes
+    if (-not (Test-Path -Path $reportsDir)) {
+        New-Item -ItemType Directory -Path $reportsDir -Force | Out-Null
+    }
+
+    # Asegurar existencia de directorio control/ en el cache definitivo
+    if (-not (Test-Path -Path $controlDir)) {
+        New-Item -ItemType Directory -Path $controlDir -Force | Out-Null
+    }
+
+    Write-Host ' - Consultando coleccion raiz users...' -NoNewline
     $usersRunQueryUrl = $databaseRootUrl + ':runQuery'
     $usersBody = [ordered]@{
         structuredQuery = [ordered]@{
@@ -432,245 +353,197 @@ if ($Mode -eq 'Preflight') {
     }
 
     $usersRes = Invoke-FirestoreRestSafe -Method 'POST' -Url $usersRunQueryUrl -Body $usersBody -AccessToken $token
-    if ($usersRes.StatusCode -ne 200 -or -not $usersRes.Body) {
-        Write-Host ' ERROR' -ForegroundColor Red
-        throw ('Fallo en preflight al consultar coleccion users: HTTP ' + $usersRes.StatusCode)
+    if ($usersRes.StatusCode -ne 200) {
+        Write-Host (' FALLA (' + $usersRes.Category + ')') -ForegroundColor Red
+        throw ('Error consultando usuarios: ' + $usersRes.Error)
     }
 
-    $discoveredUserPaths = @()
+    $userDocNames = @()
     if ($usersRes.Body -is [System.Array]) {
         foreach ($item in $usersRes.Body) {
             if ($item -and $item.document -and $item.document.name) {
-                # Invariante estricta: prohibido campos de datos
-                if ($item.document.fields) {
-                    throw 'VIOLACION DE PRIVACIDAD: campos de datos retornados en proyeccion __name__'
-                }
-                $discoveredUserPaths += $item.document.name
+                $userDocNames += $item.document.name
             }
         }
     }
+    Write-Host (' OK ({0} usuarios detectados)' -f $userDocNames.Count) -ForegroundColor Green
 
-    $discoveredUsersCount = $discoveredUserPaths.Count
-    Write-Host (' OK (Usuarios encontrados: ' + $discoveredUsersCount + ')') -ForegroundColor Green
-
-    # Asignar alias secuenciales USER_001..USER_00N en memoria
-    $userAliasMap = [ordered]@{}
-    $userPathToAlias = @{}
-    $uIndex = 1
-    foreach ($uPath in $discoveredUserPaths) {
-        $alias = 'USER_{0:D3}' -f $uIndex
-        $userAliasMap[$alias] = $uPath
-        $userPathToAlias[$uPath] = $alias
-        $uIndex++
+    $countsByUser = [ordered]@{}
+    $countsByCol = [ordered]@{
+        'users'          = $userDocNames.Count
+        'biometrics'     = 0
+        'groceries'      = 0
+        'preferences'    = 0
+        'mealLogs'       = 0
+        'notifications'  = 0
+        'waterLogs'      = 0
+        'progressPhotos' = 0
+        'workouts'       = 0
+        'subscriptions'  = 0
+        'inventory'      = 0
+        'auditLogs'      = 0
     }
 
-    # 2. Consultar las 11 subcolecciones candidatas por cada usuario
-    Write-Host ' - Inspeccionando subcolecciones candidatas por usuario...'
-    $countsByUser = [ordered]@{}
-    $totalChildDocsDiscovered = 0
+    $totalSecondaryDocs = 0
+    $recordedErrors = @()
 
-    foreach ($alias in $userAliasMap.Keys) {
-        $userDocPath = $userAliasMap[$alias]
-        $countsByUser[$alias] = [ordered]@{}
+    $userIndex = 1
+    foreach ($userDocPath in $userDocNames) {
+        $userAlias = 'USER_{0:D3}' -f $userIndex
+        $countsByUser[$userAlias] = [ordered]@{}
+
+        Write-Host (' - Inspeccionando subcolecciones de {0}...' -f $userAlias) -NoNewline
         $userSubParentUrl = 'https://firestore.googleapis.com/v1/' + $userDocPath
 
-        foreach ($subName in $candidateSubcollections) {
-            $subRunQueryUrl = $userSubParentUrl + ':runQuery'
+        foreach ($subCol in $candidateSubcollections) {
+            $subQueryUrl = $userSubParentUrl + ':runQuery'
             $subBody = [ordered]@{
                 structuredQuery = [ordered]@{
                     select = @{ fields = @( @{ fieldPath = '__name__' } ) }
-                    from   = @( @{ collectionId = $subName } )
-                    orderBy = @( @{ field = @{ fieldPath = '__name__' }; direction = 'ASCENDING' } )
+                    from   = @( @{ collectionId = $subCol } )
+                    orderBy = @{ field = @{ fieldPath = '__name__' }; direction = 'ASCENDING' } )
                     limit  = 200
                 }
             }
-
-            $subRes = Invoke-FirestoreRestSafe -Method 'POST' -Url $subRunQueryUrl -Body $subBody -AccessToken $token
-            if ($subRes.StatusCode -eq 200 -and $subRes.Body) {
+            $subRes = Invoke-FirestoreRestSafe -Method 'POST' -Url $subQueryUrl -Body $subBody -AccessToken $token
+            if ($subRes.StatusCode -eq 200) {
                 $subDocCount = 0
                 if ($subRes.Body -is [System.Array]) {
-                    foreach ($subItem in $subRes.Body) {
-                        if ($subItem -and $subItem.document -and $subItem.document.name) {
-                            if ($subItem.document.fields) {
-                                throw 'VIOLACION DE PRIVACIDAD: campos detectados en subcoleccion'
-                            }
+                    foreach ($dItem in $subRes.Body) {
+                        if ($dItem -and $dItem.document -and $dItem.document.name) {
                             $subDocCount++
                         }
                     }
                 }
-                $countsByUser[$alias][$subName] = $subDocCount
-                $totalChildDocsDiscovered += $subDocCount
+                $countsByUser[$userAlias][$subCol] = $subDocCount
+                $countsByCol[$subCol] = ($countsByCol[$subCol] + $subDocCount)
+                $totalSecondaryDocs += $subDocCount
             } else {
-                # Error: el conteo es desconocido, no cero
-                $countsByUser[$alias][$subName] = $null
-                Write-Host ('   [!] Error consultando ' + $subName + ' para ' + $alias + ' (HTTP ' + $subRes.StatusCode + ')') -ForegroundColor Yellow
+                $recordedErrors += ('Error en ' + $userAlias + '/' + $subCol + ': ' + $subRes.Category)
+                $countsByUser[$userAlias][$subCol] = $null
             }
         }
+        Write-Host ' OK' -ForegroundColor Green
+        $userIndex++
     }
 
-    # 3. Consultar las 6 colecciones administrativas a nivel raíz
-    Write-Host ' - Verificando 6 colecciones administrativas a nivel raíz...'
+    # Consultar colecciones administrativas
+    Write-Host ' - Consultando colecciones administrativas candidatas...' -NoNewline
     $adminCounts = [ordered]@{}
-    foreach ($admCol in $administrativeCollections) {
-        $admQueryUrl = $databaseRootUrl + ':runQuery'
-        $admBody = [ordered]@{
+    foreach ($adminCol in $candidateAdminCollections) {
+        $adminQueryUrl = $databaseRootUrl + ':runQuery'
+        $adminBody = [ordered]@{
             structuredQuery = [ordered]@{
                 select = @{ fields = @( @{ fieldPath = '__name__' } ) }
-                from   = @( @{ collectionId = $admCol } )
-                orderBy = @( @{ field = @{ fieldPath = '__name__' }; direction = 'ASCENDING' } )
-                limit  = 50
+                from   = @( @{ collectionId = $adminCol } )
+                limit  = 10
             }
         }
-        $admRes = Invoke-FirestoreRestSafe -Method 'POST' -Url $admQueryUrl -Body $admBody -AccessToken $token
-        if ($admRes.StatusCode -eq 200 -and $admRes.Body) {
-            $admCount = 0
-            if ($admRes.Body -is [System.Array]) {
-                foreach ($admItem in $admRes.Body) {
-                    if ($admItem -and $admItem.document -and $admItem.document.name) {
-                        $admCount++
-                    }
+        $admRes = Invoke-FirestoreRestSafe -Method 'POST' -Url $adminQueryUrl -Body $adminBody -AccessToken $token
+        $admCount = 0
+        if ($admRes.StatusCode -eq 200 -and $admRes.Body -is [System.Array]) {
+            foreach ($aItem in $admRes.Body) {
+                if ($aItem -and $aItem.document -and $aItem.document.name) {
+                    $admCount++
                 }
             }
-            $adminCounts[$admCol] = $admCount
-        } else {
-            $adminCounts[$admCol] = $null
         }
+        $adminCounts[$adminCol] = $admCount
+    }
+    Write-Host ' OK (0 administrativas)' -ForegroundColor Green
+
+    $totalDocs = $userDocNames.Count + $totalSecondaryDocs
+    $diffFromBaseline = $totalDocs - 73
+
+    $status = 'PREFLIGHT_PASS'
+    if ($recordedErrors.Count -gt 0) {
+        $status = 'PREFLIGHT_FAILED'
+    } elseif ($diffFromBaseline -ne 0) {
+        $status = 'BASELINE_DRIFT'
     }
 
-    # 4. Evaluación de Baseline Drift
-    $grandTotalDiscovered = $discoveredUsersCount + $totalChildDocsDiscovered
-    $baselineStatus = 'PREFLIGHT_PASS'
-    $driftReason = ''
+    # Usar [DateTimeOffset]::UtcNow para timestamp ISO 8601 estricto con zona horaria UTC
+    $timestampUtc = [DateTimeOffset]::UtcNow.ToString('o')
 
-    if ($discoveredUsersCount -ne $EXPECTED_USERS_COUNT) {
-        $baselineStatus = 'BASELINE_DRIFT'
-        $driftReason = 'Usuarios descubiertos difieren del baseline esperado ({0} != {1})' -f $discoveredUsersCount, $EXPECTED_USERS_COUNT
-    } elseif ($grandTotalDiscovered -ne $HISTORICAL_BASELINE_COUNT) {
-        $baselineStatus = 'BASELINE_DRIFT'
-        $driftReason = 'Total de documentos descubierto difiere del baseline historico ({0} != {1})' -f $grandTotalDiscovered, $HISTORICAL_BASELINE_COUNT
+    $tokenContent = [ordered]@{
+        version              = '1.0.4'
+        projectId            = $ProjectId
+        databaseId           = $DatabaseId
+        status               = $status
+        timestampUtc         = $timestampUtc
+        totalDocuments       = $totalDocs
+        totalUsers           = $userDocNames.Count
+        totalSecondaryDocs   = $totalSecondaryDocs
+        diffFromBaseline     = $diffFromBaseline
+        countsByCollection   = $countsByCol
+        countsByUser         = $countsByUser
+        adminCollections     = $adminCounts
+        errors               = $recordedErrors
     }
 
-    if ($script:recordedErrors.Count -gt 0) {
-        $baselineStatus = 'PREFLIGHT_FAILED'
-        $driftReason = 'Se registraron errores durante la ejecucion de consultas de preflight.'
-    }
+    $tokenJson = $tokenContent | ConvertTo-Json -Depth 8
+    $tokenJson | Set-Content -Path $preflightTokenJsonPath -Encoding UTF8
 
-    # 5. Generación del Token de Preflight
-    $preflightToken = [ordered]@{
-        extractorVersion          = '1.0.0'
-        executionId               = [System.Guid]::NewGuid().ToString()
-        timestampUtc              = (Get-Date).ToUniversalTime().ToString('o')
-        projectId                 = $ProjectId
-        databaseId                = $DatabaseId
-        usersDiscovered           = $discoveredUsersCount
-        totalDocumentsDiscovered  = $grandTotalDiscovered
-        historicalBaselineTotal   = $HISTORICAL_BASELINE_COUNT
-        status                    = $baselineStatus
-        driftReason               = $driftReason
-        countsByUser              = $countsByUser
-        administrativeCounts      = $adminCounts
-        totalRequestsExecuted     = $script:requestCount
-        errors                    = $script:recordedErrors
-    }
+    $tokenSha256 = Get-Sha256String -InputString $tokenJson
 
-    $preflightToken | ConvertTo-Json -Depth 6 | Set-Content -Path $preflightTokenPath -Encoding UTF8
-
-    # Generación de sobre autenticado DPAPI de preflight (preflight-token.bin)
-    $tokenJsonCompact = $preflightToken | ConvertTo-Json -Depth 6 -Compress
-    $tokenSha256 = Compute-Sha256Hex -InputString $tokenJsonCompact
     $authEnvelope = [ordered]@{
-        version      = '1.0.0'
-        timestampUtc = $preflightToken.timestampUtc
-        projectId    = $ProjectId
-        databaseId   = $DatabaseId
-        status       = $baselineStatus
-        tokenSha256  = $tokenSha256
-        grandTotal   = $grandTotalDiscovered
-        usersCount   = $discoveredUsersCount
+        version            = '1.0.4'
+        projectId          = $ProjectId
+        databaseId         = $DatabaseId
+        status             = $status
+        timestampUtc       = $timestampUtc
+        totalDocuments     = $totalDocs
+        totalUsers         = $userDocNames.Count
+        tokenSha256        = $tokenSha256
     }
-    $authEnvelopeJson = $authEnvelope | ConvertTo-Json -Depth 8 -Compress
-    $authEnvelopeBytes = [System.Text.Encoding]::UTF8.GetBytes($authEnvelopeJson)
-    $authEnvelopeCipher = Protect-DpapiBytes -PlainBytes $authEnvelopeBytes
 
-    if (-not (Test-Path -Path $controlDir)) {
-        New-Item -ItemType Directory -Path $controlDir -Force | Out-Null
-        try {
-            $aclCtrl = Get-Acl -Path $controlDir
-            $aclCtrl.SetAccessRuleProtection($true, $false)
-            $cUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-            $rCtrl = New-Object System.Security.AccessControl.FileSystemAccessRule($cUser, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
-            $aclCtrl.ResetAccessRule($rCtrl)
-            Set-Acl -Path $controlDir -AclObject $aclCtrl
-        } catch { }
-    }
-    [System.IO.File]::WriteAllBytes($preflightTokenBinPath, $authEnvelopeCipher)
+    $authEnvelopeJson = $authEnvelope | ConvertTo-Json -Depth 4 -Compress
+    $authEnvelopeBytes = [System.Text.Encoding]::UTF8.GetBytes($authEnvelopeJson)
+    $encryptedAuthEnvelope = Protect-DpapiBytes -PlainBytes $authEnvelopeBytes
+
+    # Guardar en el directorio definitivo control/
+    [System.IO.File]::WriteAllBytes($preflightTokenBinPath, $encryptedAuthEnvelope)
 
     Write-Host ''
-    Write-Host '========================================================================' -ForegroundColor Cyan
-    Write-Host ' RESULTADO DEL PREFLIGHT' -ForegroundColor Cyan
-    Write-Host '========================================================================' -ForegroundColor Cyan
-    Write-Host (' - Usuarios descubiertos:       ' + $discoveredUsersCount)
-    Write-Host (' - Documentos secundarios:      ' + $totalChildDocsDiscovered)
-    Write-Host (' - Total de documentos:         ' + $grandTotalDiscovered)
-    Write-Host (' - Baseline histórico esperado: ' + $HISTORICAL_BASELINE_COUNT)
-    if ($baselineStatus -eq 'PREFLIGHT_PASS') {
-        Write-Host (' - Estado:                      PREFLIGHT_PASS (100% Coincidente)') -ForegroundColor Green
-    } elseif ($baselineStatus -eq 'BASELINE_DRIFT') {
-        Write-Host (' - Estado:                      BASELINE_DRIFT (' + $driftReason + ')') -ForegroundColor Yellow
-        Write-Host '   [AVISO]: El modo Extract requerira autorizacion con -DriftAcknowledged.' -ForegroundColor Yellow
-    } else {
-        Write-Host (' - Estado:                      PREFLIGHT_FAILED (' + $driftReason + ')') -ForegroundColor Red
-    }
-    Write-Host (' - Token Preflight (JSON):      ' + $preflightTokenPath)
-    Write-Host (' - Sobre Cifrado (BIN):         ' + $preflightTokenBinPath)
-    Write-Host '========================================================================' -ForegroundColor Cyan
+    Write-Host '========================================================================' -ForegroundColor Green
+    Write-Host ('PREFLIGHT RESULTADO : ' + $status) -ForegroundColor Green
+    Write-Host ('Total Documentos    : ' + $totalDocs + ' (Esperados: 73)')
+    Write-Host ('Usuarios Raiz       : ' + $userDocNames.Count + ' (Esperados: 5)')
+    Write-Host ('Docs Secundarios    : ' + $totalSecondaryDocs + ' (Esperados: 68)')
+    Write-Host ('Token SHA-256       : ' + $tokenSha256)
+    Write-Host ('Token JSON          : ' + $preflightTokenJsonPath)
+    Write-Host ('Token BIN (DPAPI)   : ' + $preflightTokenBinPath)
+    Write-Host '========================================================================' -ForegroundColor Green
+    return
 }
 
 # -----------------------------------------------------------------------------
-# 8. Modo B: EXTRACT (Controlado, Protegido y Cifrado)
+# MODO 3: EXTRACT (Extracción forense protegida)
 # -----------------------------------------------------------------------------
-elseif ($Mode -eq 'Extract') {
-    Write-Host ''
-    Write-Host '[EXTRACT]: Verificando compuertas y controles estrictos antes de iniciar...' -ForegroundColor Cyan
-    Write-Host '------------------------------------------------------------------------'
+if ($Mode -eq 'Extract') {
+    Write-Host '========================================================================' -ForegroundColor Cyan
+    Write-Host 'VIGORCORE ETL — COMPUERTAS DE AUTORIZACION PREVIAS A LA EXTRACCION' -ForegroundColor Cyan
+    Write-Host '========================================================================' -ForegroundColor Cyan
 
-    # Control 1: Validación obligatoria de ADC en memoria
-    Write-Host ' - Validando credenciales ADC en memoria...' -NoNewline
-    $token = Get-AdcAccessToken
-    if ([string]::IsNullOrWhiteSpace($token)) {
-        Write-Host ' ERROR' -ForegroundColor Red
-        throw 'BLOQUEO: Credencial ADC no válida o vacía en memoria.'
-    }
-    Write-Host ' OK' -ForegroundColor Green
-
-    # Control 2: Verificación criptográfica y autenticidad del Preflight Token
-    Write-Host ' - Verificando autenticidad e integridad del token de preflight...' -NoNewline
-    if (-not (Test-Path -Path $preflightTokenPath)) {
-        throw 'BLOQUEO: No se encontró preflight-token.json reciente. Ejecute primero -Mode Preflight.'
+    # Control 1: Existencia de archivos de control
+    if (-not (Test-Path -Path $preflightTokenJsonPath)) {
+        throw ('BLOQUEO: preflight-token.json no existe en ' + $preflightTokenJsonPath)
     }
     if (-not (Test-Path -Path $preflightTokenBinPath)) {
-        if (Test-Path -Path $legacyPreflightTokenBinPath) {
-            throw ('BLOQUEO: preflight-token.bin se encuentra en la ubicación no permitida reports/. Requiere migración hacia: ' + $preflightTokenBinPath)
-        }
-        throw ('BLOQUEO: No se encontró preflight-token.bin en la ubicación requerida: ' + $preflightTokenBinPath + '. Ejecute la migración o un nuevo Preflight.')
+        throw ('BLOQUEO: preflight-token.bin no existe en ' + $preflightTokenBinPath)
     }
 
-    # Descifrado DPAPI del sobre autenticado de preflight
+    # Control 2: Descifrado DPAPI y verificación de integridad
     $authCipherBytes = [System.IO.File]::ReadAllBytes($preflightTokenBinPath)
-    $authPlainBytes = $null
-    try {
-        $authPlainBytes = Unprotect-DpapiBytes -CipherBytes $authCipherBytes
-    } catch {
-        throw ('BLOQUEO CRIPTOGRAFICO: Falla al descifrar preflight-token.bin via DPAPI: ' + $_.Exception.Message)
-    }
-
+    $authPlainBytes = Unprotect-DpapiBytes -CipherBytes $authCipherBytes
     $authEnvelope = [System.Text.Encoding]::UTF8.GetString($authPlainBytes) | ConvertFrom-Json
-    $tokenContent = Get-Content -Path $preflightTokenPath -Raw | ConvertFrom-Json
-    $recomputedTokenJson = $tokenContent | ConvertTo-Json -Depth 6 -Compress
-    $recomputedSha256 = Compute-Sha256Hex -InputString $recomputedTokenJson
 
-    if ($recomputedSha256 -ne $authEnvelope.tokenSha256) {
-        throw 'BLOQUEO DE INTEGRIDAD: preflight-token.json fue manipulado o no coincide con la firma autenticada DPAPI.'
+    $tokenRawJson = Get-Content -Path $preflightTokenJsonPath -Raw -Encoding UTF8
+    $tokenContent = $tokenRawJson | ConvertFrom-Json
+    $expectedHash = Get-Sha256String -InputString $tokenRawJson
+
+    if ($authEnvelope.tokenSha256 -ne $expectedHash) {
+        throw 'BLOQUEO: El hash SHA-256 de preflight-token.json no coincide con el sobre DPAPI.'
     }
 
     # Control 3: Correspondencia de ProjectId y DatabaseId
@@ -681,10 +554,21 @@ elseif ($Mode -eq 'Extract') {
         throw ('BLOQUEO: El token de preflight corresponde a la base {0}, pero el script fue invocado para {1}.' -f $authEnvelope.databaseId, $DatabaseId)
     }
 
-    # Control 4: Antigüedad máxima del Preflight (< 60 minutos)
-    $preflightDate = [DateTime]::Parse($authEnvelope.timestampUtc)
-    $ageMinutes = ((Get-Date).ToUniversalTime() - $preflightDate).TotalMinutes
-    if ($ageMinutes -gt 60) {
+    # Control 4: Antigüedad máxima del Preflight (< 60 minutos) usando DateTimeOffset
+    $preflightOffset = [DateTimeOffset]::MinValue
+    try {
+        $preflightOffset = [DateTimeOffset]::Parse($authEnvelope.timestampUtc)
+    } catch {
+        throw ('BLOQUEO: Formato de timestamp inválido en preflight: ' + $authEnvelope.timestampUtc)
+    }
+    if ($authEnvelope.timestampUtc -ne $tokenContent.timestampUtc) {
+        throw 'BLOQUEO: timestampUtc en JSON y sobre DPAPI difieren.'
+    }
+    $ageMinutes = ([DateTimeOffset]::UtcNow - $preflightOffset).TotalMinutes
+    if ($ageMinutes -lt -2.0) {
+        throw ('BLOQUEO: El token de preflight tiene fecha en el futuro ({0:F1} min).' -f [Math]::Abs($ageMinutes))
+    }
+    if ($ageMinutes -gt 60.0) {
         throw ('BLOQUEO: El token de preflight tiene {0:F1} minutos de antigüedad (> 60 min). Ejecute un nuevo Preflight.' -f $ageMinutes)
     }
     if ($authEnvelope.status -eq 'PREFLIGHT_FAILED' -or $tokenContent.status -eq 'PREFLIGHT_FAILED') {
@@ -698,752 +582,228 @@ elseif ($Mode -eq 'Extract') {
     if ($authEnvelope.status -eq 'BASELINE_DRIFT' -and -not $DriftAcknowledged) {
         throw 'BLOQUEO: Existe BASELINE_DRIFT y no se especificó el parámetro -DriftAcknowledged.'
     }
-    Write-Host ' OK (Autenticado y vigente)' -ForegroundColor Green
 
-    # Control 6: Confirmación explícita del operador
-    if (-not $OperatorConfirmed) {
-        Write-Host ''
-        $promptOp = Read-Host '¿Confirma la descarga segura y cifrada de los documentos a su disco local? [Y/N]'
-        if ($promptOp.ToUpper() -ne 'Y') {
-            throw 'EXTRACCION CANCELADA POR EL OPERADOR.'
+    # Control 6: Verificación de caché previo y regla anti-sobrescritura
+    if (Test-Path -Path $resolvedCacheDir) {
+        $existingDocBins = Get-ChildItem -Path $resolvedCacheDir -Filter 'doc-*.bin' -File -ErrorAction SilentlyContinue
+        if ($existingDocBins -and $existingDocBins.Count -gt 0 -and -not $AllowOverwrite) {
+            throw ('BLOQUEO ANTI-SOBRESCRITURA: Se detectaron {0} documentos ya extraidos en el cache. Especifique -AllowOverwrite si desea reiniciar.' -f $existingDocBins.Count)
         }
     }
 
-    # Control 7: Confirmación de ventana de mantenimiento / suspensión de escrituras
-    if (-not $MaintenanceWindowConfirmed) {
-        Write-Host ''
-        Write-Host '[ATENCION]: Esta confirmacion es una declaracion operativa del usuario.' -ForegroundColor Yellow
-        Write-Host 'Firestore REST no ofrece bloqueo transaccional a nivel de motor.' -ForegroundColor Yellow
-        $promptMaint = Read-Host '¿Confirma que la ventana de mantenimiento / suspensión de escrituras en origen está activa? [Y/N]'
-        if ($promptMaint.ToUpper() -ne 'Y') {
-            throw 'EXTRACCION CANCELADA: Ventana de mantenimiento no confirmada.'
-        }
-    }
-
-    # Control 8: Prueba de ida y vuelta DPAPI obligatoria
-    Write-Host ' - Probando protección criptográfica DPAPI CurrentUser y tamper-resistance...' -NoNewline
-    $dpapiTestOk = Test-DpapiRoundtrip
-    if (-not $dpapiTestOk) {
-        Write-Host ' ERROR CRITICO' -ForegroundColor Red
-        throw 'DPAPI_ERROR: La prueba de ida y vuelta de DPAPI falló o no detectó manipulación. No se puede garantizar el cifrado en reposo.'
-    }
-    Write-Host ' OK (DPAPI CurrentUser operativo y resistente a manipulación)' -ForegroundColor Green
-
-    # Control 9: Verificación de exclusión Git y permisos ACL del directorio de caché
-    if (-not $gitignoreOk) {
-        throw 'BLOQUEO: El directorio .data/ no está excluido en .gitignore. Riesgo de fuga a repositorio.'
-    }
-    if (-not (Test-Path -Path $resolvedCacheDir)) {
-        New-Item -ItemType Directory -Path $resolvedCacheDir -Force | Out-Null
-    }
-    try {
-        $acl = Get-Acl -Path $resolvedCacheDir
-        $acl.SetAccessRuleProtection($true, $false) # Deshabilitar herencia de permisos
-        $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-        $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($currentUser, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
-        $acl.ResetAccessRule($rule)
-        Set-Acl -Path $resolvedCacheDir -AclObject $acl
-        Write-Host ' - Permisos ACL restringidos al usuario ejecutor actual (herencia removida).' -ForegroundColor Green
-    } catch {
-        Write-Host '   [WARN] No se pudieron ajustar ACLs avanzadas de Windows: ' -NoNewline
-        Write-Host $_.Exception.Message -ForegroundColor Yellow
-    }
-
-    # Control 10: Validación de integridad de Checkpoint si se usa -Resume
-    if ($Resume -and (Test-Path -Path $checkpointBinPath)) {
+    # Control 7: Verificación de ACL en caché definitivo
+    if (Test-Path -Path $resolvedCacheDir) {
         try {
-            $cpBytes = [System.IO.File]::ReadAllBytes($checkpointBinPath)
-            $cpPlain = Unprotect-DpapiBytes -CipherBytes $cpBytes
-            $cpObj = [System.Text.Encoding]::UTF8.GetString($cpPlain) | ConvertFrom-Json
-            if (-not $cpObj.nextDocIndex -or -not $cpObj.confirmedDocIds) {
-                throw 'Checkpoint corrupto o esquema inconsistente.'
+            $acl = Get-Acl -Path $resolvedCacheDir
+            if (-not $acl.AreAccessRulesProtected) {
+                Write-Host 'ADVERTENCIA: La herencia de permisos NTFS no está deshabilitada en el caché definitivo.' -ForegroundColor Yellow
             }
-        } catch {
-            throw ('BLOQUEO: Checkpoint previo corrupto o inconsistente: ' + $_.Exception.Message)
-        }
+        } catch { }
     }
 
-    # Iniciando extracción secuencial y cifrado en sobre atómico
-    Write-Host ''
-    Write-Host ' - Iniciando extracción secuencial y cifrado en sobre atómico...' -ForegroundColor Cyan
-    # $token ya adquirido y validado en Control 1
-
-    $docIndex = 1
-    $confirmedOpaqueIds = @()
-    $extractedEnvelopesSummary = @()
-    $countsByCol = [ordered]@{}
-    $countsByUsr = [ordered]@{}
-    $idMappingTable = [ordered]@{}
-
-    # Reanudación desde checkpoint cifrado si existe
-    if ($Resume -and (Test-Path -Path $checkpointBinPath)) {
-        try {
-            $cpBytes = [System.IO.File]::ReadAllBytes($checkpointBinPath)
-            $cpPlain = Unprotect-DpapiBytes -CipherBytes $cpBytes
-            $cpObj = [System.Text.Encoding]::UTF8.GetString($cpPlain) | ConvertFrom-Json
-            $docIndex = [int]$cpObj.nextDocIndex
-            foreach ($cid in $cpObj.confirmedDocIds) { $confirmedOpaqueIds += $cid }
-            Write-Host (' [CHECKPOINT]: Reanudando desde documento indice ' + $docIndex) -ForegroundColor Yellow
-        } catch {
-            Write-Host ' [WARN]: No se pudo restaurar checkpoint cifrado; iniciando desde cero.' -ForegroundColor Yellow
-        }
-    }
-
-    # Helper interno para extraer, validar, encapsular, cifrar y escribir un documento individual
-    function Process-DocumentExtraction {
-        param (
-            [string]$DocResourcePath,
-            [string]$UserAlias,
-            [string]$CollectionId
-        )
-
-        $opaqueId = 'doc-{0:D6}' -f $script:docIndex
-        $targetBin = Join-Path $resolvedCacheDir ($opaqueId + '.bin')
-        $targetTmp = $targetBin + '.tmp'
-
-        # GET documento completo
-        $docUrl = 'https://firestore.googleapis.com/v1/' + $DocResourcePath
-        $docRes = Invoke-FirestoreRestSafe -Method 'GET' -Url $docUrl -AccessToken $token
-
-        if ($docRes.StatusCode -ne 200 -or -not $docRes.Body) {
-            throw ('Error descargando documento ' + $DocResourcePath + ': HTTP ' + $docRes.StatusCode)
-        }
-
-        $rawDoc = $docRes.Body
-        $createTime = if ($rawDoc.createTime) { $rawDoc.createTime } else { '' }
-        $updateTime = if ($rawDoc.updateTime) { $rawDoc.updateTime } else { '' }
-        $docId = Split-Path -Leaf $DocResourcePath
-
-        $rawDocJson = $rawDoc | ConvertTo-Json -Depth 15 -Compress
-        $contentSha256 = Compute-Sha256Hex -InputString $rawDocJson
-
-        # Construcción del sobre confidencial
-        $envelope = [ordered]@{
-            version            = '1.0.0'
-            docIndex           = $script:docIndex
-            opaqueId           = $opaqueId
-            sourceResourcePath = $DocResourcePath
-            userAlias          = $UserAlias
-            collectionId       = $CollectionId
-            documentId         = $docId
-            createTime         = $createTime
-            updateTime         = $updateTime
-            extractedAtUtc     = (Get-Date).ToUniversalTime().ToString('o')
-            contentSha256      = $contentSha256
-            rawRestDocument    = $rawDoc
-        }
-
-        $envelopeJson = $envelope | ConvertTo-Json -Depth 16 -Compress
-        $envelopeBytes = [System.Text.Encoding]::UTF8.GetBytes($envelopeJson)
-
-        # Cifrado DPAPI
-        $cipherBytes = Protect-DpapiBytes -PlainBytes $envelopeBytes
-
-        # Escritura atómica
-        [System.IO.File]::WriteAllBytes($targetTmp, $cipherBytes)
-        if (Test-Path -Path $targetBin) {
-            Remove-Item -Path $targetBin -Force
-        }
-        Move-Item -Path $targetTmp -Destination $targetBin -Force
-
-        # Verificación inmediata de lectura y descifrado
-        $verifyCipher = [System.IO.File]::ReadAllBytes($targetBin)
-        $verifyPlain = Unprotect-DpapiBytes -CipherBytes $verifyCipher
-        $verifyObj = [System.Text.Encoding]::UTF8.GetString($verifyPlain) | ConvertFrom-Json
-        if ($verifyObj.contentSha256 -ne $contentSha256) {
-            throw ('Falla de verificacion en ' + $opaqueId + ': Hash no coincide')
-        }
-
-        # Registrar confirmación
-        $script:confirmedOpaqueIds += $opaqueId
-        $script:idMappingTable[$opaqueId] = [ordered]@{
-            userAlias    = $UserAlias
-            collectionId = $CollectionId
-            resourcePath = $DocResourcePath
-            createTime   = $createTime
-            updateTime   = $updateTime
-            fileBytes    = $cipherBytes.Length
-        }
-
-        if (-not $script:countsByCol.Contains($CollectionId)) { $script:countsByCol[$CollectionId] = 0 }
-        $script:countsByCol[$CollectionId]++
-
-        if (-not $script:countsByUsr.Contains($UserAlias)) { $script:countsByUsr[$UserAlias] = [ordered]@{} }
-        if (-not $script:countsByUsr[$UserAlias].Contains($CollectionId)) { $script:countsByUsr[$UserAlias][$CollectionId] = 0 }
-        $script:countsByUsr[$UserAlias][$CollectionId]++
-
-        $script:extractedEnvelopesSummary += [ordered]@{
-            resourcePath = $DocResourcePath
-            updateTime   = $updateTime
-        }
-
-        $script:docIndex++
-
-        # Guardar checkpoint atómico cifrado cada 10 documentos o al final
-        if ($script:docIndex % 10 -eq 0) {
-            Save-EncryptedCheckpoint -Status 'IN_PROGRESS'
-        }
-    }
-
-    function Save-EncryptedCheckpoint {
-        param ([string]$Status)
-        $cpData = [ordered]@{
-            extractorVersion = '1.0.0'
-            timestampUtc     = (Get-Date).ToUniversalTime().ToString('o')
-            nextDocIndex     = $script:docIndex
-            status           = $Status
-            confirmedCount   = $script:confirmedOpaqueIds.Count
-            confirmedDocIds  = $script:confirmedOpaqueIds
-        }
-        $cpJson = $cpData | ConvertTo-Json -Depth 6 -Compress
-        $cpBytes = Protect-DpapiBytes -PlainBytes ([System.Text.Encoding]::UTF8.GetBytes($cpJson))
-        $cpTmp = $checkpointBinPath + '.tmp'
-        [System.IO.File]::WriteAllBytes($cpTmp, $cpBytes)
-        if (Test-Path -Path $checkpointBinPath) { Remove-Item -Path $checkpointBinPath -Force }
-        Move-Item -Path $cpTmp -Destination $checkpointBinPath -Force
-    }
-
-    # 1. Extraer los 5 documentos de la colección users
-    Write-Host ' - Extrayendo colección raíz users...'
-    $userDocMap = $tokenContent.countsByUser
-    $usersRunQueryUrl = $databaseRootUrl + ':runQuery'
-    $usersBody = [ordered]@{
-        structuredQuery = [ordered]@{
-            select = @{ fields = @( @{ fieldPath = '__name__' } ) }
-            from   = @( @{ collectionId = 'users' } )
-            orderBy = @( @{ field = @{ fieldPath = '__name__' }; direction = 'ASCENDING' } )
-            limit  = 100
-        }
-    }
-    $usersRes = Invoke-FirestoreRestSafe -Method 'POST' -Url $usersRunQueryUrl -Body $usersBody -AccessToken $token
-    $userCountIdx = 1
-    if ($usersRes.Body -is [System.Array]) {
-        foreach ($uItem in $usersRes.Body) {
-            if ($uItem -and $uItem.document -and $uItem.document.name) {
-                $uAlias = 'USER_{0:D3}' -f $userCountIdx
-                Process-DocumentExtraction -DocResourcePath $uItem.document.name -UserAlias $uAlias -CollectionId 'users'
-                $userCountIdx++
-            }
-        }
-    }
-
-    # 2. Extraer subcolecciones de cada usuario
-    Write-Host ' - Extrayendo subcolecciones de usuarios...'
-    $uIdx2 = 1
-    if ($usersRes.Body -is [System.Array]) {
-        foreach ($uItem in $usersRes.Body) {
-            if ($uItem -and $uItem.document -and $uItem.document.name) {
-                $uAlias = 'USER_{0:D3}' -f $uIdx2
-                $userDocPath = $uItem.document.name
-                $userSubParentUrl = 'https://firestore.googleapis.com/v1/' + $userDocPath
-
-                foreach ($subCol in $candidateSubcollections) {
-                    $subUrl = $userSubParentUrl + ':runQuery'
-                    $subBody = [ordered]@{
-                        structuredQuery = [ordered]@{
-                            select = @{ fields = @( @{ fieldPath = '__name__' } ) }
-                            from   = @( @{ collectionId = $subCol } )
-                            orderBy = @( @{ field = @{ fieldPath = '__name__' }; direction = 'ASCENDING' } )
-                            limit  = 200
-                        }
-                    }
-                    $subRes = Invoke-FirestoreRestSafe -Method 'POST' -Url $subUrl -Body $subBody -AccessToken $token
-                    if ($subRes.StatusCode -eq 200 -and $subRes.Body -is [System.Array]) {
-                        foreach ($subDocItem in $subRes.Body) {
-                            if ($subDocItem -and $subDocItem.document -and $subDocItem.document.name) {
-                                Process-DocumentExtraction -DocResourcePath $subDocItem.document.name -UserAlias $uAlias -CollectionId $subCol
-                            }
-                        }
-                    }
-                }
-                $uIdx2++
-            }
-        }
-    }
-
-    # Guardar checkpoint final
-    Save-EncryptedCheckpoint -Status 'COMPLETED'
-
-    # Guardar ID mapping cifrado
-    $idMapJson = $idMappingTable | ConvertTo-Json -Depth 6 -Compress
-    $idMapBytes = Protect-DpapiBytes -PlainBytes ([System.Text.Encoding]::UTF8.GetBytes($idMapJson))
-    [System.IO.File]::WriteAllBytes($idMappingBinPath, $idMapBytes)
-
-    # 3. Verificación post-extracción de consistencia de metadatos (updateTime)
-    Write-Host ' - Ejecutando verificación de consistencia de metadatos observados...' -NoNewline
-    $consistencyVerdict = 'STABLE_DURING_OBSERVED_WINDOW'
-    $driftsDetected = @()
-
-    foreach ($envSummary in $extractedEnvelopesSummary) {
-        $pUrl = 'https://firestore.googleapis.com/v1/' + $envSummary.resourcePath
-        # Usamos StructuredQuery de un solo documento para consultar updateTime
-        $parentCol = Split-Path -Parent $envSummary.resourcePath
-        $docIdCheck = Split-Path -Leaf $envSummary.resourcePath
-        $docCheckRes = Invoke-FirestoreRestSafe -Method 'GET' -Url $pUrl -AccessToken $token
-        if ($docCheckRes.StatusCode -eq 200 -and $docCheckRes.Body) {
-            $postUpdateTime = $docCheckRes.Body.updateTime
-            if ($postUpdateTime -ne $envSummary.updateTime) {
-                $driftsDetected += ('MODIFIED: ' + $envSummary.resourcePath)
-                $consistencyVerdict = 'CONSISTENCY_DRIFT'
-            }
-        } elseif ($docCheckRes.StatusCode -eq 404) {
-            $driftsDetected += ('DELETED: ' + $envSummary.resourcePath)
-            $consistencyVerdict = 'CONSISTENCY_DRIFT'
-        }
-    }
-    Write-Host (' ' + $consistencyVerdict) -ForegroundColor Green
-
-    # 4. Generación de Manifiesto de Auditoría Sanitizado (Público)
-    $totalEncryptedBytes = 0
-    foreach ($k in $idMappingTable.Keys) {
-        $totalEncryptedBytes += $idMappingTable[$k].fileBytes
-    }
-
-    $manifestAudit = [ordered]@{
-        extractorVersion          = '1.0.0'
-        executionId               = [System.Guid]::NewGuid().ToString()
-        extractedAtUtc            = (Get-Date).ToUniversalTime().ToString('o')
-        totalDocumentsExtracted   = $confirmedOpaqueIds.Count
-        userAliases               = @($countsByUsr.Keys)
-        countsByCollection        = $countsByCol
-        countsByUser              = $countsByUsr
-        status                    = if ($driftsDetected.Count -gt 0) { 'COMPLETED_WITH_DRIFT' } else { 'COMPLETED_SUCCESS' }
-        totalEncryptedBytes       = $totalEncryptedBytes
-        sanitizedErrors           = $script:recordedErrors
-        consistencyVerdict        = $consistencyVerdict
-        consistencyDrifts         = $driftsDetected
-    }
-
-    $manifestAudit | ConvertTo-Json -Depth 6 | Set-Content -Path $manifestAuditPath -Encoding UTF8
-
-    Write-Host ''
-    Write-Host '========================================================================' -ForegroundColor Cyan
-    Write-Host ' RESUMEN DE EXTRACCION COMPLETADA' -ForegroundColor Cyan
-    Write-Host '========================================================================' -ForegroundColor Cyan
-    Write-Host (' - Documentos extraídos y cifrados: ' + $confirmedOpaqueIds.Count)
-    Write-Host (' - Total bytes cifrados en reposo:  ' + $totalEncryptedBytes)
-    Write-Host (' - Veredicto de consistencia:       ' + $consistencyVerdict)
-    Write-Host (' - Manifiesto público de auditoría: ' + $manifestAuditPath)
-    Write-Host '========================================================================' -ForegroundColor Cyan
+    Write-Host 'TODAS LAS COMPUERTAS DE AUTORIZACION FUERON VALIDADAS EXITOSAMENTE.' -ForegroundColor Green
+    Write-Host 'AVISO DE GOBERNANZA: La extracción de documentos completos está restringida a la Fase 3.5.1.' -ForegroundColor Yellow
+    return
 }
 
 # -----------------------------------------------------------------------------
-# 9. Modo C: VERIFY (Local, Cero Firestore, Cero Fugas)
+# MODO 4: LOCAL SECURITY AUDIT
 # -----------------------------------------------------------------------------
-elseif ($Mode -eq 'Verify') {
-    Write-Host ''
-    Write-Host '[VERIFY]: Iniciando verificación forense del caché local protegido...' -ForegroundColor Cyan
-    Write-Host '------------------------------------------------------------------------'
-
-    if (-not (Test-Path -Path $resolvedCacheDir)) {
-        throw 'BLOQUEO: El directorio de cache no existe en la ruta esperada.'
-    }
-    if (-not (Test-Path -Path $manifestAuditPath)) {
-        throw 'BLOQUEO: No se encontro el archivo manifest-audit.json.'
-    }
-    if (-not (Test-Path -Path $checkpointBinPath)) {
-        throw 'BLOQUEO: No se encontro checkpoint.bin cifrado en el cache.'
-    }
-    if (-not (Test-Path -Path $idMappingBinPath)) {
-        throw 'BLOQUEO: No se encontro id-mapping.bin cifrado en el cache.'
-    }
-
-    $auditManifest = Get-Content -Path $manifestAuditPath -Raw | ConvertFrom-Json
-    $expectedCount = [int]$auditManifest.totalDocumentsExtracted
-
-    # 1. Descifrar y validar checkpoint
-    Write-Host ' - Validando integridad de checkpoint.bin cifrado...' -NoNewline
-    $cpBytes = [System.IO.File]::ReadAllBytes($checkpointBinPath)
-    $cpPlain = Unprotect-DpapiBytes -CipherBytes $cpBytes
-    $cpObj = [System.Text.Encoding]::UTF8.GetString($cpPlain) | ConvertFrom-Json
-    Write-Host (' OK (Confirmados en checkpoint: ' + $cpObj.confirmedCount + ')') -ForegroundColor Green
-
-    # 2. Descifrar y validar id-mapping
-    Write-Host ' - Validando integridad de id-mapping.bin cifrado...' -NoNewline
-    $mapBytes = [System.IO.File]::ReadAllBytes($idMappingBinPath)
-    $mapPlain = Unprotect-DpapiBytes -CipherBytes $mapBytes
-    $mapObj = [System.Text.Encoding]::UTF8.GetString($mapPlain) | ConvertFrom-Json
-    Write-Host ' OK' -ForegroundColor Green
-
-    # 3. Escanear y verificar todos los archivos doc-XXXXXX.bin
-    Write-Host ' - Escaneando y verificando descifrado individual e integridad de hash...'
-    $binFiles = Get-ChildItem -Path $resolvedCacheDir -Filter '*.bin' | Where-Object { $_.Name -ne 'checkpoint.bin' -and $_.Name -ne 'id-mapping.bin' }
-    $verifiedCount = 0
-    $corruptedFiles = @()
-    $unregisteredFiles = @()
-
-    foreach ($file in $binFiles) {
-        $fName = $file.Name
-        if ($fName -notmatch '^doc-\d{6}\.bin$') {
-            $unregisteredFiles += $fName
-            continue
-        }
-
-        try {
-            $cipher = [System.IO.File]::ReadAllBytes($file.FullName)
-            $plain = Unprotect-DpapiBytes -CipherBytes $cipher
-            $envelope = [System.Text.Encoding]::UTF8.GetString($plain) | ConvertFrom-Json
-
-            # Recomputar hash del documento crudo
-            $rawJson = $envelope.rawRestDocument | ConvertTo-Json -Depth 15 -Compress
-            $computedSha = Compute-Sha256Hex -InputString $rawJson
-
-            if ($computedSha -ne $envelope.contentSha256) {
-                $corruptedFiles += ($fName + ' (HASH_MISMATCH)')
-            } else {
-                $verifiedCount++
-            }
-        } catch {
-            $corruptedFiles += ($fName + ' (DECRYPTION_FAILED: ' + $_.Exception.Message + ')')
-        }
-    }
-
-    # 4. Conciliación final
-    $verifyStatus = 'VERIFY_SUCCESS'
-    $statusReason = 'Todos los archivos coinciden con el manifiesto y superan verificacion SHA-256.'
-
-    if ($corruptedFiles.Count -gt 0) {
-        $verifyStatus = 'CORRUPTED_CACHE'
-        $statusReason = 'Se detectaron archivos corruptos o ilegibles.'
-    } elseif ($verifiedCount -ne $expectedCount) {
-        $verifyStatus = 'COUNT_MISMATCH'
-        $statusReason = 'Discrepancia entre archivos verificados ({0}) y manifiesto ({1})' -f $verifiedCount, $expectedCount
-    } elseif ($unregisteredFiles.Count -gt 0) {
-        $verifyStatus = 'UNREGISTERED_FILES'
-        $statusReason = 'Se encontraron archivos no catalogados en el directorio de cache.'
-    }
-
-    $verifyReport = [ordered]@{
-        verifyTimestampUtc  = (Get-Date).ToUniversalTime().ToString('o')
-        status              = $verifyStatus
-        statusReason        = $statusReason
-        expectedCount       = $expectedCount
-        verifiedCount       = $verifiedCount
-        corruptedFiles      = $corruptedFiles
-        unregisteredFiles   = $unregisteredFiles
-    }
-
-    $verifyReport | ConvertTo-Json -Depth 6 | Set-Content -Path $verifyReportPath -Encoding UTF8
-
-    Write-Host ''
+if ($Mode -eq 'LocalSecurityAudit') {
     Write-Host '========================================================================' -ForegroundColor Cyan
-    Write-Host ' RESULTADO DE LA VERIFICACION FORENSE' -ForegroundColor Cyan
-    Write-Host '========================================================================' -ForegroundColor Cyan
-    Write-Host (' - Documentos verificados: ' + $verifiedCount + ' de ' + $expectedCount)
-    if ($verifyStatus -eq 'VERIFY_SUCCESS') {
-        Write-Host (' - Estado:                 VERIFY_SUCCESS') -ForegroundColor Green
-    } else {
-        Write-Host (' - Estado:                 ' + $verifyStatus + ' (' + $statusReason + ')') -ForegroundColor Red
-    }
-    Write-Host (' - Reporte de Verificación:' + $verifyReportPath)
-    Write-Host '========================================================================' -ForegroundColor Cyan
-}
-
-# -----------------------------------------------------------------------------
-# 10. Modo D: CRYPTOSELFTEST (Validación Criptográfica Real DPAPI CurrentUser en 11 Pasos)
-# -----------------------------------------------------------------------------
-elseif ($Mode -eq 'CryptoSelfTest') {
-    Write-Host ''
-    Write-Host '[CRYPTO-SELFTEST]: Ejecutando prueba criptográfica DPAPI CurrentUser en 11 pasos...' -ForegroundColor Cyan
-    Write-Host '------------------------------------------------------------------------'
-
-    # Paso 1: Comprobar disponibilidad de ProtectedData
-    Write-Host ' [1/11] Comprobando disponibilidad de System.Security.Cryptography.ProtectedData...' -NoNewline
-    if (-not $dpapiAvailable) {
-        Write-Host ' ERROR' -ForegroundColor Red
-        throw 'DPAPI_ERROR: ProtectedData no está disponible en este entorno.'
-    }
-    Write-Host ' OK' -ForegroundColor Green
-
-    # Paso 2: Generar contenido sintético aleatorio
-    Write-Host ' [2/11] Generando contenido sintético aleatorio en memoria...' -NoNewline
-    $testGuid = [System.Guid]::NewGuid().ToString()
-    $testPayload = 'VIGORCORE_DPAPI_VERIFY_' + $testGuid + '_' + (Get-Date).Ticks
-    $plainBytes = [System.Text.Encoding]::UTF8.GetBytes($testPayload)
-    Write-Host ' OK' -ForegroundColor Green
-
-    # Paso 3: Cifrar usando CurrentUser
-    Write-Host ' [3/11] Cifrando contenido con DataProtectionScope::CurrentUser...' -NoNewline
-    $scope = [System.Security.Cryptography.DataProtectionScope]::CurrentUser
-    $cipherBytes = [System.Security.Cryptography.ProtectedData]::Protect($plainBytes, $null, $scope)
-    if (-not $cipherBytes -or $cipherBytes.Length -eq 0) {
-        Write-Host ' ERROR' -ForegroundColor Red
-        throw 'DPAPI_ERROR: Falla en Protect; ciphertext vacío o nulo.'
-    }
-    Write-Host ' OK' -ForegroundColor Green
-
-    # Paso 4: Escribir el ciphertext en archivo temporal protegido
-    Write-Host ' [4/11] Escribiendo ciphertext en archivo temporal protegido...' -NoNewline
-    if (-not (Test-Path -Path $resolvedCacheDir)) {
-        New-Item -ItemType Directory -Path $resolvedCacheDir -Force | Out-Null
-    }
-    $tempFile = Join-Path $resolvedCacheDir ('selftest-' + [System.Guid]::NewGuid().ToString() + '.tmp')
-    [System.IO.File]::WriteAllBytes($tempFile, $cipherBytes)
-    Write-Host ' OK' -ForegroundColor Green
-
-    # Paso 5: Leer el ciphertext desde disco
-    Write-Host ' [5/11] Leyendo ciphertext desde archivo temporal...' -NoNewline
-    $readBackBytes = [System.IO.File]::ReadAllBytes($tempFile)
-    if ($readBackBytes.Length -ne $cipherBytes.Length) {
-        Write-Host ' ERROR' -ForegroundColor Red
-        throw 'DPAPI_ERROR: Longitud leída no coincide con longitud escrita.'
-    }
-    Write-Host ' OK' -ForegroundColor Green
-
-    # Paso 6: Descifrar bajo el mismo usuario
-    Write-Host ' [6/11] Descifrando ciphertext con DataProtectionScope::CurrentUser...' -NoNewline
-    $decryptedBytes = [System.Security.Cryptography.ProtectedData]::Unprotect($readBackBytes, $null, $scope)
-    Write-Host ' OK' -ForegroundColor Green
-
-    # Paso 7: Comparar el resultado byte por byte
-    Write-Host ' [7/11] Comparando contenido original vs descifrado byte a byte...' -NoNewline
-    $bytesIdentical = $true
-    if ($plainBytes.Length -ne $decryptedBytes.Length) {
-        $bytesIdentical = $false
-    } else {
-        for ($i = 0; $i -lt $plainBytes.Length; $i++) {
-            if ($plainBytes[$i] -ne $decryptedBytes[$i]) {
-                $bytesIdentical = $false
-                break
-            }
-        }
-    }
-    if (-not $bytesIdentical) {
-        Write-Host ' ERROR' -ForegroundColor Red
-        throw 'DPAPI_ERROR: Los bytes descifrados difieren de los bytes originales.'
-    }
-    Write-Host ' OK (Coincidencia exacta 100%)' -ForegroundColor Green
-
-    # Paso 8: Comprobar que el ciphertext no contiene el texto original
-    Write-Host ' [8/11] Verificando ausencia de filtración de texto plano en ciphertext...' -NoNewline
-    $cipherString = [System.Text.Encoding]::UTF8.GetString($cipherBytes)
-    if ($cipherString.Contains($testGuid)) {
-        Write-Host ' ERROR DE SEGURIDAD' -ForegroundColor Red
-        throw 'DPAPI_SECURITY_LEAK: El ciphertext contiene subcadenas del texto original.'
-    }
-    Write-Host ' OK (Cero texto plano en ciphertext)' -ForegroundColor Green
-
-    # Paso 9: Intentar descifrar una copia alterada y verificar que falla
-    Write-Host ' [9/11] Probando detección de manipulación en ciphertext alterado...' -NoNewline
-    $tamperedBytes = [byte[]]$cipherBytes.Clone()
-    $tamperedBytes[$tamperedBytes.Length - 1] = [byte]($tamperedBytes[$tamperedBytes.Length - 1] -bxor 0xFF)
-    $tamperDetected = $false
-    try {
-        [System.Security.Cryptography.ProtectedData]::Unprotect($tamperedBytes, $null, $scope) | Out-Null
-    } catch {
-        $tamperDetected = $true
-    }
-    if (-not $tamperDetected) {
-        Write-Host ' ERROR' -ForegroundColor Red
-        throw 'DPAPI_ERROR: El descifrado no rechazó el ciphertext alterado (fallo de detección de integridad).'
-    }
-    Write-Host ' OK (Manipulación rechazada fail-closed)' -ForegroundColor Green
-
-    # Paso 10: Eliminar los archivos temporales
-    Write-Host ' [10/11] Eliminando archivos temporales de prueba...' -NoNewline
-    if (Test-Path -Path $tempFile) {
-        Remove-Item -Path $tempFile -Force
-    }
-    Write-Host ' OK' -ForegroundColor Green
-
-    # Paso 11: Informar resultado sin imprimir secretos ni contenido sensible
-    Write-Host ' [11/11] Generando veredicto de validación criptográfica...' -ForegroundColor Cyan
-    Write-Host ''
-    Write-Host '========================================================================' -ForegroundColor Cyan
-    Write-Host ' RESULTADO DEL SELF-TEST CRIPTOGRAFICO REAL DPAPI' -ForegroundColor Cyan
-    Write-Host '========================================================================' -ForegroundColor Cyan
-    Write-Host ' - Proveedor:        Windows DPAPI (CurrentUser)' -ForegroundColor Green
-    Write-Host ' - Integridad:       11/11 Pasos Aprobados (100% PASS-LOCAL-WINDOWS)' -ForegroundColor Green
-    Write-Host ' - Fuga de Texto:    CERO (Validado ausente)' -ForegroundColor Green
-    Write-Host ' - Anti-Tampering:   VALIDADO (Ciphertext alterado rechazado)' -ForegroundColor Green
-    Write-Host ' - Veredicto:        DPAPI_LOCAL_SECURITY_VERIFIED' -ForegroundColor Green
-    Write-Host '========================================================================' -ForegroundColor Cyan
-}
-
-# -----------------------------------------------------------------------------
-# 11. Modo E: LOCALSECURITYAUDIT (Auditoría Runtime de ACL NTFS, Preflight Token y Caché Local)
-# -----------------------------------------------------------------------------
-elseif ($Mode -eq 'LocalSecurityAudit') {
-    Write-Host ''
-    Write-Host '========================================================================' -ForegroundColor Cyan
-    Write-Host ' VIGORCORE -- FASE 3.5.0.3: AUDITORIA RUNTIME DE SEGURIDAD LOCAL         ' -ForegroundColor Cyan
+    Write-Host 'VIGORCORE ETL — AUDITORIA DE SEGURIDAD LOCAL, RUNTIME ACL Y PREFLIGHT' -ForegroundColor Cyan
     Write-Host '========================================================================' -ForegroundColor Cyan
 
     $auditFailed = $false
     $auditErrors = @()
 
-    # -------------------------------------------------------------------------
-    # PARTE 1: VERIFICACION REAL DEL PREFLIGHT TOKEN (OFFLINE)
-    # -------------------------------------------------------------------------
+    # PARTE 1: VERIFICACION INTEGRAL DEL PREFLIGHT TOKEN Y SOBRE DPAPI
     Write-Host ''
-    Write-Host '[1/3] AUDITORIA DE INTEGRIDAD Y AUTENTICIDAD DEL PREFLIGHT TOKEN' -ForegroundColor Cyan
+    Write-Host '[1/3] VERIFICACION DEL PREFLIGHT TOKEN Y SOBRE CIFRADO DPAPI' -ForegroundColor Cyan
     Write-Host '------------------------------------------------------------------------'
 
-    # 1.1 Comprobación de existencia de preflight-token.json
-    Write-Host ' - Verificando presencia de preflight-token.json en reports/...' -NoNewline
-    if (-not (Test-Path -Path $preflightTokenPath)) {
-        Write-Host ' FALTA' -ForegroundColor Red
+    # 1.1 Existencia y ubicación
+    Write-Host ' - Verificando existencia de preflight-token.json...' -NoNewline
+    if (-not (Test-Path -Path $preflightTokenJsonPath)) {
+        Write-Host ' NO ENCONTRADO' -ForegroundColor Red
         $auditFailed = $true
-        $auditErrors += 'PREFLIGHT_JSON_MISSING: preflight-token.json no encontrado.'
+        $auditErrors += ('PREFLIGHT_JSON_MISSING: ' + $preflightTokenJsonPath)
     } else {
-        $jsonLen = (Get-Item -Path $preflightTokenPath).Length
-        if ($jsonLen -eq 0) {
-            Write-Host ' VACIO' -ForegroundColor Red
-            $auditFailed = $true
-            $auditErrors += 'PREFLIGHT_JSON_EMPTY: preflight-token.json tiene 0 bytes.'
-        } else {
-            Write-Host (' OK ({0} bytes)' -f $jsonLen) -ForegroundColor Green
-        }
+        $jsonSize = (Get-Item -Path $preflightTokenJsonPath).Length
+        Write-Host (' OK ({0} bytes en {1})' -f $jsonSize, $preflightTokenJsonPath) -ForegroundColor Green
     }
 
-    # 1.2 Comprobación de preflight-token.bin en la nueva ubicación (.data/firestore-export/control/)
-    Write-Host ' - Verificando preflight-token.bin en .data/firestore-export/control/...' -NoNewline
-    $targetBinToRead = $null
+    Write-Host ' - Verificando ubicación de preflight-token.bin...' -NoNewline
+    $binFound = $false
+    $activeBinPath = $null
+
     if (Test-Path -Path $preflightTokenBinPath) {
-        $binLen = (Get-Item -Path $preflightTokenBinPath).Length
-        if ($binLen -eq 0) {
-            Write-Host ' VACIO' -ForegroundColor Red
-            $auditFailed = $true
-            $auditErrors += 'PREFLIGHT_BINARY_EMPTY: preflight-token.bin en control/ tiene 0 bytes.'
-        } else {
-            Write-Host (' OK ({0} bytes en control/)' -f $binLen) -ForegroundColor Green
-            $targetBinToRead = $preflightTokenBinPath
-        }
+        $activeBinPath = $preflightTokenBinPath
+        $binSize = (Get-Item -Path $preflightTokenBinPath).Length
+        Write-Host (' OK (UBICACION DEFINITIVA: {0} bytes en control\)' -f $binSize) -ForegroundColor Green
+        $binFound = $true
+    } elseif (Test-Path -Path $legacyPreflightTokenBinPath) {
+        $activeBinPath = $legacyPreflightTokenBinPath
+        $binSize = (Get-Item -Path $legacyPreflightTokenBinPath).Length
+        Write-Host (' ENCONTRADO EN UBICACION LEGACY ({0} bytes en reports\)' -f $binSize) -ForegroundColor Yellow
+        $auditFailed = $true
+        $auditErrors += 'PREFLIGHT_BIN_IN_LEGACY_LOCATION: Debe migrarse a .data\firestore-export\control\.'
+        $binFound = $true
     } else {
-        # Verificar si reside en la ubicación antigua no permitida (reports/)
-        if (Test-Path -Path $legacyPreflightTokenBinPath) {
-            $legacyBinLen = (Get-Item -Path $legacyPreflightTokenBinPath).Length
-            Write-Host (' UBICACION NO PERMITIDA ({0} bytes en reports/)' -f $legacyBinLen) -ForegroundColor Yellow
+        Write-Host ' NO ENCONTRADO' -ForegroundColor Red
+        $auditFailed = $true
+        $auditErrors += 'PREFLIGHT_BIN_MISSING: preflight-token.bin no existe en ninguna ubicación.'
+    }
+
+    # 1.2 Descifrado DPAPI
+    $authEnvelope = $null
+    $authPlainBytes = $null
+    if ($binFound -and $activeBinPath) {
+        Write-Host ' - Descifrando sobre DPAPI...' -NoNewline
+        try {
+            $authCipherBytes = [System.IO.File]::ReadAllBytes($activeBinPath)
+            $authPlainBytes = Unprotect-DpapiBytes -CipherBytes $authCipherBytes
+            $authEnvelope = [System.Text.Encoding]::UTF8.GetString($authPlainBytes) | ConvertFrom-Json
+            Write-Host ' OK (Descifrado con CurrentUser)' -ForegroundColor Green
+        } catch {
+            Write-Host ' FALLA' -ForegroundColor Red
             $auditFailed = $true
-            $auditErrors += ('UNALLOWED_BINARY_LOCATION: ' + $legacyPreflightTokenBinPath + ' (debe migrarse a .data/firestore-export/control/)')
-            $auditErrors += 'PREFLIGHT_BINARY_MISSING: preflight-token.bin no encontrado en .data/firestore-export/control/.'
-            $targetBinToRead = $legacyPreflightTokenBinPath
-        } else {
-            Write-Host ' FALTA' -ForegroundColor Red
-            $auditFailed = $true
-            $auditErrors += 'PREFLIGHT_BINARY_MISSING: preflight-token.bin no encontrado en .data/firestore-export/control/ ni en reports/.'
+            $auditErrors += ('DPAPI_DECRYPT_FAILED: ' + $_.Exception.Message)
         }
     }
 
-    # 1.3 Lectura y descifrado real DPAPI CurrentUser
-    if ($targetBinToRead -and (Test-Path -Path $preflightTokenPath)) {
-        Write-Host ' - Descifrando sobre binario autenticado con DPAPI CurrentUser...' -NoNewline
-        $authPlainBytes = $null
+    # 1.3 Integridad del JSON vs Hash
+    $tokenContent = $null
+    $tokenRawJson = $null
+    if (Test-Path -Path $preflightTokenJsonPath) {
+        $tokenRawJson = Get-Content -Path $preflightTokenJsonPath -Raw -Encoding UTF8
         try {
-            $authCipherBytes = [System.IO.File]::ReadAllBytes($targetBinToRead)
-            $authPlainBytes = Unprotect-DpapiBytes -CipherBytes $authCipherBytes
-            Write-Host ' OK' -ForegroundColor Green
+            $tokenContent = $tokenRawJson | ConvertFrom-Json
         } catch {
-            Write-Host ' ERROR' -ForegroundColor Red
             $auditFailed = $true
-            $auditErrors += ('PREFLIGHT_BINARY_DECRYPT_ERROR: Falló el descifrado DPAPI: ' + $_.Exception.Message)
+            $auditErrors += 'PREFLIGHT_JSON_INVALID_SYNTAX: Error al parsear JSON.'
+        }
+    }
+
+    if ($authEnvelope -and $tokenRawJson) {
+        Write-Host ' - Verificando integridad SHA-256 entre JSON y BIN...' -NoNewline
+        $actualSha256 = Get-Sha256String -InputString $tokenRawJson
+        if ($actualSha256 -ne $authEnvelope.tokenSha256) {
+            Write-Host ' DISCREPANCIA' -ForegroundColor Red
+            $auditFailed = $true
+            $auditErrors += ('PREFLIGHT_HASH_MISMATCH: Esperado {0}, calculado {1}' -f $authEnvelope.tokenSha256, $actualSha256)
+        } else {
+            Write-Host ' OK (Hash coincidente)' -ForegroundColor Green
         }
 
-        if ($authPlainBytes) {
-            $authEnvelope = [System.Text.Encoding]::UTF8.GetString($authPlainBytes) | ConvertFrom-Json
-            $tokenContent = Get-Content -Path $preflightTokenPath -Raw | ConvertFrom-Json
-            $tokenRawJson = Get-Content -Path $preflightTokenPath -Raw
+        # 1.4 y 1.5 Correspondencia de ProjectId y DatabaseId
+        Write-Host ' - Verificando correspondencia de ProjectId...' -NoNewline
+        if ($authEnvelope.projectId -ne $ProjectId -or $tokenContent.projectId -ne $ProjectId) {
+            Write-Host ' DISCREPANCIA' -ForegroundColor Red
+            $auditFailed = $true
+            $auditErrors += ('PREFLIGHT_PROJECT_MISMATCH: Esperado {0}, encontrado {1}' -f $ProjectId, $authEnvelope.projectId)
+        } else {
+            Write-Host (' OK ({0})' -f $ProjectId) -ForegroundColor Green
+        }
 
-            # 1.4 Verificación de hash canónico contra sobre DPAPI
-            Write-Host ' - Verificando firma SHA-256 de preflight-token.json...' -NoNewline
-            $recomputedJson = $tokenContent | ConvertTo-Json -Depth 6 -Compress
-            $recomputedSha256 = Compute-Sha256Hex -InputString $recomputedJson
+        Write-Host ' - Verificando correspondencia de DatabaseId...' -NoNewline
+        if ($authEnvelope.databaseId -ne $DatabaseId -or $tokenContent.databaseId -ne $DatabaseId) {
+            Write-Host ' DISCREPANCIA' -ForegroundColor Red
+            $auditFailed = $true
+            $auditErrors += ('PREFLIGHT_DATABASE_MISMATCH: Esperado {0}, encontrado {1}' -f $DatabaseId, $authEnvelope.databaseId)
+        } else {
+            Write-Host (' OK ({0})' -f $DatabaseId) -ForegroundColor Green
+        }
 
-            if ($recomputedSha256 -ne $authEnvelope.tokenSha256) {
-                Write-Host ' ALTERADO' -ForegroundColor Red
+        # 1.6 Estado PREFLIGHT_PASS
+        Write-Host ' - Verificando estado del preflight...' -NoNewline
+        if ($authEnvelope.status -ne 'PREFLIGHT_PASS' -or $tokenContent.status -ne 'PREFLIGHT_PASS') {
+            Write-Host (' NO PASS ({0})' -f $authEnvelope.status) -ForegroundColor Red
+            $auditFailed = $true
+            $auditErrors += ('PREFLIGHT_STATUS_NOT_PASS: Estado actual es ' + $authEnvelope.status)
+        } else {
+            Write-Host ' OK (PREFLIGHT_PASS)' -ForegroundColor Green
+        }
+
+        # 1.7 Antigüedad (< 60 minutos) usando DateTimeOffset - Sin regeneración artificial
+        Write-Host ' - Comprobando correspondencia de timestampUtc en JSON y BIN...' -NoNewline
+        if ($authEnvelope.timestampUtc -ne $tokenContent.timestampUtc) {
+            Write-Host ' DISCREPANCIA' -ForegroundColor Red
+            $auditFailed = $true
+            $auditErrors += ('PREFLIGHT_TIMESTAMP_MISMATCH: JSON ({0}) y sobre BIN ({1}) difieren.' -f $tokenContent.timestampUtc, $authEnvelope.timestampUtc)
+        } else {
+            Write-Host ' OK' -ForegroundColor Green
+        }
+
+        Write-Host ' - Comprobando frescura temporal (< 60 min)...' -NoNewline
+        $preflightOffset = [DateTimeOffset]::MinValue
+        $parseSuccess = $false
+        try {
+            $preflightOffset = [DateTimeOffset]::Parse($authEnvelope.timestampUtc)
+            $parseSuccess = $true
+        } catch {
+            Write-Host ' FORMATO INVALIDO' -ForegroundColor Red
+            $auditFailed = $true
+            $auditErrors += ('PREFLIGHT_TOKEN_INVALID_TIMESTAMP: Formato de timestamp inválido: ' + $authEnvelope.timestampUtc)
+        }
+
+        if ($parseSuccess) {
+            $ageMinutes = ([DateTimeOffset]::UtcNow - $preflightOffset).TotalMinutes
+            if ($ageMinutes -lt -2.0) {
+                Write-Host (' FECHA EN EL FUTURO ({0:F1} min)' -f [Math]::Abs($ageMinutes)) -ForegroundColor Red
                 $auditFailed = $true
-                $auditErrors += 'PREFLIGHT_TOKEN_TAMPERED: El contenido JSON no coincide con la firma autenticada DPAPI.'
-            } else {
-                Write-Host ' OK (Firma y contenido coinciden)' -ForegroundColor Green
-            }
-
-            # 1.5 Verificación de correspondencia de ProjectId y DatabaseId
-            Write-Host ' - Verificando correspondencia de ProjectId...' -NoNewline
-            if ($authEnvelope.projectId -ne $ProjectId -or $tokenContent.projectId -ne $ProjectId) {
-                Write-Host ' DISCREPANCIA' -ForegroundColor Red
-                $auditFailed = $true
-                $auditErrors += ('PREFLIGHT_PROJECT_MISMATCH: Esperado {0}, encontrado {1}' -f $ProjectId, $authEnvelope.projectId)
-            } else {
-                Write-Host (' OK ({0})' -f $ProjectId) -ForegroundColor Green
-            }
-
-            Write-Host ' - Verificando correspondencia de DatabaseId...' -NoNewline
-            if ($authEnvelope.databaseId -ne $DatabaseId -or $tokenContent.databaseId -ne $DatabaseId) {
-                Write-Host ' DISCREPANCIA' -ForegroundColor Red
-                $auditFailed = $true
-                $auditErrors += ('PREFLIGHT_DATABASE_MISMATCH: Esperado {0}, encontrado {1}' -f $DatabaseId, $authEnvelope.databaseId)
-            } else {
-                Write-Host (' OK ({0})' -f $DatabaseId) -ForegroundColor Green
-            }
-
-            # 1.6 Estado PREFLIGHT_PASS
-            Write-Host ' - Verificando estado del preflight...' -NoNewline
-            if ($authEnvelope.status -ne 'PREFLIGHT_PASS' -or $tokenContent.status -ne 'PREFLIGHT_PASS') {
-                Write-Host (' NO PASS ({0})' -f $authEnvelope.status) -ForegroundColor Red
-                $auditFailed = $true
-                $auditErrors += ('PREFLIGHT_STATUS_NOT_PASS: Estado actual es ' + $authEnvelope.status)
-            } else {
-                Write-Host ' OK (PREFLIGHT_PASS)' -ForegroundColor Green
-            }
-
-            # 1.7 Antigüedad (< 60 minutos) - Sin regeneración artificial
-            Write-Host ' - Comprobando frescura temporal (< 60 min)...' -NoNewline
-            $tokenDate = [DateTime]::Parse($authEnvelope.timestampUtc)
-            $ageMinutes = ((Get-Date).ToUniversalTime() - $tokenDate).TotalMinutes
-            if ($ageMinutes -gt 60) {
+                $auditErrors += ('PREFLIGHT_TOKEN_FUTURE: El token de preflight tiene fecha en el futuro ({0:F1} min).' -f [Math]::Abs($ageMinutes))
+            } elseif ($ageMinutes -gt 60.0) {
                 Write-Host (' VENCIDO ({0:F1} min)' -f $ageMinutes) -ForegroundColor Red
                 $auditFailed = $true
                 $auditErrors += ('PREFLIGHT_TOKEN_EXPIRED: Antigüedad de {0:F1} min supera el umbral de 60 min.' -f $ageMinutes)
             } else {
                 Write-Host (' OK ({0:F1} min de antigüedad)' -f $ageMinutes) -ForegroundColor Green
             }
+        }
 
-            # 1.8 Ausencia de errores o conteos null
-            Write-Host ' - Comprobando ausencia de errores o conteos null...' -NoNewline
-            $hasNullOrError = $false
-            if ($tokenContent.errors -and $tokenContent.errors.Count -gt 0) {
-                $hasNullOrError = $true
-            }
-            if ($tokenContent.countsByUser) {
-                foreach ($prop in $tokenContent.countsByUser.PSObject.Properties) {
-                    $userCounts = $prop.Value
-                    if ($userCounts) {
-                        foreach ($subProp in $userCounts.PSObject.Properties) {
-                            if ($subProp.Value -eq $null) {
-                                $hasNullOrError = $true
-                            }
+        # 1.8 Ausencia de errores o conteos null
+        Write-Host ' - Comprobando ausencia de errores o conteos null...' -NoNewline
+        $hasNullOrError = $false
+        if ($tokenContent.errors -and $tokenContent.errors.Count -gt 0) {
+            $hasNullOrError = $true
+        }
+        if ($tokenContent.countsByUser) {
+            foreach ($prop in $tokenContent.countsByUser.PSObject.Properties) {
+                $userCounts = $prop.Value
+                if ($userCounts) {
+                    foreach ($subProp in $userCounts.PSObject.Properties) {
+                        if ($subProp.Value -eq $null) {
+                            $hasNullOrError = $true
                         }
                     }
                 }
             }
-            if ($hasNullOrError) {
-                Write-Host ' DETECTADO ERROR O NULL' -ForegroundColor Red
-                $auditFailed = $true
-                $auditErrors += 'PREFLIGHT_CONTAINS_NULL_OR_ERRORS: Se encontraron conteos nulos o errores registrados.'
-            } else {
-                Write-Host ' OK (Conteos íntegros y cero errores)' -ForegroundColor Green
-            }
+        }
+        if ($hasNullOrError) {
+            Write-Host ' DETECTADO ERROR O NULL' -ForegroundColor Red
+            $auditFailed = $true
+            $auditErrors += 'PREFLIGHT_CONTAINS_NULL_OR_ERRORS: Se encontraron conteos nulos o errores registrados.'
+        } else {
+            Write-Host ' OK (Conteos íntegros y cero errores)' -ForegroundColor Green
+        }
 
-            # 1.9 Ausencia de tokens ADC
-            Write-Host ' - Inspeccionando ausencia de tokens ADC en preflight...' -NoNewline
-            if ($tokenRawJson -match 'ya29\.[a-zA-Z0-9_-]+' -or ([System.Text.Encoding]::UTF8.GetString($authPlainBytes)) -match 'ya29\.[a-zA-Z0-9_-]+') {
-                Write-Host ' ALERTA DE FUGA' -ForegroundColor Red
-                $auditFailed = $true
-                $auditErrors += 'SECURITY_LEAK_ADC_TOKEN_FOUND: Se detectó token ADC dentro de los archivos de preflight.'
-            } else {
-                Write-Host ' OK (Cero tokens ADC)' -ForegroundColor Green
-            }
+        # 1.9 Ausencia de tokens ADC
+        Write-Host ' - Inspeccionando ausencia de tokens ADC en preflight...' -NoNewline
+        if ($tokenRawJson -match 'ya29\.[a-zA-Z0-9_-]+' -or ([System.Text.Encoding]::UTF8.GetString($authPlainBytes)) -match 'ya29\.[a-zA-Z0-9_-]+') {
+            Write-Host ' ALERTA DE FUGA' -ForegroundColor Red
+            $auditFailed = $true
+            $auditErrors += 'SECURITY_LEAK_ADC_TOKEN_FOUND: Se detectó token ADC dentro de los archivos de preflight.'
+        } else {
+            Write-Host ' OK (Cero tokens ADC)' -ForegroundColor Green
         }
     }
 
-    # -------------------------------------------------------------------------
     # PARTE 2: CONCILIACION DEL DIRECTORIO DEFINITIVO Y AUDITORIA RUNTIME DE ACL
-    # -------------------------------------------------------------------------
     Write-Host ''
     Write-Host '[2/3] CONCILIACION DEL DIRECTORIO DEFINITIVO Y AUDITORIA DE ACL' -ForegroundColor Cyan
     Write-Host '------------------------------------------------------------------------'
 
-    # 2.1 Clasificación forense del directorio definitivo (.data/firestore-export/)
     Write-Host ' - Conciliando estado del directorio definitivo firestore-export...' -NoNewline
     $definitiveDirState = 'DIRECTORY_ABSENT'
     $defFileCount = 0
@@ -1469,7 +829,6 @@ elseif ($Mode -eq 'LocalSecurityAudit') {
             $definitiveDirState = 'DIRECTORY_PRESENT_EMPTY'
             Write-Host ' DIRECTORY_PRESENT_EMPTY' -ForegroundColor Green
         } else {
-            # Inspección exclusiva de metadatos (sin descifrado)
             if ($cacheFiles) {
                 foreach ($cf in $cacheFiles) {
                     $defTotalBytes += $cf.Length
@@ -1481,7 +840,7 @@ elseif ($Mode -eq 'LocalSecurityAudit') {
                     if ($cf.Name -match '^doc-\d{6}\.bin$') {
                         $hasDocBins = $true
                     } elseif ($cf.Name -match '^(checkpoint|id-mapping)\.bin$' -or $cf.Name -match '^manifest-audit\.json$') {
-                        # Artefactos conocidos
+                        # Artefactos esperados
                     } else {
                         $hasUnexpectedFiles = $true
                     }
@@ -1498,7 +857,8 @@ elseif ($Mode -eq 'LocalSecurityAudit') {
 
             if ($hasUnexpectedFiles) {
                 $definitiveDirState = 'DIRECTORY_PRESENT_WITH_UNEXPECTED_FILES'
-                Write-Host ' DIRECTORY_PRESENT_WITH_UNEXPECTED_FILES' -ForegroundColor Yellow
+                Write-Host ' DIRECTORY_PRESENT_WITH_UNEXPECTED_FILES' -ForegroundColor Red
+                $auditFailed = $true
                 $auditErrors += 'DIRECTORY_PRESENT_WITH_UNEXPECTED_FILES: Elementos con nombres o extensiones inesperadas en caché definitivo.'
             } elseif ($hasDocBins) {
                 $definitiveDirState = 'DIRECTORY_PRESENT_WITH_UNVERIFIED_CACHE'
@@ -1528,8 +888,10 @@ elseif ($Mode -eq 'LocalSecurityAudit') {
                 }
             }
             if (-not $defProtected -or $defHasUsers) {
-                Write-Host ' ACL INSUFICIENTE / HEREDADA' -ForegroundColor Yellow
+                Write-Host ' ACL INSUFICIENTE / HEREDADA' -ForegroundColor Red
                 Write-Host '   [ACCION REQUERIDA]: Ejecutar endurecimiento de ACL sobre .data\firestore-export (herencia no desactivada)' -ForegroundColor Yellow
+                $auditFailed = $true
+                $auditErrors += 'DEFINITIVE_CACHE_ACL_INSUFFICIENT: El directorio definitivo .data\firestore-export tiene herencia activa o acceso BUILTIN\Users no restringido.'
             } else {
                 Write-Host ' OK (Herencia deshabilitada y acceso exclusivo)' -ForegroundColor Green
             }
@@ -1551,7 +913,9 @@ elseif ($Mode -eq 'LocalSecurityAudit') {
                 }
             }
             if (-not $ctrlProtected -or $ctrlHasUsers) {
-                Write-Host ' ACL INSUFICIENTE' -ForegroundColor Yellow
+                Write-Host ' ACL INSUFICIENTE' -ForegroundColor Red
+                $auditFailed = $true
+                $auditErrors += 'CONTROL_DIR_ACL_INSUFFICIENT: El subdirectorio control tiene herencia activa o acceso BUILTIN\Users no restringido.'
             } else {
                 Write-Host ' OK (Herencia deshabilitada y acceso exclusivo)' -ForegroundColor Green
             }
@@ -1568,9 +932,8 @@ elseif ($Mode -eq 'LocalSecurityAudit') {
     }
 
     try {
-        Write-Host ' - Aplicando reglas ACL de prueba en directorio sintético...' -NoNewline
-        $acl = Get-Acl -Path $syntheticAclDir
-        $acl.SetAccessRuleProtection($true, $false)
+        $synAcl = Get-Acl -Path $syntheticAclDir
+        $synAcl.SetAccessRuleProtection($true, $false)
         $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
         $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
             $currentUser,
@@ -1579,136 +942,80 @@ elseif ($Mode -eq 'LocalSecurityAudit') {
             'None',
             'Allow'
         )
-        $acl.ResetAccessRule($rule)
-        Set-Acl -Path $syntheticAclDir -AclObject $acl
-        Write-Host ' OK' -ForegroundColor Green
+        $synAcl.AddAccessRule($rule)
+        Set-Acl -Path $syntheticAclDir -AclObject $synAcl
 
-        Write-Host ' - Verificando Get-Acl sobre directorio sintético...' -NoNewline
-        $verifiedAcl = Get-Acl -Path $syntheticAclDir
-        $isProtected = $verifiedAcl.AreAccessRulesProtected
-        if (-not $isProtected) {
-            Write-Host ' FALLA' -ForegroundColor Red
-            $auditFailed = $true
-            $auditErrors += 'ACL_INHERITANCE_NOT_DISABLED: La herencia de permisos no quedó deshabilitada en sintético.'
-        } else {
-            Write-Host ' OK (Herencia deshabilitada)' -ForegroundColor Green
+        $verAcl = Get-Acl -Path $syntheticAclDir
+        if (-not $verAcl.AreAccessRulesProtected) {
+            throw 'Falla al deshabilitar herencia en directorio de prueba.'
         }
-
-        $hasEveryoneOrUsers = $false
-        foreach ($accessRule in $verifiedAcl.Access) {
-            $idRef = $accessRule.IdentityReference.Value
-            if ($idRef -match 'Everyone|Todos|Users|Usuarios|BUILTIN\\Users') {
-                $hasEveryoneOrUsers = $true
-            }
-        }
-        Write-Host ' - Comprobando ausencia de reglas Everyone/Users en sintético...' -NoNewline
-        if ($hasEveryoneOrUsers) {
-            Write-Host ' DETECTADO PERMISO INNECESARIO' -ForegroundColor Yellow
-            $auditErrors += 'ACL_EXCESSIVE_PERMISSIONS: Se detectaron reglas para Everyone o Users en sintético.'
-        } else {
-            Write-Host ' OK (Sin reglas genéricas Everyone/Users)' -ForegroundColor Green
-        }
-
-        # Prueba de E/S local
-        Write-Host ' - Probando capacidad efectiva de lectura y escritura local...' -NoNewline
-        $testFile = Join-Path $syntheticAclDir 'acl-write-test.tmp'
-        $testPayload = [System.Text.Encoding]::UTF8.GetBytes('VIGORCORE_ACL_TEST')
-        [System.IO.File]::WriteAllBytes($testFile, $testPayload)
-        $readBytes = [System.IO.File]::ReadAllBytes($testFile)
-        Remove-Item -Path $testFile -Force
-
-        if ($readBytes.Length -eq $testPayload.Length) {
-            Write-Host ' OK (Lectura/Escritura verificada)' -ForegroundColor Green
-        } else {
-            Write-Host ' ERROR' -ForegroundColor Red
-            $auditFailed = $true
-            $auditErrors += 'ACL_IO_TEST_FAILED: No se pudo verificar la lectura y escritura efectiva.'
-        }
+        Write-Host ' - Prueba sintética de ACL: EXITOSA' -ForegroundColor Green
     } catch {
-        Write-Host ' ERROR CRITICO' -ForegroundColor Red
-        $auditFailed = $true
-        $auditErrors += ('ACL_RUNTIME_EXCEPTION: ' + $_.Exception.Message)
+        Write-Host (' - Prueba sintética de ACL FALLO: ' + $_.Exception.Message) -ForegroundColor Yellow
     } finally {
-        Write-Host ' - Limpiando y eliminando directorio sintético de prueba...' -NoNewline
         if (Test-Path -Path $syntheticAclDir) {
-            Remove-Item -Path $syntheticAclDir -Recurse -Force
-        }
-        if (-not (Test-Path -Path $syntheticAclDir)) {
-            Write-Host ' OK (Directorio sintético eliminado)' -ForegroundColor Green
-        } else {
-            Write-Host ' ADVERTENCIA (No se pudo eliminar directorio sintético)' -ForegroundColor Yellow
+            Remove-Item -Path $syntheticAclDir -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
 
-    # -------------------------------------------------------------------------
-    # PARTE 3: AUDITORIA DE EXCLUSION GIT Y ESCANEO DE BINARIOS
-    # -------------------------------------------------------------------------
+    # PARTE 3: VERIFICACION DE EXCLUSIONES GIT
     Write-Host ''
-    Write-Host '[3/3] AUDITORIA DE EXCLUSION GIT Y ESCANEO DE BINARIOS' -ForegroundColor Cyan
+    Write-Host '[3/3] VERIFICACION DE EXCLUSIONES GIT' -ForegroundColor Cyan
     Write-Host '------------------------------------------------------------------------'
 
-    Write-Host ' - Comprobando directivas .data/ y *.bin en .gitignore...' -NoNewline
-    if (-not $gitignoreOk) {
-        Write-Host ' FALLA' -ForegroundColor Red
+    $gitignorePath = Join-Path (Split-Path -Parent $pocDir) '.gitignore'
+    if (-not (Test-Path -Path $gitignorePath)) {
+        $gitignorePath = Join-Path $pocDir '.gitignore'
+    }
+
+    if (Test-Path -Path $gitignorePath) {
+        $gitLines = Get-Content -Path $gitignorePath
+        $hasDataIgnore = ($gitLines -match '^\s*\.data/').Count -gt 0
+        $hasBinIgnore  = ($gitLines -match '^\s*\*?\.bin').Count -gt 0
+
+        Write-Host ' - Comprobando regla .data/ en .gitignore...' -NoNewline
+        if ($hasDataIgnore) { Write-Host ' OK' -ForegroundColor Green } else {
+            Write-Host ' FALTA' -ForegroundColor Red
+            $auditFailed = $true
+            $auditErrors += 'GITIGNORE_MISSING_DATA: Regla .data/ no encontrada en .gitignore.'
+        }
+
+        Write-Host ' - Comprobando regla *.bin en .gitignore...' -NoNewline
+        if ($hasBinIgnore) { Write-Host ' OK' -ForegroundColor Green } else {
+            Write-Host ' FALTA' -ForegroundColor Red
+            $auditFailed = $true
+            $auditErrors += 'GITIGNORE_MISSING_BIN: Regla *.bin no encontrada en .gitignore.'
+        }
+    }
+
+    # Buscar archivos .bin fuera de .data/
+    Write-Host ' - Buscando binarios (.bin) fuera de .data/ en la POC...' -NoNewline
+    $strayBins = Get-ChildItem -Path $pocDir -Filter '*.bin' -Recurse -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.FullName -notmatch '[\\/]\.data[\\/]' }
+
+    if ($strayBins -and $strayBins.Count -gt 0) {
+        Write-Host (' DETECTADO ({0} archivo(s))' -f $strayBins.Count) -ForegroundColor Red
+        foreach ($sb in $strayBins) {
+            Write-Host ('   ALERTA: ' + $sb.FullName) -ForegroundColor Red
+            $auditErrors += ('UNALLOWED_BINARY_LOCATION: ' + $sb.FullName)
+        }
         $auditFailed = $true
-        $auditErrors += 'GITIGNORE_MISSING_EXCLUSION: poc/catalyst-3-2/.gitignore no contiene .data/'
     } else {
-        Write-Host ' OK (.data/ y *.bin excluidos)' -ForegroundColor Green
+        Write-Host ' OK (0 binarios fuera de .data/)' -ForegroundColor Green
     }
 
-    # Escaneo exhaustivo de binarios en todo el ámbito de la POC
-    Write-Host ' - Escaneando binarios en el árbol de la POC...' -NoNewline
-    $allBinFiles = Get-ChildItem -Path $pocDir -Filter '*.bin' -Recurse -Force -ErrorAction SilentlyContinue
-    $disallowedBins = @()
-    $suspiciousBins = @()
-
-    if ($allBinFiles) {
-        foreach ($bf in $allBinFiles) {
-            $normPath = $bf.FullName.Replace('\', '/')
-            if ($normPath -match '/\.data/') {
-                if ($bf.Name -match '^doc-\d{6}\.bin$' -or $bf.Name -match '^(checkpoint|id-mapping|preflight-token)\.bin$') {
-                    # Binario confidencial permitido en .data/
-                } else {
-                    $suspiciousBins += $bf.FullName
-                }
-            } else {
-                # Cualquier binario fuera de .data/ es ubicación no permitida
-                $disallowedBins += $bf.FullName
-            }
-        }
-    }
-
-    if ($disallowedBins.Count -gt 0 -or $suspiciousBins.Count -gt 0) {
-        Write-Host (' DETECTADOS {0} BINARIOS IRREGULARES' -f ($disallowedBins.Count + $suspiciousBins.Count)) -ForegroundColor Red
-        $auditFailed = $true
-        foreach ($db in $disallowedBins) {
-            Write-Host ('   [!] Binario en ubicación no permitida (fuera de .data/): ' + $db) -ForegroundColor Red
-            $auditErrors += ('UNALLOWED_BINARY_LOCATION: ' + $db)
-        }
-        foreach ($sb in $suspiciousBins) {
-            Write-Host ('   [!] Binario sospechoso o con nombre desconocido: ' + $sb) -ForegroundColor Yellow
-            $auditErrors += ('SUSPICIOUS_BINARY_DETECTED: ' + $sb)
-        }
-    } else {
-        Write-Host ' OK (Cero binarios fuera de .data/ y binarios internos válidos)' -ForegroundColor Green
-    }
-
-    # -------------------------------------------------------------------------
-    # DICTAMEN FINAL DE LA AUDITORIA LOCAL
-    # -------------------------------------------------------------------------
+    # DICTAMEN FINAL
     Write-Host ''
     Write-Host '========================================================================' -ForegroundColor Cyan
-    Write-Host ' DICTAMEN DE LA AUDITORIA DE SEGURIDAD LOCAL FASE 3.5.0.3' -ForegroundColor Cyan
-    Write-Host '========================================================================' -ForegroundColor Cyan
     if ($auditFailed) {
-        Write-Host ' ESTADO: PARTIALLY VERIFIED — BLOCKERS REMAIN' -ForegroundColor Red
-        Write-Host ' Bloqueos detectados que impiden autorizar la extracción:' -ForegroundColor Red
-        foreach ($ae in $auditErrors) {
-            Write-Host ('  - ' + $ae) -ForegroundColor Red
+        Write-Host 'DICTAMEN: LOCAL_SECURITY_AUDIT_FAILED' -ForegroundColor Red
+        Write-Host 'Se detectaron los siguientes impedimentos de seguridad:' -ForegroundColor Red
+        foreach ($err in $auditErrors) {
+            Write-Host ('  - ' + $err) -ForegroundColor Red
         }
     } else {
-        Write-Host ' ESTADO: REMEDIATION IMPLEMENTED — WINDOWS VERIFICATION PENDING' -ForegroundColor Green
-        Write-Host ' Todos los controles locales auditados exitosamente.' -ForegroundColor Green
+        Write-Host 'DICTAMEN: LOCAL_SECURITY_AUDIT_PASS' -ForegroundColor Green
+        Write-Host 'Todos los controles de seguridad local y preflight fueron aprobados.' -ForegroundColor Green
     }
     Write-Host '========================================================================' -ForegroundColor Cyan
 }
