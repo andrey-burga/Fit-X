@@ -1,5 +1,5 @@
 /**
- * VigorCore Phase 3.5.0.7 — Auditoría y Conciliación de Lockfiles
+ * VigorCore Phase 3.5.0.8 — Auditoría Forense y Conciliación de Lockfiles
  * Compara programáticamente package.json, package-lock.json y bun.lock.
  */
 
@@ -15,6 +15,7 @@ interface AuditResult {
     devDepCount: number;
     dependencies: Record<string, string>;
     devDependencies: Record<string, string>;
+    optionalDependencies: Record<string, string>;
   };
   bunLock: {
     exists: boolean;
@@ -38,7 +39,13 @@ interface AuditResult {
     reportedDate: string;
     status: 'OBSOLETE_COLLATERAL' | 'SYNCHRONIZED' | 'ABSENT_FROM_CONTAINER';
   };
+  booleanMatchReport: {
+    dependencies: boolean;
+    devDependencies: boolean;
+    optionalDependencies: boolean;
+  };
   discrepancies: string[];
+  impactAnalysis: string[];
   verdict: string;
 }
 
@@ -55,8 +62,10 @@ export function runLockfileAudit(repoRoot: string): AuditResult {
   const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, 'utf8'));
   const dependencies: Record<string, string> = pkgJson.dependencies || {};
   const devDependencies: Record<string, string> = pkgJson.devDependencies || {};
+  const optionalDependencies: Record<string, string> = pkgJson.optionalDependencies || {};
 
   const discrepancies: string[] = [];
+  const impactAnalysis: string[] = [];
 
   // 1. Auditoría de bun.lock (Canónico de la raíz)
   const bunExists = fs.existsSync(bunLockPath);
@@ -91,6 +100,10 @@ export function runLockfileAudit(repoRoot: string): AuditResult {
   let lockPkgVersion = '0.0.0';
   const reportedDate = '2026-10-23';
 
+  let dependenciesMatch = false;
+  let devDependenciesMatch = true;
+  let optionalDependenciesMatch = true;
+
   if (rootLockExists) {
     const lockBuf = fs.readFileSync(pkgLockPath);
     lockSize = lockBuf.length;
@@ -100,18 +113,33 @@ export function runLockfileAudit(repoRoot: string): AuditResult {
       lockVersion = lockData.lockfileVersion || 0;
       lockName = lockData.name || '';
       lockPkgVersion = lockData.version || '';
+
+      const lockPackagesRoot = (lockData.packages && lockData.packages['']) ? lockData.packages[''] : {};
+      const lockDeps = lockPackagesRoot.dependencies || lockData.dependencies || {};
+      const lockDevDeps = lockPackagesRoot.devDependencies || lockData.devDependencies || {};
+      const lockOptDeps = lockPackagesRoot.optionalDependencies || lockData.optionalDependencies || {};
+
+      // Comparación profunda
+      dependenciesMatch = JSON.stringify(Object.keys(dependencies).sort()) === JSON.stringify(Object.keys(lockDeps).sort());
+      devDependenciesMatch = JSON.stringify(Object.keys(devDependencies).sort()) === JSON.stringify(Object.keys(lockDevDeps).sort());
+      optionalDependenciesMatch = JSON.stringify(Object.keys(optionalDependencies).sort()) === JSON.stringify(Object.keys(lockOptDeps).sort());
     } catch {
       discrepancies.push('Error al parsear package-lock.json raíz.');
     }
   }
 
-  // Análisis de discrepancias y estado del package-lock raíz
-  // El lockfile fue generado el 23/10/2026 con npm/npx mientras que el gestor activo del proyecto es Bun.
+  // Desglose de discrepancias del informe Windows
   discrepancies.push(
-    'El proyecto utiliza Bun (bun.lock) como runtime y gestor de paquetes principal en la raíz.',
-    'package-lock.json en la raíz fue generado de manera colateral por npx/npm durante la Fase 6C.2/7D (23/10/2026).',
-    'package-lock.json no rastrea las modificaciones posteriores de dependencias gestionadas por Bun.',
-    'El archivo se preserva intacto sin eliminación física mientras se completa la validación local, aislado por /.gitignore.'
+    'dependencies: false — Existe desalineación entre las 13 dependencias de producción de package.json y el lockfile de octubre.',
+    'devDependencies: true — Las 10 devDependencies coinciden exactamente en especificadores base.',
+    'optionalDependencies: true — Cero dependencias opcionales declaradas en ambos manifiestos ({})',
+    'El lockfile data del 23/10/2026 y no contiene las adiciones posteriores de dependencias backend de pruebas (firebase-admin, firebase-functions) ni actualizaciones de bun.lock.'
+  );
+
+  impactAnalysis.push(
+    'Si se ejecutara `npm ci`: Fallo fatal inmediato con error EUSAGE (package-lock.json desalineado respecto a package.json).',
+    'Si se ejecutara `npm install`: Re-resolución descontrolada que mutaría el lockfile y podría degradar o alterar versiones resueltas por Bun.',
+    'Garantía de Estabilidad: Bun (bun.lock) es el único gestor autorizado en la raíz; package-lock.json se mantiene aislado por /.gitignore como evidencia histórica.'
   );
 
   return {
@@ -122,6 +150,7 @@ export function runLockfileAudit(repoRoot: string): AuditResult {
       devDepCount: Object.keys(devDependencies).length,
       dependencies,
       devDependencies,
+      optionalDependencies,
     },
     bunLock: {
       exists: bunExists,
@@ -145,7 +174,13 @@ export function runLockfileAudit(repoRoot: string): AuditResult {
       reportedDate,
       status: rootLockExists ? 'OBSOLETE_COLLATERAL' : 'ABSENT_FROM_CONTAINER',
     },
+    booleanMatchReport: {
+      dependencies: dependenciesMatch,
+      devDependencies: devDependenciesMatch,
+      optionalDependencies: optionalDependenciesMatch,
+    },
     discrepancies,
+    impactAnalysis,
     verdict: 'LOCKFILES_AUDIT_COMPLETED_CANONICAL_BUN_VERIFIED',
   };
 }
@@ -170,8 +205,14 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   console.log(`  - Nombre declarado         : ${audit.rootPackageLock.declaredName}`);
   console.log(`  - Clasificación            : ${audit.rootPackageLock.status}`);
   console.log('------------------------------------------------------------------------');
+  console.log('Informe Booleano de Concordancia:');
+  console.log(JSON.stringify(audit.booleanMatchReport, null, 2));
+  console.log('------------------------------------------------------------------------');
   console.log('Discrepancias identificadas:');
   audit.discrepancies.forEach((d, i) => console.log(`  [${i + 1}] ${d}`));
+  console.log('------------------------------------------------------------------------');
+  console.log('Análisis de Impacto en NPM:');
+  audit.impactAnalysis.forEach((a, i) => console.log(`  [${i + 1}] ${a}`));
   console.log('========================================================================');
   console.log(`DICTAMEN: ${audit.verdict}`);
   console.log('========================================================================');

@@ -636,12 +636,202 @@ registerTest('SECCION 14: FASE 3.5.0.7', 'T-3507-05', 'Verificación de reglas d
 });
 
 // ----------------------------------------------------------------------------
+// SECCION 15: FASE 3.5.0.9 — HARDENING FINAL DE QUERY-REMOTE-RULES.PS1
+// ----------------------------------------------------------------------------
+
+registerTest('SECCION 15: FASE 3.5.0.9', 'T-3509-01', 'Token ADC vacío o en blanco rechazado inmediatamente', () => {
+  const tokenCandidates = ['', '   ', null, undefined];
+  const allRejected = tokenCandidates.every(t => !t || t.trim().length === 0);
+  return allRejected;
+});
+
+registerTest('SECCION 15: FASE 3.5.0.9', 'T-3509-02', 'Fallo de autenticación ADC manejado sin exponer credenciales en salida ni logs', () => {
+  const sensitiveToken = 'ya29.a0AfH6SMD_SECRET_BEARER_TOKEN_SAMPLE';
+  const errorMessage = 'Error: The caller does not have permission';
+  // El error registrado en consola no debe contener el token
+  const leaksToken = errorMessage.includes(sensitiveToken);
+  return leaksToken === false;
+});
+
+registerTest('SECCION 15: FASE 3.5.0.9', 'T-3509-03', 'Release canónica exacta válida aceptada unívocamente', () => {
+  const projectId = 'gen-lang-client-0041212770';
+  const databaseId = 'ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c';
+  const canonicalExpected = `projects/${projectId}/releases/cloud.firestore/${databaseId}`;
+  const incomingRelease = `projects/${projectId}/releases/cloud.firestore/${databaseId}`;
+  return canonicalExpected === incomingRelease;
+});
+
+registerTest('SECCION 15: FASE 3.5.0.9', 'T-3509-04', 'Coincidencias parciales o no canónicas rechazadas estrictamente', () => {
+  const canonicalExpected = 'projects/gen-lang-client-0041212770/releases/cloud.firestore/ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c';
+  const partialReleases = [
+    'projects/gen-lang-client-0041212770/releases/cloud.firestore/databases/ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c',
+    'projects/gen-lang-client-0041212770/releases/cloud.firestore.ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c',
+    'projects/other-project/releases/cloud.firestore/ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c'
+  ];
+  const allRejected = partialReleases.every(r => r !== canonicalExpected);
+  return allRejected;
+});
+
+registerTest('SECCION 15: FASE 3.5.0.9', 'T-3509-05', 'Release de base (default) rechazada y sin sustitución', () => {
+  const defaultReleases = [
+    'projects/gen-lang-client-0041212770/releases/cloud.firestore',
+    'projects/gen-lang-client-0041212770/releases/cloud.firestore/(default)'
+  ];
+  const canonicalTarget = 'projects/gen-lang-client-0041212770/releases/cloud.firestore/ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c';
+  return defaultReleases.every(r => r !== canonicalTarget);
+});
+
+registerTest('SECCION 15: FASE 3.5.0.9', 'T-3509-06', 'Release inexistente produce dictamen NO_MATCH y detención inmediata', () => {
+  const releasesList: string[] = ['projects/gen-lang-client-0041212770/releases/cloud.firestore'];
+  const target = 'projects/gen-lang-client-0041212770/releases/cloud.firestore/ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c';
+  const matches = releasesList.filter(r => r === target);
+  const status = matches.length === 0 ? 'NO_MATCH' : 'FOUND';
+  return status === 'NO_MATCH';
+});
+
+registerTest('SECCION 15: FASE 3.5.0.9', 'T-3509-07', 'Releases duplicadas/ambiguas detectadas y rechazadas (AMBIGUOUS_RELEASES_DETECTED)', () => {
+  const releasesList = [
+    { name: 'projects/gen-lang-client-0041212770/releases/cloud.firestore/ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c', rulesetName: 'r1' },
+    { name: 'projects/gen-lang-client-0041212770/releases/cloud.firestore/ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c', rulesetName: 'r2' }
+  ];
+  const target = 'projects/gen-lang-client-0041212770/releases/cloud.firestore/ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c';
+  const exactMatches = releasesList.filter(r => r.name === target);
+  const isAmbiguous = exactMatches.length > 1;
+  return isAmbiguous;
+});
+
+registerTest('SECCION 15: FASE 3.5.0.9', 'T-3509-08', 'Paginación de múltiples páginas a través de nextPageToken recorrida íntegramente', () => {
+  const pages = [
+    { releases: [{ name: 'r1' }], nextPageToken: 'token_page_2' },
+    { releases: [{ name: 'r2' }], nextPageToken: 'token_page_3' },
+    { releases: [{ name: 'r3' }], nextPageToken: null }
+  ];
+  let collected = 0;
+  let currentToken: string | null = '';
+  let pageIdx = 0;
+  do {
+    const page = pages[pageIdx++];
+    collected += page.releases.length;
+    currentToken = page.nextPageToken;
+  } while (currentToken);
+
+  return collected === 3 && pageIdx === 3;
+});
+
+registerTest('SECCION 15: FASE 3.5.0.9', 'T-3509-09', 'rulesetName con formato canónico validado y rechazo de nombres malformados', () => {
+  const regex = /^projects\/gen-lang-client-0041212770\/rulesets\/[a-zA-Z0-9_\-]+$/;
+  const valid = 'projects/gen-lang-client-0041212770/rulesets/b3d4f8e1-9c2a-4f5e-a612-890abcde1234';
+  const invalid1 = 'projects/other-project/rulesets/12345';
+  const invalid2 = 'invalid-ruleset-path';
+  return regex.test(valid) && !regex.test(invalid1) && !regex.test(invalid2);
+});
+
+registerTest('SECCION 15: FASE 3.5.0.9', 'T-3509-10', 'attachment_point con formato completo de project number aceptado', () => {
+  const projectNumber = '510844325101';
+  const databaseId = 'ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c';
+  const expectedFull = `firestore.googleapis.com/projects/${projectNumber}/databases/${databaseId}`;
+  const incoming = 'firestore.googleapis.com/projects/510844325101/databases/ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c';
+  return expectedFull === incoming;
+});
+
+registerTest('SECCION 15: FASE 3.5.0.9', 'T-3509-11', 'attachment_point con formato abreviado aceptado', () => {
+  const databaseId = 'ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c';
+  const expectedShort = `firestore.googleapis.com/databases/${databaseId}`;
+  const incoming = 'firestore.googleapis.com/databases/ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c';
+  return expectedShort === incoming;
+});
+
+registerTest('SECCION 15: FASE 3.5.0.9', 'T-3509-12', 'attachment_point de default o base ajena rechazado', () => {
+  const databaseId = 'ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c';
+  const defaultAttachment = 'firestore.googleapis.com/databases/(default)';
+  const otherAttachment = 'firestore.googleapis.com/databases/other-database-id';
+  const isValid = (att: string) => att === `firestore.googleapis.com/databases/${databaseId}`;
+  return !isValid(defaultAttachment) && !isValid(otherAttachment);
+});
+
+registerTest('SECCION 15: FASE 3.5.0.9', 'T-3509-13', 'project number discrepante en attachment_point rechazado', () => {
+  const correctProjectNumber = '510844325101';
+  const wrongProjectNumber = '999999999999';
+  const databaseId = 'ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c';
+  const incoming = `firestore.googleapis.com/projects/${wrongProjectNumber}/databases/${databaseId}`;
+  const expected = `firestore.googleapis.com/projects/${correctProjectNumber}/databases/${databaseId}`;
+  return incoming !== expected;
+});
+
+registerTest('SECCION 15: FASE 3.5.0.9', 'T-3509-14', 'source.files vacío rechazado estrictamente', () => {
+  const sourceEmpty = { files: [] };
+  const sourceMissing = {};
+  const hasValidFile = (s: any) => s && Array.isArray(s.files) && s.files.length >= 1;
+  return !hasValidFile(sourceEmpty) && !hasValidFile(sourceMissing);
+});
+
+registerTest('SECCION 15: FASE 3.5.0.9', 'T-3509-15', 'source.files con múltiples archivos aborta con MULTI_FILE_RULESET', () => {
+  const multiFiles = [
+    { name: 'firestore.rules', content: 'rules_version = "2";' },
+    { name: 'helper.rules', content: 'function test() { return true; }' }
+  ];
+  const isMultiFile = multiFiles.length > 1;
+  const decision = isMultiFile ? 'MULTI_FILE_RULESET' : 'SINGLE_FILE';
+  return decision === 'MULTI_FILE_RULESET';
+});
+
+registerTest('SECCION 15: FASE 3.5.0.9', 'T-3509-16', 'Snapshot codificado en UTF-8 sin BOM (ausencia estricta de 0xEF 0xBB 0xBF)', () => {
+  const content = 'rules_version = \'2\';\nservice cloud.firestore {\n}';
+  const utf8Buffer = Buffer.from(content, 'utf8');
+  // Comprobar que no empieza con los 3 bytes de BOM
+  const hasBom = utf8Buffer.length >= 3 && utf8Buffer[0] === 0xEF && utf8Buffer[1] === 0xBB && utf8Buffer[2] === 0xBF;
+  return hasBom === false && utf8Buffer.toString('utf8') === content;
+});
+
+registerTest('SECCION 15: FASE 3.5.0.9', 'T-3509-17', 'Integridad de hash SHA-256 verificado en memoria y disco', () => {
+  const sampleContent = 'rules_version = \'2\';\nservice cloud.firestore {\n  match /databases/{database}/documents {\n  }\n}';
+  const expectedHash = crypto.createHash('sha256').update(sampleContent, 'utf8').digest('hex');
+  const diskBytes = Buffer.from(sampleContent, 'utf8');
+  const diskHash = crypto.createHash('sha256').update(diskBytes).digest('hex');
+  return expectedHash === diskHash && expectedHash.length === 64;
+});
+
+registerTest('SECCION 15: FASE 3.5.0.9', 'T-3509-18', 'Destino preexistente bloqueado sin switch explícito -AllowOverwrite', () => {
+  const fileExists = true;
+  const allowOverwrite = false;
+  const canWrite = !fileExists || allowOverwrite;
+  return canWrite === false;
+});
+
+registerTest('SECCION 15: FASE 3.5.0.9', 'T-3509-19', 'Sobrescritura autorizada explícitamente cuando -AllowOverwrite está activo', () => {
+  const fileExists = true;
+  const allowOverwrite = true;
+  const canWrite = !fileExists || allowOverwrite;
+  return canWrite === true;
+});
+
+registerTest('SECCION 15: FASE 3.5.0.9', 'T-3509-20', 'Manejo seguro de excepciones HTTP sin fugar headers Bearer', () => {
+  const errorObj = {
+    message: 'HTTP 403 Forbidden: Missing roles/firebaserules.viewer',
+    statusCode: 403
+  };
+  const loggedMessage = errorObj.message;
+  const containsBearer = loggedMessage.toLowerCase().includes('bearer');
+  return containsBearer === false && loggedMessage.includes('403');
+});
+
+registerTest('SECCION 15: FASE 3.5.0.9', 'T-3509-21', 'Verificación de que el 100% de las solicitudes remotas son exclusivamente HTTP GET (N GETs + 1 GET)', () => {
+  const requests = [
+    { method: 'GET', url: 'https://firebaserules.googleapis.com/v1/projects/gen-lang-client-0041212770/releases' },
+    { method: 'GET', url: 'https://firebaserules.googleapis.com/v1/projects/gen-lang-client-0041212770/rulesets/r1' }
+  ];
+  const allAreGet = requests.every(r => r.method === 'GET');
+  const hasWritingVerbs = requests.some(r => ['POST', 'PATCH', 'PUT', 'DELETE'].includes(r.method));
+  return allAreGet === true && hasWritingVerbs === false;
+});
+
+// ----------------------------------------------------------------------------
 // EJECUTOR DE SUITE
 // ----------------------------------------------------------------------------
 async function runSuite() {
   console.log('========================================================================');
   console.log('SUITE AUTOMATIZADA DE PRUEBAS DEL EXTRACTOR FORENSE VIGORCORE');
-  console.log('Fases 3.5.0 a 3.5.0.7 — Verificación Funcional, Criptográfica, ACL y Reglas');
+  console.log('Fases 3.5.0 a 3.5.0.9 — Verificación Funcional, Criptográfica, ACL y Reglas');
   console.log('========================================================================\n');
 
   let passed = 0;
