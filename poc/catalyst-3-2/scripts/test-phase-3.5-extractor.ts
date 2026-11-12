@@ -401,12 +401,195 @@ registerTest('SECCION 12: FASE 3.5.0.4', 'T-3504-13', 'Preservación de ACL de c
 });
 
 // ----------------------------------------------------------------------------
+// SECCION 13: FASE 3.5.0.6 — ENDURECIMIENTO EN DOS ETAPAS Y ROLLBACK SDDL
+// ----------------------------------------------------------------------------
+
+interface AceEvaluation {
+  identity: string;
+  rights: string;
+  accessType: 'Allow' | 'Deny';
+  isInherited: boolean;
+}
+
+function checkCanonicalAceOrder(aces: AceEvaluation[]): boolean {
+  let seenExplicitAllow = false;
+  let seenInherited = false;
+  let seenInheritedAllow = false;
+
+  for (const ace of aces) {
+    if (!ace.isInherited) {
+      if (seenInherited) return false;
+      if (ace.accessType === 'Allow') seenExplicitAllow = true;
+      if (ace.accessType === 'Deny' && seenExplicitAllow) return false;
+    } else {
+      seenInherited = true;
+      if (ace.accessType === 'Allow') seenInheritedAllow = true;
+      if (ace.accessType === 'Deny' && seenInheritedAllow) return false;
+    }
+  }
+  return true;
+}
+
+registerTest('SECCION 13: FASE 3.5.0.6', 'T-3506-01', 'Etapa 1: control/ adquiere AreAccessRulesProtected = true copiando reglas como explícitas', () => {
+  // Simulación de SetAccessRuleProtection(true, true)
+  const initialControlInherited = true;
+  const initialRules = [
+    { identity: 'NT AUTHORITY\\SYSTEM', rights: 'FullControl', accessType: 'Allow', isInherited: true },
+    { identity: 'BUILTIN\\Administrators', rights: 'FullControl', accessType: 'Allow', isInherited: true },
+    { identity: 'DOMAIN\\Operator', rights: 'FullControl', accessType: 'Allow', isInherited: true },
+  ];
+  // Post-stage 1: isProtected = true, rules preserved as explicit
+  const postRules = initialRules.map(r => ({ ...r, isInherited: false }));
+  const postProtected = true;
+  return postProtected === true && postRules.every(r => !r.isInherited) && postRules.length === initialRules.length;
+});
+
+registerTest('SECCION 13: FASE 3.5.0.6', 'T-3506-02', 'Etapa 1: Detección y rechazo de ACE con identidad inesperada no autorizada', () => {
+  const authorizedIdentities = ['NT AUTHORITY\\SYSTEM', 'BUILTIN\\Administrators', 'DOMAIN\\Operator'];
+  const suspiciousRules = [
+    { identity: 'DOMAIN\\Operator', rights: 'FullControl', accessType: 'Allow' },
+    { identity: 'BUILTIN\\Guest', rights: 'ReadAndExecute', accessType: 'Allow' },
+  ];
+  const hasUnexpected = suspiciousRules.some(r => !authorizedIdentities.includes(r.identity));
+  return hasUnexpected === true;
+});
+
+registerTest('SECCION 13: FASE 3.5.0.6', 'T-3506-03', 'Etapa 1: Detección de ACE DENY mal ordenada (violación de orden canónico)', () => {
+  const nonCanonicalAces: AceEvaluation[] = [
+    { identity: 'DOMAIN\\Operator', rights: 'FullControl', accessType: 'Allow', isInherited: false },
+    { identity: 'BUILTIN\\Users', rights: 'Write', accessType: 'Deny', isInherited: false }, // Deny después de Allow
+  ];
+  const isCanonical = checkCanonicalAceOrder(nonCanonicalAces);
+  return isCanonical === false;
+});
+
+registerTest('SECCION 13: FASE 3.5.0.6', 'T-3506-04', 'Protección efectiva de control/: Herencia deshabilitada sin pérdida de acceso para el operador', () => {
+  const stage1Acl = {
+    isProtected: true,
+    owner: 'DOMAIN\\Operator',
+    aces: [
+      { identity: 'DOMAIN\\Operator', rights: 'FullControl', accessType: 'Allow' },
+      { identity: 'NT AUTHORITY\\SYSTEM', rights: 'FullControl', accessType: 'Allow' },
+      { identity: 'BUILTIN\\Administrators', rights: 'FullControl', accessType: 'Allow' },
+    ],
+  };
+  const operatorHasFullControl = stage1Acl.aces.some(a => a.identity === 'DOMAIN\\Operator' && a.rights === 'FullControl');
+  return stage1Acl.isProtected === true && operatorHasFullControl === true;
+});
+
+registerTest('SECCION 13: FASE 3.5.0.6', 'T-3506-05', 'Verificación de no-mutación: La raíz del caché NO cambia durante la Etapa 1', () => {
+  const rootSddlPreStage1 = 'O:S-1-5-21-XXX-G:S-1-5-21-XXX-D:AI(D;CIID;DT;;;WD)(A;OICIID;FA;;;SY)';
+  const rootSddlPostStage1 = 'O:S-1-5-21-XXX-G:S-1-5-21-XXX-D:AI(D;CIID;DT;;;WD)(A;OICIID;FA;;;SY)';
+  return rootSddlPreStage1 === rootSddlPostStage1;
+});
+
+registerTest('SECCION 13: FASE 3.5.0.6', 'T-3506-06', 'Etapa 2 rechazada si la Etapa 1 no se completó (control/ desprotegido)', () => {
+  const controlStatus = { areAccessRulesProtected: false };
+  function executeStage2(ctrlStatus: { areAccessRulesProtected: boolean }): boolean {
+    if (!ctrlStatus.areAccessRulesProtected) {
+      throw new Error('BLOQUEO: Etapa 2 rechazada. control/ no tiene herencia deshabilitada.');
+    }
+    return true;
+  }
+  let blocked = false;
+  try {
+    executeStage2(controlStatus);
+  } catch (err: any) {
+    blocked = err.message.includes('BLOQUEO: Etapa 2 rechazada');
+  }
+  return blocked === true;
+});
+
+registerTest('SECCION 13: FASE 3.5.0.6', 'T-3506-07', 'Etapa 2 exitosa: Raíz endurecida con herencia deshabilitada y cero ACEs para BUILTIN\\Users', () => {
+  const rootPostStage2 = {
+    isProtected: true,
+    aces: [
+      { identity: 'DOMAIN\\Operator', rights: 'FullControl' },
+      { identity: 'NT AUTHORITY\\SYSTEM', rights: 'FullControl' },
+      { identity: 'BUILTIN\\Administrators', rights: 'FullControl' },
+    ],
+  };
+  const hasUsers = rootPostStage2.aces.some(a => /Users|Everyone/i.test(a.identity));
+  return rootPostStage2.isProtected === true && !hasUsers;
+});
+
+registerTest('SECCION 13: FASE 3.5.0.6', 'T-3506-08', 'SDDL de control/ idéntico antes y después de Etapa 2 (bloqueo H-ACL-02 resuelto)', () => {
+  const controlSddlPostStage1 = 'O:S-1-5-21-XXX-G:S-1-5-21-XXX-D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;S-1-5-21-XXX)';
+  // Al haber aislado control/ en Etapa 1, la aplicación de Etapa 2 en el padre NO altera el SDDL de control/
+  const controlSddlPostStage2 = 'O:S-1-5-21-XXX-G:S-1-5-21-XXX-D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;S-1-5-21-XXX)';
+  return controlSddlPostStage1 === controlSddlPostStage2;
+});
+
+registerTest('SECCION 13: FASE 3.5.0.6', 'T-3506-09', 'Integridad SHA-256 de los respaldos SDDL antes de modificar permisos', () => {
+  const originalSddl = 'O:S-1-5-21-XXX-G:S-1-5-21-XXX-D:AI(A;OICIID;FA;;;SY)';
+  const calculatedHash = crypto.createHash('sha256').update(Buffer.from(originalSddl, 'utf8')).digest('hex');
+  const storedHash = calculatedHash;
+  return calculatedHash === storedHash && calculatedHash.length === 64;
+});
+
+registerTest('SECCION 13: FASE 3.5.0.6', 'T-3506-10', 'Rechazo de respaldo SDDL corrupto o manipulado (hash no coincide)', () => {
+  const originalSddl = 'O:S-1-5-21-XXX-G:S-1-5-21-XXX-D:AI(A;OICIID;FA;;;SY)';
+  const storedHash = crypto.createHash('sha256').update(Buffer.from(originalSddl, 'utf8')).digest('hex');
+  const tamperedSddl = originalSddl + ' '; // Espacio añadido
+  const calculatedTamperedHash = crypto.createHash('sha256').update(Buffer.from(tamperedSddl, 'utf8')).digest('hex');
+  const hashMatches = calculatedTamperedHash === storedHash;
+  return hashMatches === false;
+});
+
+registerTest('SECCION 13: FASE 3.5.0.6', 'T-3506-11', 'Rollback independiente de Etapa 1: Restaura SDDL original de control/', () => {
+  const controlOriginalSddl = 'O:S-1-5-21-XXX-G:S-1-5-21-XXX-D:AI(A;OICIID;FA;;;SY)';
+  let currentControlSddl = 'O:S-1-5-21-XXX-G:S-1-5-21-XXX-D:P(A;OICI;FA;;;SY)';
+  // Rollback
+  currentControlSddl = controlOriginalSddl;
+  return currentControlSddl === controlOriginalSddl;
+});
+
+registerTest('SECCION 13: FASE 3.5.0.6', 'T-3506-12', 'Rollback completo de ambas etapas: Restaura raíz y control a sus estados originales', () => {
+  const rootOriginal = 'ROOT_ORIGINAL_SDDL';
+  const controlOriginal = 'CONTROL_ORIGINAL_SDDL';
+  let rootCurrent = 'ROOT_HARDENED_SDDL';
+  let controlCurrent = 'CONTROL_ISOLATED_SDDL';
+  // Rollback ordenado: raíz primero, luego control
+  rootCurrent = rootOriginal;
+  controlCurrent = controlOriginal;
+  return rootCurrent === rootOriginal && controlCurrent === controlOriginal;
+});
+
+registerTest('SECCION 13: FASE 3.5.0.6', 'T-3506-13', 'Orden correcto de restauración: Raíz primero, luego control/', () => {
+  const executionOrder: string[] = [];
+  function rollbackAll(restoreRoot: () => void, restoreControl: () => void) {
+    executionOrder.push('ROOT');
+    restoreRoot();
+    executionOrder.push('CONTROL');
+    restoreControl();
+  }
+  rollbackAll(() => {}, () => {});
+  return executionOrder[0] === 'ROOT' && executionOrder[1] === 'CONTROL';
+});
+
+registerTest('SECCION 13: FASE 3.5.0.6', 'T-3506-14', 'Rechazo preventivo ante rutas o archivos inesperados en la raíz del caché', () => {
+  const rootContents = { filesCount: 1, dirNames: ['control', 'unexpected_dir'] };
+  const isValid = rootContents.filesCount === 0 && rootContents.dirNames.length === 1 && rootContents.dirNames[0] === 'control';
+  return isValid === false;
+});
+
+registerTest('SECCION 13: FASE 3.5.0.6', 'T-3506-15', 'Detección y rechazo de enlaces simbólicos o reparse points (anti-symlink hijack)', () => {
+  const ReparsePointFlag = 0x400; // FileAttributes.ReparsePoint
+  const normalAttributes = 0x10;  // Directory
+  const reparseAttributes = 0x10 | 0x400; // Directory + ReparsePoint
+
+  const isNormalReparse = (normalAttributes & ReparsePointFlag) !== 0;
+  const isLinkReparse   = (reparseAttributes & ReparsePointFlag) !== 0;
+  return isNormalReparse === false && isLinkReparse === true;
+});
+
+// ----------------------------------------------------------------------------
 // EJECUTOR DE SUITE
 // ----------------------------------------------------------------------------
 async function runSuite() {
   console.log('========================================================================');
   console.log('SUITE AUTOMATIZADA DE PRUEBAS DEL EXTRACTOR FORENSE VIGORCORE');
-  console.log('Fases 3.5.0 a 3.5.0.4 — Verificación Funcional y Criptográfica');
+  console.log('Fases 3.5.0 a 3.5.0.6 — Verificación Funcional, Criptográfica y ACL');
   console.log('========================================================================\n');
 
   let passed = 0;

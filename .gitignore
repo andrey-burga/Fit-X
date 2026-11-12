@@ -6,3 +6,9 @@ coverage/
 *.log
 .env*
 !.env.example
+.data/
+*.bin
+
+# Exclusiones específicas de artefactos no deseados en la raíz
+/firestore.rules.pre-7d-live-backup.rules
+/package-lock.json
