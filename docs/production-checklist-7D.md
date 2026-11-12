@@ -59,7 +59,7 @@ Estados de los Criterios:
 - [BLOQUEADO] Verificación de ubicación de Firestore y creación del bucket de Cloud Storage para respaldos.
 - [REQUIERE AUTORIZACIÓN] Asignación de rol `roles/storage.admin` al Service Agent de Cloud Firestore sobre el bucket.
 - [PENDIENTE] Ejecución del backup previo de la base nombrada (`gcloud firestore export ...`).
-- [PENDIENTE] Captura de reglas remotas actuales (`firebase firestore:rules:get`) antes del despliegue para rollback fidedigno.
+- [PENDIENTE] Captura de reglas remotas actuales vía Firebase Rules API REST (`firebaserules.googleapis.com/v1`) antes del despliegue para rollback fidedigno (rectificado en Fase 3.5.0.7 tras detectar que `firebase firestore:rules:get` es un comando inexistente).
 - [COMPLETADO] Estrategia de contingencia de Cloud Functions v2 documentada (desactivación de endpoints vía IAM o `--max-instances=0`).
 
 ### 7. INICIALIZACIÓN ADMINISTRATIVA Y MIGRACIÓN

@@ -250,12 +250,37 @@ gcloud firestore export $BUCKET_NAME/pre-7d-backup-$(Get-Date -Format "yyyyMMdd-
 #### A. Rollback de Security Rules:
 - **Inspección de Archivos Locales:** El archivo `firestore.rules.backup-20261023-pre-deploy-6c2` tiene 280 líneas y pertenece a la fase 6C.2 (rutinas, nutrición, biometrías). **No contiene ninguna de las 6 colecciones administrativas de 7D ni soporte de RBAC jerárquico**. No es un rollback equivalente para 7D.
 - **Estado:** **`PENDIENTE DE IDENTIFICACIÓN REMOTA`**.
-- **Procedimiento Obligatorio Pre-Despliegue:**
-  Antes de desplegar las nuevas reglas, el operador debe extraer el snapshot remoto exacto de las reglas en vivo:
+- **RECTIFICACIÓN FORENSE FASE 3.5.0.7 (Comando inválido y artefacto de error):**
+  - **Error en instrucción previa:** La instrucción original indicaba erróneamente ejecutar `npx firebase firestore:rules:get --project gen-lang-client-0041212770 > firestore.rules.pre-7d-live-backup.rules`.
+  - **Diagnóstico:** El comando `firestore:rules:get` **NO EXISTE** en Firebase CLI (`firebase-tools`). La redirección capturó el mensaje de error de la CLI (`Error: firestore:rules:get is not a Firebase command`) generando un archivo de 166 bytes (SHA-256: `D4CE9EBC583DBF901BD7728E2E9FD5711601FB567499C4A3D78DE453C9640C18`).
+  - **Impacto:** Dicho archivo **NO constituye un snapshot ni respaldo de reglas**, carece totalmente de capacidad de restauración y queda formalmente clasificado como `INVALID_BACKUP_ARTIFACT — ERROR OUTPUT`. Por consiguiente, no puede afirmarse que existió un respaldo local válido previo al procedimiento 7D.
+- **Procedimiento Oficial de Consulta y Respaldo Remoto (Firebase Rules REST API):**
+  Para obtener el snapshot fidedigno de las reglas en vivo sin recurrir a comandos inexistentes de la CLI, el operador debe consultar la API oficial de Firebase Security Rules (`firebaserules.googleapis.com/v1`) utilizando credenciales ADC de Google Cloud:
   ```powershell
-  npx firebase firestore:rules:get --project gen-lang-client-0041212770 > firestore.rules.pre-7d-live-backup.rules
+  # 1. Obtener token de acceso ADC
+  $TOKEN = gcloud auth print-access-token
+  $HEADERS = @{ "Authorization" = "Bearer $TOKEN" }
+  $PROJECT = "gen-lang-client-0041212770"
+  $DB_NAME = "ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c"
+
+  # 2. Listar releases del proyecto
+  $releasesUrl = "https://firebaserules.googleapis.com/v1/projects/$PROJECT/releases"
+  $releasesResp = Invoke-RestMethod -Uri $releasesUrl -Headers $HEADERS -Method Get
+
+  # 3. Filtrar release asociada a la base nombrada (no asumir equivalencia con '(default)')
+  $targetRelease = $releasesResp.releases | Where-Object { $_.name -like "*$DB_NAME*" -or $_.name -like "*cloud.firestore*" } | Select-Object -First 1
+
+  # 4. Obtener el ruleset referenciado y guardar la fuente real
+  if ($targetRelease -and $targetRelease.rulesetName) {
+      $rulesetUrl = "https://firebaserules.googleapis.com/v1/$($targetRelease.rulesetName)"
+      $rulesetResp = Invoke-RestMethod -Uri $rulesetUrl -Headers $HEADERS -Method Get
+      $rulesContent = $rulesetResp.source.files[0].content
+      [System.IO.File]::WriteAllText("$PWD/firestore.rules.live-snapshot.rules", $rulesContent, (New-Object System.Text.UTF8Encoding($false)))
+      Write-Host "Snapshot real guardado en firestore.rules.live-snapshot.rules" -ForegroundColor Green
+  } else {
+      Write-Warning "No se localizó un ruleset remoto activo para la base de datos."
+  }
   ```
-  En caso de fallo en producción, se restaurará ese archivo capturado en vivo.
 
 #### B. Rollback de Cloud Functions v2:
 Dado que es el **primer despliegue** de funciones en producción, no existen revisiones previas a las que volver. Se distinguen formalmente las 4 estrategias de contingencia:
