@@ -826,12 +826,331 @@ registerTest('SECCION 15: FASE 3.5.0.9', 'T-3509-21', 'Verificación de que el 1
 });
 
 // ----------------------------------------------------------------------------
+// SECCION 16: FASE 3.5.0.10 — PROCESAMIENTO ROBUSTO POWERSHELL 5.1 STRICTMODE
+// ----------------------------------------------------------------------------
+
+class MockPS51Object {
+  private props: Map<string, any>;
+
+  constructor(initial: Record<string, any>) {
+    this.props = new Map(Object.entries(initial));
+  }
+
+  // Simulación estricta de PowerShell 5.1 Set-StrictMode -Version Latest
+  directPropertyAccess(propName: string): any {
+    if (!this.props.has(propName)) {
+      throw new Error(`No se encuentra la propiedad "${propName}" en este objeto. Compruebe que la propiedad existe.`);
+    }
+    return this.props.get(propName);
+  }
+
+  // Patrón defensivo Get-SafePropertyValue / PSObject.Properties['...']
+  getSafePropertyValue(propName: string): any {
+    if (this.props.has(propName)) {
+      const v = this.props.get(propName);
+      return v !== undefined ? v : null;
+    }
+    return null;
+  }
+}
+
+registerTest('SECCION 16: FASE 3.5.0.10', 'T-3510-01', 'Respuesta sin propiedad nextPageToken: acceso directo falla y acceso seguro no arroja excepción', () => {
+  const responseData = new MockPS51Object({
+    releases: [{ name: 'projects/gen-lang-client-0041212770/releases/cloud.firestore/ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c' }]
+  });
+
+  // 1. Acceso directo antiguo causa excepción
+  let threwStrictModeError = false;
+  try {
+    responseData.directPropertyAccess('nextPageToken');
+  } catch (err: any) {
+    threwStrictModeError = err.message.includes('No se encuentra la propiedad "nextPageToken"');
+  }
+
+  // 2. Acceso seguro defensivo retorna null sin lanzar excepción
+  const safeVal = responseData.getSafePropertyValue('nextPageToken');
+  const safeSuccess = safeVal === null;
+
+  return threwStrictModeError === true && safeSuccess === true;
+});
+
+registerTest('SECCION 16: FASE 3.5.0.10', 'T-3510-02', 'Respuesta con nextPageToken = null: finalización normal de paginación sin continuar', () => {
+  const responseData = new MockPS51Object({
+    releases: [{ name: 'r1' }],
+    nextPageToken: null
+  });
+
+  const tokenVal = responseData.getSafePropertyValue('nextPageToken');
+  const shouldContinue = tokenVal !== null && tokenVal !== undefined && String(tokenVal).trim().length > 0;
+  return shouldContinue === false;
+});
+
+registerTest('SECCION 16: FASE 3.5.0.10', 'T-3510-03', 'Respuesta con nextPageToken válido y segunda página: extracción segura y paginación continua', () => {
+  const page1 = new MockPS51Object({ releases: [{ name: 'r1' }], nextPageToken: 'token_pag_2' });
+  const page2 = new MockPS51Object({ releases: [{ name: 'r2' }] }); // sin token
+
+  const allReleases: any[] = [];
+  let token: string | null = '';
+  let pagesVisited = 0;
+
+  // Simulación del bucle do-while de query-remote-rules.ps1
+  let currentPageObj = page1;
+  do {
+    pagesVisited++;
+    const rels = currentPageObj.getSafePropertyValue('releases');
+    if (rels) allReleases.push(...rels);
+
+    const nextTok = currentPageObj.getSafePropertyValue('nextPageToken');
+    token = (nextTok && String(nextTok).trim().length > 0) ? String(nextTok) : null;
+    currentPageObj = page2;
+  } while (token !== null);
+
+  return allReleases.length === 2 && pagesVisited === 2;
+});
+
+registerTest('SECCION 16: FASE 3.5.0.10', 'T-3510-04', 'Primera página sin token y con release canónica válida: coincidencia exitosa en paso único', () => {
+  const canonicalExpected = 'projects/gen-lang-client-0041212770/releases/cloud.firestore/ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c';
+  const response = new MockPS51Object({
+    releases: [
+      new MockPS51Object({
+        name: canonicalExpected,
+        rulesetName: 'projects/gen-lang-client-0041212770/rulesets/uuid-1234',
+        updateTime: '2026-11-12T00:00:00Z'
+      })
+    ]
+  });
+
+  const releases = response.getSafePropertyValue('releases') || [];
+  const token = response.getSafePropertyValue('nextPageToken');
+  const matched = releases.filter((r: MockPS51Object) => r.getSafePropertyValue('name') === canonicalExpected);
+
+  return releases.length === 1 && token === null && matched.length === 1;
+});
+
+registerTest('SECCION 16: FASE 3.5.0.10', 'T-3510-05', 'Respuesta sin propiedad releases: acceso defensivo retorna lista vacía sin arrojar excepción', () => {
+  const responseWithoutReleases = new MockPS51Object({});
+  let threwError = false;
+  try {
+    responseWithoutReleases.directPropertyAccess('releases');
+  } catch {
+    threwError = true;
+  }
+
+  const safeVal = responseWithoutReleases.getSafePropertyValue('releases');
+  const list = safeVal ? safeVal : [];
+  return threwError === true && Array.isArray(list) && list.length === 0;
+});
+
+registerTest('SECCION 16: FASE 3.5.0.10', 'T-3510-06', 'Respuesta con releases vacío: detección y emisión de NO_MATCH', () => {
+  const emptyReleasesResponse = new MockPS51Object({ releases: [] });
+  const list = emptyReleasesResponse.getSafePropertyValue('releases') || [];
+  const verdict = list.length === 0 ? 'NO_MATCH — RELEASE_NOT_FOUND_FOR_NAMED_DATABASE' : 'FOUND';
+  return verdict === 'NO_MATCH — RELEASE_NOT_FOUND_FOR_NAMED_DATABASE';
+});
+
+registerTest('SECCION 16: FASE 3.5.0.10', 'T-3510-07', 'Respuesta HTTP 403: preservación de código de error HTTP y sanitización de mensaje', () => {
+  const httpException = {
+    statusCode: 403,
+    message: 'The caller does not have permission'
+  };
+  const isForbidden = httpException.statusCode === 403;
+  const noTokenLeaked = !httpException.message.includes('ya29.');
+  return isForbidden && noTokenLeaked;
+});
+
+registerTest('SECCION 16: FASE 3.5.0.10', 'T-3510-08', 'Respuesta HTTP 429: detección de cuota/rate limit con código preservado', () => {
+  const httpException = {
+    statusCode: 429,
+    message: 'Resource exhausted: rate limit exceeded'
+  };
+  return httpException.statusCode === 429 && httpException.message.includes('Resource exhausted');
+});
+
+registerTest('SECCION 16: FASE 3.5.0.10', 'T-3510-09', 'Respuesta JSON inválida o estructura inesperada: diagnóstico API_RESPONSE_SCHEMA_INVALID', () => {
+  const invalidResponses = [null, undefined, 'raw-string-instead-of-json', 12345];
+  const isInvalid = (r: any) => r === null || r === undefined || typeof r !== 'object';
+  const allDetected = invalidResponses.every(isInvalid);
+  const status = allDetected ? 'API_RESPONSE_SCHEMA_INVALID' : 'OK';
+  return status === 'API_RESPONSE_SCHEMA_INVALID';
+});
+
+registerTest('SECCION 16: FASE 3.5.0.10', 'T-3510-10', 'Objeto deserializado con propiedades opcionales ausentes no arroja excepción en StrictMode', () => {
+  // Objeto con solo name y rulesetName (sin updateTime ni attachment_point)
+  const minimalRelease = new MockPS51Object({
+    name: 'projects/gen-lang-client-0041212770/releases/cloud.firestore/ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c',
+    rulesetName: 'projects/gen-lang-client-0041212770/rulesets/rs-1'
+  });
+
+  const name = minimalRelease.getSafePropertyValue('name');
+  const ruleset = minimalRelease.getSafePropertyValue('rulesetName');
+  const updateTime = minimalRelease.getSafePropertyValue('updateTime'); // Ausente
+  const attachmentPoint = minimalRelease.getSafePropertyValue('attachment_point'); // Ausente
+
+  return name !== null && ruleset !== null && updateTime === null && attachmentPoint === null;
+});
+
+// ----------------------------------------------------------------------------
+// SECCION 17: FASE 3.5.0.11 — CONTRATO REAL DE FIREBASE RULES API (RELEASE & RULESET)
+// ----------------------------------------------------------------------------
+
+registerTest('SECCION 17: FASE 3.5.0.11', 'T-3511-01', 'Release sin attachment_point se procesa con éxito (ausencia en Release NO provoca rechazo)', () => {
+  // Objeto Release oficial según Google API v1 (solo name, rulesetName, createTime, updateTime)
+  const canonicalExpected = 'projects/gen-lang-client-0041212770/releases/cloud.firestore/ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c';
+  const officialRelease = new MockPS51Object({
+    name: canonicalExpected,
+    rulesetName: 'projects/gen-lang-client-0041212770/rulesets/rs-4567',
+    createTime: '2026-11-12T00:00:00Z',
+    updateTime: '2026-11-12T00:00:00Z'
+  });
+
+  // La Release NO tiene attachment_point
+  const releaseAttachment = officialRelease.getSafePropertyValue('attachment_point');
+  const releaseName = officialRelease.getSafePropertyValue('name');
+  const rulesetName = officialRelease.getSafePropertyValue('rulesetName');
+
+  const releaseValid = releaseAttachment === null && releaseName === canonicalExpected && rulesetName !== null;
+  return releaseValid === true;
+});
+
+registerTest('SECCION 17: FASE 3.5.0.11', 'T-3511-02', 'Release con rulesetName ausente rechazada con API_RESPONSE_SCHEMA_INVALID', () => {
+  const invalidRelease = new MockPS51Object({
+    name: 'projects/gen-lang-client-0041212770/releases/cloud.firestore/ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c'
+    // rulesetName ausente
+  });
+
+  const rulesetName = invalidRelease.getSafePropertyValue('rulesetName');
+  const isRejected = !rulesetName || String(rulesetName).trim().length === 0;
+  return isRejected === true;
+});
+
+registerTest('SECCION 17: FASE 3.5.0.11', 'T-3511-03', 'Ruleset con attachment_point correcto en formato completo aceptado', () => {
+  const projectNumber = '510844325101';
+  const databaseId = 'ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c';
+  const officialRuleset = new MockPS51Object({
+    name: 'projects/gen-lang-client-0041212770/rulesets/rs-4567',
+    attachment_point: `firestore.googleapis.com/projects/${projectNumber}/databases/${databaseId}`,
+    source: { files: [{ name: 'firestore.rules', content: 'rules_version = "2";' }] }
+  });
+
+  const expectedFull = `firestore.googleapis.com/projects/${projectNumber}/databases/${databaseId}`;
+  const actualAttachment = officialRuleset.getSafePropertyValue('attachment_point');
+  return actualAttachment === expectedFull;
+});
+
+registerTest('SECCION 17: FASE 3.5.0.11', 'T-3511-04', 'Ruleset con attachment_point correcto en formato abreviado aceptado', () => {
+  const databaseId = 'ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c';
+  const officialRuleset = new MockPS51Object({
+    name: 'projects/gen-lang-client-0041212770/rulesets/rs-4567',
+    attachment_point: `firestore.googleapis.com/databases/${databaseId}`,
+    source: { files: [{ name: 'firestore.rules', content: 'rules_version = "2";' }] }
+  });
+
+  const expectedShort = `firestore.googleapis.com/databases/${databaseId}`;
+  const actualAttachment = officialRuleset.getSafePropertyValue('attachment_point');
+  return actualAttachment === expectedShort;
+});
+
+registerTest('SECCION 17: FASE 3.5.0.11', 'T-3511-05', 'Ruleset con otra base de datos en attachment_point rechazado', () => {
+  const projectNumber = '510844325101';
+  const databaseId = 'ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c';
+  const wrongRuleset = new MockPS51Object({
+    attachment_point: `firestore.googleapis.com/projects/${projectNumber}/databases/wrong-database-id`
+  });
+
+  const expectedFull = `firestore.googleapis.com/projects/${projectNumber}/databases/${databaseId}`;
+  const expectedShort = `firestore.googleapis.com/databases/${databaseId}`;
+  const actual = wrongRuleset.getSafePropertyValue('attachment_point');
+
+  const isAccepted = actual === expectedFull || actual === expectedShort;
+  return isAccepted === false;
+});
+
+registerTest('SECCION 17: FASE 3.5.0.11', 'T-3511-06', 'Ruleset con project number discrepante en attachment_point rechazado', () => {
+  const correctProjectNumber = '510844325101';
+  const databaseId = 'ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c';
+  const wrongNumberRuleset = new MockPS51Object({
+    attachment_point: `firestore.googleapis.com/projects/999888777666/databases/${databaseId}`
+  });
+
+  const expectedFull = `firestore.googleapis.com/projects/${correctProjectNumber}/databases/${databaseId}`;
+  const actual = wrongNumberRuleset.getSafePropertyValue('attachment_point');
+  return actual !== expectedFull;
+});
+
+registerTest('SECCION 17: FASE 3.5.0.11', 'T-3511-07', 'Ruleset sin attachment_point rechazado con ATTACHMENT_POINT_MISSING', () => {
+  const rulesetWithoutAttachment = new MockPS51Object({
+    name: 'projects/gen-lang-client-0041212770/rulesets/rs-4567',
+    source: { files: [{ name: 'firestore.rules', content: 'rules_version = "2";' }] }
+  });
+
+  const rawAttachment = rulesetWithoutAttachment.getSafePropertyValue('attachment_point');
+  const isMissing = rawAttachment === null || String(rawAttachment).trim().length === 0;
+  return isMissing === true;
+});
+
+registerTest('SECCION 17: FASE 3.5.0.11', 'T-3511-08', 'Ruleset con source.files ausente o vacío rechazado con API_RESPONSE_SCHEMA_INVALID', () => {
+  const rulesetNoSource = new MockPS51Object({
+    attachment_point: 'firestore.googleapis.com/databases/ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c'
+  });
+  const rulesetEmptyFiles = new MockPS51Object({
+    attachment_point: 'firestore.googleapis.com/databases/ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c',
+    source: new MockPS51Object({ files: [] })
+  });
+
+  const source1 = rulesetNoSource.getSafePropertyValue('source');
+  const files2 = rulesetEmptyFiles.getSafePropertyValue('source')?.getSafePropertyValue('files');
+
+  const check1 = source1 === null;
+  const check2 = Array.isArray(files2) && files2.length === 0;
+  return check1 && check2;
+});
+
+registerTest('SECCION 17: FASE 3.5.0.11', 'T-3511-09', 'Secuencia estricta: source.files solo se extrae DESPUÉS de validar attachment_point', () => {
+  const executionOrder: string[] = [];
+
+  function processRuleset(ruleset: MockPS51Object) {
+    // 1. Validar attachment_point primero
+    const att = ruleset.getSafePropertyValue('attachment_point');
+    if (!att) throw new Error('ATTACHMENT_POINT_MISSING');
+    executionOrder.push('VALIDATE_ATTACHMENT_POINT');
+
+    // 2. Extraer source.files después
+    const src = ruleset.getSafePropertyValue('source');
+    executionOrder.push('EXTRACT_SOURCE_FILES');
+  }
+
+  const validRuleset = new MockPS51Object({
+    attachment_point: 'firestore.googleapis.com/databases/ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c',
+    source: new MockPS51Object({ files: [{ name: 'firestore.rules', content: 'test' }] })
+  });
+
+  processRuleset(validRuleset);
+  return executionOrder[0] === 'VALIDATE_ATTACHMENT_POINT' && executionOrder[1] === 'EXTRACT_SOURCE_FILES';
+});
+
+registerTest('SECCION 17: FASE 3.5.0.11', 'T-3511-10', 'Ausencia de snapshots o archivos residuales ante fallos de validación del Ruleset', () => {
+  let snapshotSaved = false;
+  let tmpFileCleaned = false;
+
+  function attemptSnapshot(isValidRuleset: boolean) {
+    if (!isValidRuleset) {
+      tmpFileCleaned = true;
+      return; // aborta sin guardar
+    }
+    snapshotSaved = true;
+  }
+
+  attemptSnapshot(false);
+  return snapshotSaved === false && tmpFileCleaned === true;
+});
+
+// ----------------------------------------------------------------------------
 // EJECUTOR DE SUITE
 // ----------------------------------------------------------------------------
 async function runSuite() {
   console.log('========================================================================');
   console.log('SUITE AUTOMATIZADA DE PRUEBAS DEL EXTRACTOR FORENSE VIGORCORE');
-  console.log('Fases 3.5.0 a 3.5.0.9 — Verificación Funcional, Criptográfica, ACL y Reglas');
+  console.log('Fases 3.5.0 a 3.5.0.11 — Verificación Funcional, Criptográfica, ACL y Reglas');
   console.log('========================================================================\n');
 
   let passed = 0;

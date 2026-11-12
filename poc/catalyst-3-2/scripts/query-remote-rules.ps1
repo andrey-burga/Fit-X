@@ -1,28 +1,30 @@
 <#
 .SYNOPSIS
-    VigorCore Phase 3.5.0.9 — Hardening Final de Consulta de Reglas Remotas
+    VigorCore Phase 3.5.0.10 — Procesamiento Robusto de Respuestas Firebase Rules API
     Consulta en modo ESTRICTO DE SOLO LECTURA (GET) la Firebase Security Rules Management API.
 
 .DESCRIPTION
     Realiza una inspección forense de las reglas actualmente desplegadas en GCP:
     1. Obtiene token de acceso ADC estricto mediante 'gcloud auth application-default print-access-token'
        en memoria, verificando que no esté vacío, sin persistirlo ni exponerlo en logs.
-    2. Consulta GET https://firebaserules.googleapis.com/v1/projects/{projectId}/releases
-       gestionando paginación exhaustiva mediante nextPageToken.
-    3. Identifica la release mediante COINCIDENCIA EXACTA con la ruta canónica:
+    2. Accede a todas las propiedades de respuestas de Invoke-RestMethod mediante inspección
+       defensiva de PSObject.Properties, evitando excepciones en PowerShell 5.1 bajo Set-StrictMode.
+    3. Consulta GET https://firebaserules.googleapis.com/v1/projects/{projectId}/releases
+       gestionando paginación exhaustiva mediante nextPageToken de forma segura.
+    4. Identifica la release mediante COINCIDENCIA EXACTA con la ruta canónica:
        projects/{projectId}/releases/cloud.firestore/{databaseId}
        Rechaza coincidencias parciales, release de (default), rutas alternativas no canónicas
        y resultados múltiples ambiguos. Si no existe, emite NO_MATCH y finaliza sin consultar rulesets.
-    4. Valida que rulesetName cumpla el patrón canónico projects/{projectId}/rulesets/{id}.
-    5. Consulta GET https://firebaserules.googleapis.com/v1/{rulesetName} (única llamada adicional).
-    6. Valida que source.files exista, no esté vacío y contenga EXACTAMENTE un archivo.
+    5. Valida que rulesetName cumpla el patrón canónico projects/{projectId}/rulesets/{id}.
+    6. Consulta GET https://firebaserules.googleapis.com/v1/{rulesetName} (única llamada adicional).
+    7. Valida que source.files exista, no esté vacío y contenga EXACTAMENTE un archivo.
        Si contiene más de un archivo, aborta con MULTI_FILE_RULESET.
-    7. Valida attachment_point si se encuentra presente, aceptando exclusivamente los formatos:
+    8. Valida attachment_point si se encuentra presente, aceptando exclusivamente los formatos:
        - firestore.googleapis.com/projects/{project_number}/databases/{database_id}
        - firestore.googleapis.com/databases/{database_id}
        Rechazando attachment_point vacío, de (default), de otra base o con project number distinto.
-    8. Calcula SHA-256 del contenido recuperado y muestra metadatos observados.
-    9. Si se especifica -SaveSnapshot:
+    9. Calcula SHA-256 del contenido recuperado y muestra metadatos observados.
+    10. Si se especifica -SaveSnapshot:
        - Valida protección anti-sobrescritura sin -AllowOverwrite.
        - Escribe atómicamente a través de archivo temporal .tmp con UTF-8 sin BOM.
        - Verifica la integridad del hash en disco antes de promover el archivo.
@@ -66,8 +68,28 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+# Helper de acceso defensivo a propiedades de PSObject para Windows PowerShell 5.1
+function Get-SafePropertyValue {
+    param(
+        [Parameter(Mandatory = $false)]
+        $Target,
+        [Parameter(Mandatory = $true)]
+        [string]$PropertyName
+    )
+
+    if ($null -eq $Target) {
+        return $null
+    }
+
+    if ($Target.PSObject -and $null -ne $Target.PSObject.Properties[$PropertyName]) {
+        return $Target.PSObject.Properties[$PropertyName].Value
+    }
+
+    return $null
+}
+
 Write-Host "========================================================================" -ForegroundColor Cyan
-Write-Host " VIGORCORE — CONSULTA FORENSE DE REGLAS REMOTAS (HARDENING FASE 3.5.0.9)" -ForegroundColor Cyan
+Write-Host " VIGORCORE — CONSULTA FORENSE DE REGLAS REMOTAS (FASE 3.5.0.10)" -ForegroundColor Cyan
 Write-Host " Modo: ESTRICTO DE SOLO LECTURA (GET) — Proyecto: $ProjectId" -ForegroundColor Cyan
 Write-Host " Base de Datos Nombrada: $DatabaseId" -ForegroundColor Cyan
 Write-Host " Project Number: $ProjectNumber" -ForegroundColor Cyan
@@ -101,7 +123,7 @@ $headers = @{
     "Accept"        = "application/json"
 }
 
-# 2. Listar Releases del Proyecto con Paginación Exhaustiva (nextPageToken)
+# 2. Listar Releases del Proyecto con Paginación Exhaustiva Defensiva
 Write-Host "`n[PASO 2/5] Consultando releases registradas en Firebase Rules API (GET con paginación)..." -ForegroundColor Yellow
 $allReleases = @()
 $pageToken = ""
@@ -110,27 +132,57 @@ $pageCount = 0
 do {
     $pageCount++
     $releasesUrl = "https://firebaserules.googleapis.com/v1/projects/$ProjectId/releases"
-    if ($pageToken) {
+    if (-not [string]::IsNullOrWhiteSpace($pageToken)) {
         $releasesUrl += "?pageToken=$pageToken"
     }
 
+    $releasesData = $null
     try {
         $releasesData = Invoke-RestMethod -Uri $releasesUrl -Headers $headers -Method Get
     }
     catch {
+        $httpStatus = $null
+        if ($_.Exception.Response -and $_.Exception.Response.StatusCode) {
+            $httpStatus = [int]$_.Exception.Response.StatusCode
+        }
         Write-Host "[!] Error HTTP al consultar releases (Página $pageCount): $($_.Exception.Message)" -ForegroundColor Red
-        Write-Host "    Verifique que el operador cuente con roles/firebaserules.viewer en el proyecto." -ForegroundColor Yellow
+        if ($httpStatus) {
+            Write-Host "    Código HTTP recibido: $httpStatus" -ForegroundColor Yellow
+        }
         exit 2
     }
 
-    if ($releasesData -and $releasesData.releases) {
-        $allReleases += $releasesData.releases
+    # Validación estructural del objeto de respuesta
+    if ($null -eq $releasesData -or -not ($releasesData.PSObject)) {
+        Write-Host "[!] ERROR: Respuesta HTTP inválida o no deserializable como objeto JSON." -ForegroundColor Red
+        Write-Host "`nDictamen: API_RESPONSE_SCHEMA_INVALID" -ForegroundColor Red
+        exit 2
     }
 
-    $pageToken = $releasesData.nextPageToken
-} while ($pageToken)
+    # Extracción segura de la propiedad opcional 'releases'
+    $releasesVal = Get-SafePropertyValue -Target $releasesData -PropertyName "releases"
+    if ($null -ne $releasesVal) {
+        $allReleases += @($releasesVal)
+    }
+
+    # Extracción segura de la propiedad opcional 'nextPageToken' (previene error de StrictMode)
+    $nextPageVal = Get-SafePropertyValue -Target $releasesData -PropertyName "nextPageToken"
+    if ($null -ne $nextPageVal -and -not [string]::IsNullOrWhiteSpace($nextPageVal)) {
+        $pageToken = [string]$nextPageVal
+        Write-Host "    Página $pageCount recibida. nextPageToken presente, continuando paginación..." -ForegroundColor Gray
+    } else {
+        $pageToken = $null
+        Write-Host "    Página $pageCount recibida. nextPageToken ausente (paginación completada)." -ForegroundColor Gray
+    }
+} while (-not [string]::IsNullOrWhiteSpace($pageToken))
 
 Write-Host "[OK] Paginación finalizada: $($allReleases.Count) releases recuperadas a lo largo de $pageCount solicitud(es) GET." -ForegroundColor Green
+
+if ($allReleases.Count -eq 0) {
+    Write-Host "[!] El proyecto $ProjectId no tiene releases registradas." -ForegroundColor Yellow
+    Write-Host "`nDictamen: NO_MATCH — RELEASE_NOT_FOUND_FOR_NAMED_DATABASE" -ForegroundColor Red
+    exit 3
+}
 
 # 3. Validación de Coincidencia Exacta con la Release Canónica
 Write-Host "`n[PASO 3/5] Validando coincidencia exacta con la release canónica..." -ForegroundColor Yellow
@@ -142,7 +194,14 @@ $partialMatches = @()
 $defaultDetected = $false
 
 foreach ($rel in $allReleases) {
-    $rName = $rel.name
+    if ($null -eq $rel -or -not ($rel.PSObject)) {
+        continue
+    }
+
+    $rName = Get-SafePropertyValue -Target $rel -PropertyName "name"
+    if ([string]::IsNullOrWhiteSpace($rName)) {
+        continue
+    }
 
     if ($rName -eq $canonicalReleaseName) {
         $exactMatches += $rel
@@ -160,7 +219,8 @@ if ($exactMatches.Count -eq 0) {
     if ($partialMatches.Count -gt 0) {
         Write-Host "    AVISO: Se detectaron $($partialMatches.Count) coincidencia(s) parcial(es) o no canónica(s):" -ForegroundColor Yellow
         foreach ($pm in $partialMatches) {
-            Write-Host "      - $($pm.name)" -ForegroundColor Yellow
+            $pmName = Get-SafePropertyValue -Target $pm -PropertyName "name"
+            Write-Host "      - $pmName" -ForegroundColor Yellow
         }
         Write-Host "    POLÍTICA: Las coincidencias parciales son estrictamente rechazadas por seguridad." -ForegroundColor Yellow
     }
@@ -173,26 +233,35 @@ if ($exactMatches.Count -eq 0) {
 }
 
 if ($exactMatches.Count -gt 1) {
-    Write-Host "[!] ERROR: Se detectaron múltiples releases ($($exactMatches.Count)) con el mismo nombre canónico." -ForegroundColor Red
+    Write-Host "[!] ERROR: Se detectaron múltiples releases ($($exactMatches.Count)) con el mismo nombre canónico exacto." -ForegroundColor Red
     Write-Host "`nDictamen: AMBIGUOUS_RELEASES_DETECTED" -ForegroundColor Red
     exit 3
 }
 
 $targetRelease = $exactMatches[0]
+$targetName = Get-SafePropertyValue -Target $targetRelease -PropertyName "name"
+$rulesetName = Get-SafePropertyValue -Target $targetRelease -PropertyName "rulesetName"
+$updateTime = Get-SafePropertyValue -Target $targetRelease -PropertyName "updateTime"
+
+if ([string]::IsNullOrWhiteSpace($rulesetName)) {
+    Write-Host "[!] ERROR: La release canónica no contiene la propiedad obligatoria 'rulesetName'." -ForegroundColor Red
+    Write-Host "`nDictamen: API_RESPONSE_SCHEMA_INVALID" -ForegroundColor Red
+    exit 3
+}
+
 Write-Host "[OK] Coincidencia EXACTA unívoca confirmada:" -ForegroundColor Green
-Write-Host "    Release Name : $($targetRelease.name)" -ForegroundColor Cyan
-Write-Host "    Ruleset Name : $($targetRelease.rulesetName)" -ForegroundColor Cyan
-Write-Host "    UpdateTime   : $($targetRelease.updateTime)" -ForegroundColor Cyan
+Write-Host "    Release Name : $targetName" -ForegroundColor Cyan
+Write-Host "    Ruleset Name : $rulesetName" -ForegroundColor Cyan
+Write-Host "    UpdateTime   : $updateTime" -ForegroundColor Cyan
 
 # Validación de formato del rulesetName
-$rulesetName = $targetRelease.rulesetName
 $rulesetRegex = "^projects/$ProjectId/rulesets/[a-zA-Z0-9_\-]+$"
 if ($rulesetName -notmatch $rulesetRegex) {
     Write-Host "[!] ERROR: rulesetName no cumple el formato canónico 'projects/$ProjectId/rulesets/{id}': '$rulesetName'" -ForegroundColor Red
     exit 3
 }
 
-# 4. Recuperación del Ruleset y Validación Estricta de source.files y attachment_point (GET)
+# 4. Recuperación del Ruleset y Validación Estricta de attachment_point y source.files (GET)
 Write-Host "`n[PASO 4/5] Descargando definición del ruleset referenciado (GET)..." -ForegroundColor Yellow
 $rulesetUrl = "https://firebaserules.googleapis.com/v1/$rulesetName"
 $rulesetData = $null
@@ -205,13 +274,52 @@ catch {
     exit 4
 }
 
-# Validación de source.files
-if (-not $rulesetData.source -or -not $rulesetData.source.files) {
-    Write-Host "[!] ERROR: El ruleset no contiene la estructura 'source.files'." -ForegroundColor Red
+if ($null -eq $rulesetData -or -not ($rulesetData.PSObject)) {
+    Write-Host "[!] ERROR: Respuesta de ruleset inválida o no deserializable como objeto." -ForegroundColor Red
+    Write-Host "`nDictamen: API_RESPONSE_SCHEMA_INVALID" -ForegroundColor Red
+    exit 4
+}
+
+# 4.1. Validación estricta de attachment_point en Ruleset (el objeto Release no contiene este campo)
+$rawAttachmentPoint = Get-SafePropertyValue -Target $rulesetData -PropertyName "attachment_point"
+if ($null -eq $rawAttachmentPoint) {
+    $rawAttachmentPoint = Get-SafePropertyValue -Target $rulesetData -PropertyName "attachmentPoint"
+}
+
+if ($null -eq $rawAttachmentPoint -or [string]::IsNullOrWhiteSpace($rawAttachmentPoint)) {
+    Write-Host "[!] ERROR: El Ruleset '$rulesetName' no contiene la propiedad obligatoria 'attachment_point'." -ForegroundColor Red
+    Write-Host "`nDictamen: ATTACHMENT_POINT_MISSING" -ForegroundColor Red
+    exit 4
+}
+
+$rawAttachmentStr = [string]$rawAttachmentPoint
+$expectedFullAttachment = "firestore.googleapis.com/projects/$ProjectNumber/databases/$DatabaseId"
+$expectedShortAttachment = "firestore.googleapis.com/databases/$DatabaseId"
+
+if ($rawAttachmentStr -ne $expectedFullAttachment -and $rawAttachmentStr -ne $expectedShortAttachment) {
+    Write-Host "[!] ERROR: attachment_point discrepante con la base nombrada o project number." -ForegroundColor Red
+    Write-Host "    Recibido: '$rawAttachmentStr'" -ForegroundColor Yellow
+    Write-Host "    Esperado: '$expectedFullAttachment' o '$expectedShortAttachment'" -ForegroundColor Yellow
+    exit 4
+}
+Write-Host "[OK] attachment_point del Ruleset verificado con éxito: $rawAttachmentStr" -ForegroundColor Green
+
+# 4.2. Extracción y Validación de source.files (únicamente después de validar attachment_point)
+$sourceVal = Get-SafePropertyValue -Target $rulesetData -PropertyName "source"
+if ($null -eq $sourceVal -or -not ($sourceVal.PSObject)) {
+    Write-Host "[!] ERROR: El ruleset no contiene la estructura 'source'." -ForegroundColor Red
+    Write-Host "`nDictamen: API_RESPONSE_SCHEMA_INVALID" -ForegroundColor Red
     exit 5
 }
 
-$files = @($rulesetData.source.files)
+$filesVal = Get-SafePropertyValue -Target $sourceVal -PropertyName "files"
+if ($null -eq $filesVal) {
+    Write-Host "[!] ERROR: El ruleset no contiene la lista 'source.files'." -ForegroundColor Red
+    Write-Host "`nDictamen: API_RESPONSE_SCHEMA_INVALID" -ForegroundColor Red
+    exit 5
+}
+
+$files = @($filesVal)
 if ($files.Count -eq 0) {
     Write-Host "[!] ERROR: La lista 'source.files' está vacía." -ForegroundColor Red
     exit 5
@@ -219,7 +327,8 @@ if ($files.Count -eq 0) {
 
 Write-Host "[OK] Archivos detectados en el ruleset ($($files.Count)):" -ForegroundColor Green
 foreach ($f in $files) {
-    Write-Host "    - $($f.name)" -ForegroundColor White
+    $fName = Get-SafePropertyValue -Target $f -PropertyName "name"
+    Write-Host "    - $fName" -ForegroundColor White
 }
 
 if ($files.Count -gt 1) {
@@ -229,28 +338,17 @@ if ($files.Count -gt 1) {
 }
 
 $rulesFile = $files[0]
-$rulesContent = $rulesFile.content
-$rulesFileName = $rulesFile.name
-
-# Validación de attachment_point si viene declarado en la metadata
-$rawAttachmentPoint = $null
-if ($targetRelease.PSObject.Properties['attachment_point']) {
-    $rawAttachmentPoint = $targetRelease.attachment_point
-} elseif ($rulesetData.PSObject.Properties['attachment_point']) {
-    $rawAttachmentPoint = $rulesetData.attachment_point
+if ($null -eq $rulesFile -or -not ($rulesFile.PSObject)) {
+    Write-Host "[!] ERROR: El archivo de reglas no es un objeto válido." -ForegroundColor Red
+    exit 5
 }
 
-$expectedFullAttachment = "firestore.googleapis.com/projects/$ProjectNumber/databases/$DatabaseId"
-$expectedShortAttachment = "firestore.googleapis.com/databases/$DatabaseId"
+$rulesContent = Get-SafePropertyValue -Target $rulesFile -PropertyName "content"
+$rulesFileName = Get-SafePropertyValue -Target $rulesFile -PropertyName "name"
 
-if ($rawAttachmentPoint) {
-    if ($rawAttachmentPoint -ne $expectedFullAttachment -and $rawAttachmentPoint -ne $expectedShortAttachment) {
-        Write-Host "[!] ERROR: attachment_point discrepante con la base nombrada o project number." -ForegroundColor Red
-        Write-Host "    Recibido: '$rawAttachmentPoint'" -ForegroundColor Yellow
-        Write-Host "    Esperado: '$expectedFullAttachment' o '$expectedShortAttachment'" -ForegroundColor Yellow
-        exit 4
-    }
-    Write-Host "[OK] attachment_point verificado con éxito: $rawAttachmentPoint" -ForegroundColor Green
+if ($null -eq $rulesContent) {
+    Write-Host "[!] ERROR: El archivo de reglas no contiene la propiedad obligatoria 'content'." -ForegroundColor Red
+    exit 5
 }
 
 # Cálculo de Hash SHA-256
@@ -259,6 +357,8 @@ $contentBytes = [System.Text.Encoding]::UTF8.GetBytes($rulesContent)
 $hashBytes = $sha256.ComputeHash($contentBytes)
 $hashHex = [System.BitConverter]::ToString($hashBytes) -replace "-", ""
 
+$rulesetCreateTime = Get-SafePropertyValue -Target $rulesetData -PropertyName "createTime"
+
 Write-Host "`n========================================================================" -ForegroundColor Green
 Write-Host " RESUMEN FORENSE DEL RULESET EN VIVO (OBSERVADO)" -ForegroundColor Green
 Write-Host "========================================================================" -ForegroundColor Green
@@ -266,8 +366,8 @@ Write-Host "Archivo declarado : $rulesFileName"
 Write-Host "Tamaño bytes      : $($contentBytes.Length)"
 Write-Host "Líneas de código  : $(($rulesContent -split "`n").Length)"
 Write-Host "SHA-256           : $hashHex"
-Write-Host "Create Time       : $($rulesetData.createTime)"
-Write-Host "Release Name      : $($targetRelease.name)"
+Write-Host "Create Time       : $rulesetCreateTime"
+Write-Host "Release Name      : $targetName"
 Write-Host "Attachment Point  : $expectedFullAttachment"
 Write-Host "========================================================================" -ForegroundColor Green
 
