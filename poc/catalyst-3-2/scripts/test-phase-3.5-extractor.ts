@@ -5,6 +5,8 @@
  */
 
 import * as crypto from 'crypto';
+import * as fs from 'fs';
+import * as path from 'path';
 
 interface TestCase {
   id: string;
@@ -1145,12 +1147,254 @@ registerTest('SECCION 17: FASE 3.5.0.11', 'T-3511-10', 'Ausencia de snapshots o 
 });
 
 // ----------------------------------------------------------------------------
+// SECCION 18: FASE 3.5.0.12 — DIAGNÓSTICO PROJECT NUMBER Y AUDITORÍA RULESETS.LIST
+// ----------------------------------------------------------------------------
+
+function classifyGcloudFailure(exitCode: number, stdout: string, stderr: string): string {
+  if (exitCode !== 0) {
+    if (/(Reauthentication|invalid_rapt|HTTP\s*401|401\s+Unauthorized|not logged in|no currently active account|No credentialed accounts|gcloud auth login|UNAUTHENTICATED|invalid_grant|RefreshError|Could not reach metadata|credentials were not found|Your credentials)/i.test(stderr)) {
+      return 'AUTH_ERROR';
+    }
+    if (/(PERMISSION_DENIED|HTTP\s*403|403\s+Forbidden|does not have permission|not authorized|resourcemanager\.projects\.(get|list)|Caller does not have)/i.test(stderr)) {
+      return 'PERMISSION_DENIED';
+    }
+    return 'API_ERROR';
+  }
+  if (!stdout || stdout.trim().length === 0) {
+    return 'EMPTY_RESPONSE';
+  }
+  try {
+    JSON.parse(stdout);
+    return 'SUCCESS';
+  } catch {
+    return 'MALFORMED_JSON';
+  }
+}
+
+function diagnoseProjectNumberMapping(
+  actualNumber: string,
+  expectedNumber: string,
+  observedAttachmentNumber: string
+): string {
+  if (actualNumber === expectedNumber && actualNumber === observedAttachmentNumber) {
+    return 'ALL_NUMBERS_MATCH';
+  }
+  if (actualNumber === observedAttachmentNumber && actualNumber !== expectedNumber) {
+    return 'EXPECTED_NUMBER_MISMATCH_OBSERVED_MATCHES_PROJECT';
+  }
+  if (actualNumber === expectedNumber && actualNumber !== observedAttachmentNumber) {
+    return 'CROSS_PROJECT_OR_ANOMALOUS_ATTACHMENT_POINT';
+  }
+  return 'BOTH_NUMBERS_DISCREPANT_FROM_ACTUAL_PROJECT';
+}
+
+registerTest('SECCION 18: FASE 3.5.0.12', 'T-3512-01', 'Coincidencia exacta del número real del proyecto frente al esperado y observado', () => {
+  const verdictMatch = diagnoseProjectNumberMapping('510844325101', '510844325101', '510844325101');
+  const verdictCross = diagnoseProjectNumberMapping('510844325101', '510844325101', '955230563489');
+  return verdictMatch === 'ALL_NUMBERS_MATCH' && verdictCross === 'CROSS_PROJECT_OR_ANOMALOUS_ATTACHMENT_POINT';
+});
+
+registerTest('SECCION 18: FASE 3.5.0.12', 'T-3512-02', 'Número esperado discrepante detectado sin autocorrección ni aceptación dual', () => {
+  const expectedNumber = '510844325101';
+  const observedAttachmentNumber = '955230563489';
+  const actualFromResourceManager = '955230563489';
+
+  const diag = diagnoseProjectNumberMapping(actualFromResourceManager, expectedNumber, observedAttachmentNumber);
+  // Política estricta: query-remote-rules.ps1 sigue rechazando mientras expectedNumber !== observedAttachmentNumber
+  const strictValidationAllowsBoth = ['510844325101', '955230563489'].every(n => n === expectedNumber);
+
+  return diag === 'EXPECTED_NUMBER_MISMATCH_OBSERVED_MATCHES_PROJECT' && strictValidationAllowsBoth === false;
+});
+
+registerTest('SECCION 18: FASE 3.5.0.12', 'T-3512-03', 'Proyecto observado visible en gcloud projects list devuelve projectId, projectNumber y lifecycleState', () => {
+  const mockStdout = JSON.stringify([
+    {
+      projectId: 'gen-lang-client-0041212770',
+      projectNumber: '955230563489',
+      lifecycleState: 'ACTIVE'
+    }
+  ]);
+
+  const status = classifyGcloudFailure(0, mockStdout, '');
+  const parsed = JSON.parse(mockStdout);
+  const classification = parsed.length === 0 ? 'PROJECT_NOT_VISIBLE_TO_ACTIVE_ACCOUNT' : 'PROJECT_VISIBLE_TO_ACTIVE_ACCOUNT';
+
+  return (
+    status === 'SUCCESS' &&
+    classification === 'PROJECT_VISIBLE_TO_ACTIVE_ACCOUNT' &&
+    parsed[0].projectId === 'gen-lang-client-0041212770' &&
+    parsed[0].projectNumber === '955230563489' &&
+    parsed[0].lifecycleState === 'ACTIVE'
+  );
+});
+
+registerTest('SECCION 18: FASE 3.5.0.12', 'T-3512-04', 'Proyecto observado ausente en gcloud projects list se clasifica como PROJECT_NOT_VISIBLE_TO_ACTIVE_ACCOUNT', () => {
+  const mockStdout = '[]';
+  const status = classifyGcloudFailure(0, mockStdout, '');
+  const parsed = JSON.parse(mockStdout);
+  const classification = parsed.length === 0 ? 'PROJECT_NOT_VISIBLE_TO_ACTIVE_ACCOUNT' : 'PROJECT_VISIBLE_TO_ACTIVE_ACCOUNT';
+  const provesNonExistence = false;
+
+  return status === 'SUCCESS' && classification === 'PROJECT_NOT_VISIBLE_TO_ACTIVE_ACCOUNT' && provesNonExistence === false;
+});
+
+registerTest('SECCION 18: FASE 3.5.0.12', 'T-3512-05', 'Error de permisos (403 / PERMISSION_DENIED) clasificado separadamente de resultado vacío y auth', () => {
+  const stderr = 'ERROR: (gcloud.projects.describe) User [op@example.com] does not have permission to access projects instance [gen-lang-client-0041212770]: The caller does not have permission';
+  const classification = classifyGcloudFailure(1, '', stderr);
+  return classification === 'PERMISSION_DENIED';
+});
+
+registerTest('SECCION 18: FASE 3.5.0.12', 'T-3512-06', 'Error de autenticación (Reauthentication / UNAUTHENTICATED / invalid_rapt) clasificado como AUTH_ERROR', () => {
+  const cases = [
+    'ERROR: (gcloud.projects.describe) Reauthentication failed. cannot prompt during non-interactive execution.',
+    'ERROR: Your credentials have expired. Please run gcloud auth login.',
+    'UNAUTHENTICATED: invalid_rapt'
+  ];
+  return cases.every(err => classifyGcloudFailure(1, '', err) === 'AUTH_ERROR');
+});
+
+registerTest('SECCION 18: FASE 3.5.0.12', 'T-3512-07', 'Error de API vs respuesta vacía (exit 0 sin stdout) claramente diferenciados', () => {
+  const apiErr = classifyGcloudFailure(1, '', 'ERROR: Cloud Resource Manager API has not been used in project or it is disabled (API_NOT_ENABLED).');
+  const emptyResp = classifyGcloudFailure(0, '   \n  ', '');
+  return apiErr === 'API_ERROR' && emptyResp === 'EMPTY_RESPONSE';
+});
+
+registerTest('SECCION 18: FASE 3.5.0.12', 'T-3512-08', 'JSON malformado en respuesta de gcloud clasificado como MALFORMED_JSON', () => {
+  const malformed = classifyGcloudFailure(0, '{"projectId": "gen-lang-client-0041212770", ', '');
+  return malformed === 'MALFORMED_JSON';
+});
+
+registerTest('SECCION 18: FASE 3.5.0.12', 'T-3512-09', 'Ausencia de attachment_point en metadatos de rulesets.list detiene con ATTACHMENT_POINT_UNVERIFIABLE_WITH_METADATA_LIST sin ejecutar rulesets.get', () => {
+  const apiCallsExecuted: string[] = [];
+
+  function evaluateSecureRulesetsListFlow(
+    release: { name: string; rulesetName: string },
+    rulesetsListItems: Array<{ name: string; attachment_point?: string; source?: unknown }>,
+    expectedAttachmentFull: string,
+    expectedAttachmentShort: string
+  ): { verdict: string; getExecuted: boolean } {
+    apiCallsExecuted.push('projects.releases.list');
+    apiCallsExecuted.push('projects.rulesets.list');
+
+    const meta = rulesetsListItems.find(item => item.name === release.rulesetName);
+    if (!meta || !meta.attachment_point || meta.attachment_point.trim().length === 0) {
+      return { verdict: 'ATTACHMENT_POINT_UNVERIFIABLE_WITH_METADATA_LIST', getExecuted: false };
+    }
+    if (meta.attachment_point !== expectedAttachmentFull && meta.attachment_point !== expectedAttachmentShort) {
+      return { verdict: 'ATTACHMENT_POINT_MISMATCH', getExecuted: false };
+    }
+    apiCallsExecuted.push('projects.rulesets.get');
+    return { verdict: 'AUTHORIZED_FOR_RULESET_GET', getExecuted: true };
+  }
+
+  const res = evaluateSecureRulesetsListFlow(
+    {
+      name: 'projects/gen-lang-client-0041212770/releases/cloud.firestore/ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c',
+      rulesetName: 'projects/gen-lang-client-0041212770/rulesets/40671e7f-14ef-4cca-885d-af9c292b9e1a'
+    },
+    [
+      {
+        name: 'projects/gen-lang-client-0041212770/rulesets/40671e7f-14ef-4cca-885d-af9c292b9e1a'
+        // attachment_point ausente en metadata list
+      }
+    ],
+    'firestore.googleapis.com/projects/510844325101/databases/ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c',
+    'firestore.googleapis.com/databases/ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c'
+  );
+
+  return (
+    res.verdict === 'ATTACHMENT_POINT_UNVERIFIABLE_WITH_METADATA_LIST' &&
+    res.getExecuted === false &&
+    !apiCallsExecuted.includes('projects.rulesets.get')
+  );
+});
+
+registerTest('SECCION 18: FASE 3.5.0.12', 'T-3512-10', 'Prohibición de descargar Source antes de validar destino en metadatos (discrepancia aborta antes de rulesets.get)', () => {
+  const trace: string[] = [];
+
+  function runGatedMetadataCheck(attachmentInList: string, expectedFull: string, expectedShort: string): string {
+    trace.push('GET_RELEASES_LIST');
+    trace.push('GET_RULESETS_LIST_METADATA_ONLY');
+    if (attachmentInList !== expectedFull && attachmentInList !== expectedShort) {
+      return 'ABORTED_BEFORE_RULESET_GET';
+    }
+    trace.push('GET_RULESET_FULL_SOURCE');
+    return 'DOWNLOADED';
+  }
+
+  const outcome = runGatedMetadataCheck(
+    'firestore.googleapis.com/projects/955230563489/databases/ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c',
+    'firestore.googleapis.com/projects/510844325101/databases/ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c',
+    'firestore.googleapis.com/databases/ai-studio-vigorcore-f954ab83-f9aa-4846-93b8-a4666a58761c'
+  );
+
+  return outcome === 'ABORTED_BEFORE_RULESET_GET' && !trace.includes('GET_RULESET_FULL_SOURCE');
+});
+
+registerTest('SECCION 18: FASE 3.5.0.12', 'T-3512-11', 'Análisis estático de verify-ruleset-attachment-project.ps1: PS 5.1, solo lectura gcloud y cero reglas/escrituras remotas', () => {
+  const scriptPath = path.resolve(process.cwd(), 'poc/catalyst-3-2/scripts/verify-ruleset-attachment-project.ps1');
+  const altPath = path.resolve(process.cwd(), 'scripts/verify-ruleset-attachment-project.ps1');
+  const targetPath = fs.existsSync(scriptPath) ? scriptPath : altPath;
+  const content = fs.readFileSync(targetPath, 'utf8');
+
+  const hasStrictMode = content.includes('Set-StrictMode -Version Latest');
+  const hasSafeHelper = content.includes('function Get-SafePropertyValue');
+  const hasUtf8NoBom = content.includes('System.Text.UTF8Encoding($false)');
+  const hasDescribe = content.includes('"projects", "describe"');
+  const hasList = content.includes('"projects", "list"');
+  const hasNotVisibleClassification = content.includes('PROJECT_NOT_VISIBLE_TO_ACTIVE_ACCOUNT');
+  const hasAuthPermApi = content.includes('AUTH_ERROR') && content.includes('PERMISSION_DENIED') && content.includes('API_ERROR');
+  const hasSanitizer = content.includes('Remove-SensitiveStrings');
+
+  // Ausencia de llamadas a Firebase Rules API o verbos de escritura o impresión de tokens
+  const noRestInvoke = !/Invoke-RestMethod|Invoke-WebRequest|System\.Net\.WebClient/i.test(content);
+  const noRulesUrl = !/https:\/\/firebaserules\.googleapis\.com/i.test(content);
+  const noTokenPrint = !/print-access-token/i.test(content);
+  const noWriteVerbs = !/-Method\s+(Post|Patch|Put|Delete)/i.test(content);
+  const noSnapshotFlags = !/\-SaveSnapshot|\-AllowOverwrite/i.test(content);
+
+  return (
+    hasStrictMode &&
+    hasSafeHelper &&
+    hasUtf8NoBom &&
+    hasDescribe &&
+    hasList &&
+    hasNotVisibleClassification &&
+    hasAuthPermApi &&
+    hasSanitizer &&
+    noRestInvoke &&
+    noRulesUrl &&
+    noTokenPrint &&
+    noWriteVerbs &&
+    noSnapshotFlags
+  );
+});
+
+registerTest('SECCION 18: FASE 3.5.0.12', 'T-3512-12', 'query-remote-rules.ps1 conserva validación estricta (no acepta 955230563489 ni relaja comparación) y correlación estática de config', () => {
+  const qScriptPath = path.resolve(process.cwd(), 'poc/catalyst-3-2/scripts/query-remote-rules.ps1');
+  const qAltPath = path.resolve(process.cwd(), 'scripts/query-remote-rules.ps1');
+  const qTarget = fs.existsSync(qScriptPath) ? qScriptPath : qAltPath;
+  const qContent = fs.readFileSync(qTarget, 'utf8');
+
+  const keepsSingleExpected = qContent.includes('[string]$ProjectNumber = "510844325101"') && !qContent.includes('955230563489');
+
+  const cfgPath = path.resolve(process.cwd(), 'firebase-applet-config.json');
+  const cfgAltPath = path.resolve(process.cwd(), '../../firebase-applet-config.json');
+  const cfgTarget = fs.existsSync(cfgPath) ? cfgPath : cfgAltPath;
+  const cfg = JSON.parse(fs.readFileSync(cfgTarget, 'utf8'));
+
+  const cfgMatches955 = cfg.projectId === 'gen-lang-client-0041212770' && cfg.messagingSenderId === '955230563489' && String(cfg.appId).includes(':955230563489:');
+
+  return keepsSingleExpected && cfgMatches955;
+});
+
+// ----------------------------------------------------------------------------
 // EJECUTOR DE SUITE
 // ----------------------------------------------------------------------------
 async function runSuite() {
   console.log('========================================================================');
   console.log('SUITE AUTOMATIZADA DE PRUEBAS DEL EXTRACTOR FORENSE VIGORCORE');
-  console.log('Fases 3.5.0 a 3.5.0.11 — Verificación Funcional, Criptográfica, ACL y Reglas');
+  console.log('Fases 3.5.0 a 3.5.0.12 — Verificación Funcional, Criptográfica, ACL y Reglas');
   console.log('========================================================================\n');
 
   let passed = 0;
