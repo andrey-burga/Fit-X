@@ -1,0 +1,56 @@
+{
+  "_meta": {
+    "status": "CANDIDATE_NOT_APPLIED",
+    "warning": "Template only — contains zero real project IDs or secrets"
+  },
+  "deployment": {
+    "name": "vigor_api",
+    "type": "advancedio",
+    "stack": "node22"
+  },
+  "execution": {
+    "main": "dist/server/catalystEntry.js"
+  },
+  "supportedAuthModes": [
+    "hosted_native",
+    "external_oauth"
+  ],
+  "requiredEnvVarsHostedNative": [
+    "VIGOR_CATALYST_AUTH_MODE",
+    "VIGOR_CORS_MODE",
+    "CATALYST_PROJECT_ID",
+    "CATALYST_ENVIRONMENT",
+    "VIGOR_ENVIRONMENT",
+    "CATALYST_API_DOMAIN",
+    "CATALYST_ACCOUNTS_URL",
+    "VIGOR_SESSION_HMAC_SECRET",
+    "VIGOR_SESSION_ACTIVE_KID",
+    "VIGOR_ALLOWED_ORIGINS"
+  ],
+  "requiredEnvVarsExternalOAuthFallback": [
+    "CATALYST_PROJECT_KEY",
+    "CATALYST_ADMIN_CLIENT_ID",
+    "CATALYST_ADMIN_CLIENT_SECRET",
+    "CATALYST_ADMIN_REFRESH_TOKEN"
+  ],
+  "requiredEnvVars": [
+    "CATALYST_PROJECT_ID",
+    "CATALYST_ENVIRONMENT",
+    "VIGOR_ENVIRONMENT",
+    "CATALYST_API_DOMAIN",
+    "CATALYST_ACCOUNTS_URL",
+    "VIGOR_CATALYST_AUTH_MODE",
+    "VIGOR_CORS_MODE",
+    "VIGOR_SESSION_HMAC_SECRET",
+    "VIGOR_SESSION_ACTIVE_KID",
+    "VIGOR_ALLOWED_ORIGINS"
+  ],
+  "optionalEnvVars": [
+    "CATALYST_PROJECT_KEY",
+    "CATALYST_ADMIN_CLIENT_ID",
+    "CATALYST_ADMIN_CLIENT_SECRET",
+    "CATALYST_ADMIN_REFRESH_TOKEN",
+    "VIGOR_SESSION_PREVIOUS_SECRETS_JSON",
+    "CATALYST_FUNCTION_NAME"
+  ]
+}

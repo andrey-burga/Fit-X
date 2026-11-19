@@ -1,0 +1,21 @@
+{
+  "_meta": {
+    "status": "CANDIDATE_NOT_APPLIED",
+    "alternative": "A_DIRECT_ADVANCED_IO_CUSTOM_DOMAIN",
+    "warning": "DO NOT APPLY WITHOUT OPERATOR APPROVAL AND INT-06/INT-07 VERIFICATION"
+  },
+  "version": "1.0-candidate",
+  "rules": [
+    {
+      "url": "/api/v1/*",
+      "authentication": "optional",
+      "description": "Allow unauthenticated/HMAC-cookie requests and CORS OPTIONS preflight to reach Express advancedIoApp. Never use Catalyst Security Rules to substitute VigorCore authorization."
+    },
+    {
+      "url": "/health",
+      "method": "GET",
+      "authentication": "optional",
+      "description": "Public non-sensitive health probe"
+    }
+  ]
+}

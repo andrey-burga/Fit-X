@@ -1,0 +1,74 @@
+{
+  "_meta": {
+    "status": "CANDIDATE_NOT_APPLIED",
+    "alternative": "B_CLOUDSCALE_API_GATEWAY",
+    "zohoSupportDecisionDate": "2026-11-17",
+    "warnings": [
+      "Enabling Catalyst API Gateway (catalyst apig:enable) AUTOMATICALLY deactivates Project Security Rules globally across the project.",
+      "Web Client Hosting is NOT required; map https://api.vigorcore.lat via CloudScale > Domain Mapping (Production + CNAME).",
+      "Configure CloudScale > Whitelisting > Authorized Domains with https://app.vigorcore.lat only (no wildcard) and set VIGOR_CORS_MODE=platform_managed if Catalyst edge emits Access-Control-* headers.",
+      "Requires INT-06 (OPTIONS preflight), INT-07 (Set-Cookie __Host-vigor_session SameSite=Strict passthrough), and INT-08/NO_AUTHENTICATION x-zc-* header inspection in live environment."
+    ]
+  },
+  "domain": "api.vigorcore.lat",
+  "frontendOrigin": "https://app.vigorcore.lat",
+  "domainMapping": {
+    "feature": "CloudScale > Domain Mapping",
+    "environment": "Production",
+    "dnsRecordType": "CNAME",
+    "webClientHosting": false
+  },
+  "authorizedDomains": [
+    "https://app.vigorcore.lat"
+  ],
+  "authEnabledAtGateway": false,
+  "routes": [
+    {
+      "request_method": "POST",
+      "request_url": "/api/v1/auth/session/bootstrap-profile",
+      "target_type": "advancedio",
+      "target_function": "vigor_api",
+      "target_path": "/server/vigor_api/api/v1/auth/session/bootstrap-profile",
+      "authentication": "CATALYST_USERS_AUTHENTICATION",
+      "fallbackAuthentication": "NO_AUTHENTICATION",
+      "notes": "Primary candidate leverages Catalyst Users Authentication for user-scope exchange; verify NO_AUTHENTICATION fallback during INT-08 live test."
+    },
+    {
+      "request_method": "POST",
+      "request_url": "/api/v1/auth/session/exchange",
+      "target_type": "advancedio",
+      "target_function": "vigor_api",
+      "target_path": "/server/vigor_api/api/v1/auth/session/exchange",
+      "authentication": "CATALYST_USERS_AUTHENTICATION",
+      "fallbackAuthentication": "NO_AUTHENTICATION",
+      "notes": "Primary candidate leverages Catalyst Users Authentication for user-scope exchange; verify NO_AUTHENTICATION fallback during INT-08 live test."
+    },
+    {
+      "request_method": "OPTIONS",
+      "request_url": "/api/v1/*",
+      "target_type": "advancedio",
+      "target_function": "vigor_api",
+      "target_path": "/server/vigor_api/api/v1/*",
+      "authentication": "NO_AUTHENTICATION",
+      "notes": "CORS preflight supported via CloudScale Authorized Domains; Express emits zero duplicate Access-Control-* headers in VIGOR_CORS_MODE=platform_managed."
+    },
+    {
+      "request_method": "ANY",
+      "request_url": "/api/v1/*",
+      "target_type": "advancedio",
+      "target_function": "vigor_api",
+      "target_path": "/server/vigor_api/api/v1/*",
+      "authentication": "NO_AUTHENTICATION",
+      "notes": "Covers refresh, logout, revoke, auth/me, all 25 athlete endpoints, invitations/redeem, and all 9 admin governance endpoints via VigorCore HMAC cookie + bound X-Vigor-CSRF + RBAC."
+    },
+    {
+      "request_method": "GET",
+      "request_url": "/health",
+      "target_type": "advancedio",
+      "target_function": "vigor_api",
+      "target_path": "/server/vigor_api/health",
+      "authentication": "NO_AUTHENTICATION",
+      "notes": "Unprivileged liveness probe returning service status and route count only."
+    }
+  ]
+}

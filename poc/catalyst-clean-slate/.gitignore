@@ -1,0 +1,9 @@
+node_modules/
+dist/
+dist-frontend/
+coverage/
+.env*
+!.env.example
+*.log
+reports/
+checkpoint*.json

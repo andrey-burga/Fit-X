@@ -1,0 +1,600 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * VigorCore — Phase 5.1 Frozen 5-Table / 8-GSI / 41-Route Reconciliation Registry
+ *
+ * Read-only structural matrix proving coherence across:
+ * 1. `TABLE_SCHEMA_REGISTRY` (Phase 4.0.2 Schema Freeze)
+ * 2. Phase 5.0 Per-Table Providers (`UsersTableProvider`, `UserDataTableProvider`,
+ *    `AdminInvitationsTableProvider`, `AuditLogsTableProvider`, `SystemControlTableProvider`)
+ * 3. `ROUTE_CONTRACT_SPECS` (all 41 canonical endpoints)
+ * 4. `AthleteDataService`, `AdminGovernanceService`, and `CleanSlateAuthGuard`
+ */
+
+import { ROUTE_CONTRACT_SPECS } from '../routes/routeContracts.js';
+import { TABLE_SCHEMA_REGISTRY, type TableName } from '../types/cleanSlate.js';
+
+export interface RouteToSchemaMappingEntry {
+  readonly routeId: string;
+  readonly method: string;
+  readonly path: string;
+  readonly primaryTables: readonly TableName[];
+  readonly indexesUsed: readonly string[];
+  readonly requiresConsistentRead: boolean;
+  readonly conditionalWritePattern: string;
+  readonly notes: string;
+}
+
+export interface IndexCoverageAuditEntry {
+  readonly table: TableName;
+  readonly indexName: string;
+  readonly partitionKey: string;
+  readonly sortKey: string | null;
+  readonly projection: string;
+  readonly includeColumnCount: number | null;
+  readonly providerMethods: readonly string[];
+  readonly serviceAndRouteConsumers: readonly string[];
+  readonly status: 'ACTIVE_IN_ROUTES_AND_PROVIDERS' | 'ACTIVE_IN_PROVIDER_RESERVED_FOR_QUERY_EXPANSION';
+  readonly notes: string;
+}
+
+export const ROUTE_TO_SCHEMA_MAPPING: readonly RouteToSchemaMappingEntry[] = [
+  // Session & Identity (6 routes)
+  {
+    routeId: 'auth.session.bootstrapProfile',
+    method: 'POST',
+    path: '/api/v1/auth/session/bootstrap-profile',
+    primaryTables: ['Users', 'SystemControl'],
+    indexesUsed: ['Users.GSI_Email'],
+    requiresConsistentRead: true,
+    conditionalWritePattern: 'fetchItem(consistent_read=true) + GSI_Email duplicate guard + pk=USER#<uid> & SESSION#<sid>',
+    notes: 'Persists Users profile and initial SESSION#<sid> with ttlEpochSec.',
+  },
+  {
+    routeId: 'auth.session.exchange',
+    method: 'POST',
+    path: '/api/v1/auth/session/exchange',
+    primaryTables: ['Users', 'SystemControl'],
+    indexesUsed: [],
+    requiresConsistentRead: true,
+    conditionalWritePattern: 'fetchItem(Users, consistent_read=true) + insert SESSION#<sid>',
+    notes: 'Mints __Host-vigor_session + bound X-Vigor-CSRF token.',
+  },
+  {
+    routeId: 'auth.session.refresh',
+    method: 'POST',
+    path: '/api/v1/auth/session/refresh',
+    primaryTables: ['Users', 'SystemControl'],
+    indexesUsed: [],
+    requiresConsistentRead: true,
+    conditionalWritePattern: 'conditional update SESSION#<oldSid> (status=active -> revoked) + timeout consistent_read recovery',
+    notes: 'Enforces 24h absolute ceiling & <=5s rotation grace.',
+  },
+  {
+    routeId: 'auth.session.logout',
+    method: 'POST',
+    path: '/api/v1/auth/session/logout',
+    primaryTables: ['Users', 'SystemControl'],
+    indexesUsed: [],
+    requiresConsistentRead: true,
+    conditionalWritePattern: 'conditional update SESSION#<sid> (status=active -> revoked) + timeout recovery',
+    notes: 'Clears cookie with Max-Age=0.',
+  },
+  {
+    routeId: 'auth.session.revoke',
+    method: 'POST',
+    path: '/api/v1/auth/session/revoke',
+    primaryTables: ['Users', 'SystemControl'],
+    indexesUsed: [],
+    requiresConsistentRead: true,
+    conditionalWritePattern: 'individual: SESSION#<sid> status=active->revoked; global: Users sessionEpoch+1 condition(sessionEpoch)',
+    notes: 'Admin blocked from revoking superadmin.',
+  },
+  {
+    routeId: 'auth.me',
+    method: 'GET',
+    path: '/api/v1/auth/me',
+    primaryTables: ['Users', 'SystemControl'],
+    indexesUsed: [],
+    requiresConsistentRead: true,
+    conditionalWritePattern: 'Read-only consistent_read=true on Users + SESSION#<sid>',
+    notes: 'Deny-by-default if Users record absent or session invalid.',
+  },
+
+  // Athlete Workspace & Subcollections (19 routes -> UserData + Users)
+  {
+    routeId: 'athlete.workspace.get',
+    method: 'GET',
+    path: '/api/v1/athlete/workspace',
+    primaryTables: ['Users', 'UserData', 'SystemControl'],
+    indexesUsed: [],
+    requiresConsistentRead: true,
+    conditionalWritePattern: 'Read-only paginated queryTable(UserData, USER#<uid>, limit<=100, consistent_read=true)',
+    notes: 'Hydrates all 11 subcollections within 30s Advanced I/O cap.',
+  },
+  {
+    routeId: 'athlete.profile.patch',
+    method: 'PATCH',
+    path: '/api/v1/athlete/profile',
+    primaryTables: ['Users', 'SystemControl'],
+    indexesUsed: [],
+    requiresConsistentRead: true,
+    conditionalWritePattern: 'conditional update Users (attribute_exists(pk)); blocks role/roleVersion/sessionEpoch/accountStatus',
+    notes: 'Self-service profile metadata only.',
+  },
+  {
+    routeId: 'athlete.onboarding.complete',
+    method: 'POST',
+    path: '/api/v1/athlete/onboarding/complete',
+    primaryTables: ['Users', 'UserData', 'SystemControl'],
+    indexesUsed: [],
+    requiresConsistentRead: true,
+    conditionalWritePattern: 'batch write (BIO#current + PREF#settings <=25 items) + conditional update Users(attribute_exists(pk))',
+    notes: 'Completes onboardingStep=6.',
+  },
+  {
+    routeId: 'athlete.biometrics.put',
+    method: 'PUT',
+    path: '/api/v1/athlete/biometrics',
+    primaryTables: ['UserData', 'Users', 'SystemControl'],
+    indexesUsed: [],
+    requiresConsistentRead: true,
+    conditionalWritePattern: 'fetchItem(BIO#current, consistent_read=true) + deterministic upsert version+1',
+    notes: 'Validates SI biometric bounds & 350 KB soft budget.',
+  },
+  {
+    routeId: 'athlete.preferences.put',
+    method: 'PUT',
+    path: '/api/v1/athlete/preferences',
+    primaryTables: ['UserData', 'Users', 'SystemControl'],
+    indexesUsed: [],
+    requiresConsistentRead: true,
+    conditionalWritePattern: 'fetchItem(PREF#settings, consistent_read=true) + deterministic upsert version+1',
+    notes: 'Updates user preferences independently of onboarding.',
+  },
+  {
+    routeId: 'athlete.meals.create',
+    method: 'POST',
+    path: '/api/v1/athlete/meals',
+    primaryTables: ['UserData', 'Users', 'SystemControl'],
+    indexesUsed: [],
+    requiresConsistentRead: true,
+    conditionalWritePattern: 'SK=MEAL#<dateTime>#<id>, entityDateKey=MEAL_LOG#<dateTime>#<id>',
+    notes: 'Writes single item <=350 KB soft budget.',
+  },
+  {
+    routeId: 'athlete.meals.list',
+    method: 'GET',
+    path: '/api/v1/athlete/meals',
+    primaryTables: ['UserData', 'Users', 'SystemControl'],
+    indexesUsed: [],
+    requiresConsistentRead: true,
+    conditionalWritePattern: 'Read-only queryTable(UserData, pk=USER#<uid>, SK BETWEEN MEAL#<start>..MEAL#<end>\\uffff)',
+    notes: 'Paginated <=100 items/call.',
+  },
+  {
+    routeId: 'athlete.meals.delete',
+    method: 'DELETE',
+    path: '/api/v1/athlete/meals/:mealId',
+    primaryTables: ['UserData', 'Users', 'SystemControl'],
+    indexesUsed: [],
+    requiresConsistentRead: true,
+    conditionalWritePattern: 'queryTable(MEAL#, consistent_read=true) + idempotent delete on { pk, sk }',
+    notes: 'Scoped to caller pk.',
+  },
+  {
+    routeId: 'athlete.groceries.sync',
+    method: 'PUT',
+    path: '/api/v1/athlete/groceries/sync',
+    primaryTables: ['UserData', 'Users', 'SystemControl'],
+    indexesUsed: [],
+    requiresConsistentRead: true,
+    conditionalWritePattern: 'queryTable(GROCERY#, consistent_read=true) + chunked <=25 delete/write batches',
+    notes: 'Multi-batch sync is explicitly flagged atomicBatch=false when batchCalls>1.',
+  },
+  {
+    routeId: 'athlete.groceries.create',
+    method: 'POST',
+    path: '/api/v1/athlete/groceries',
+    primaryTables: ['UserData', 'Users', 'SystemControl'],
+    indexesUsed: [],
+    requiresConsistentRead: true,
+    conditionalWritePattern: 'fetchItem(consistent_read=true) 409 duplicate guard + insert GROCERY#<id>',
+    notes: 'Forces origin=manual.',
+  },
+  {
+    routeId: 'athlete.groceries.patchStatus',
+    method: 'PATCH',
+    path: '/api/v1/athlete/groceries/:groceryId',
+    primaryTables: ['UserData', 'Users', 'SystemControl'],
+    indexesUsed: [],
+    requiresConsistentRead: true,
+    conditionalWritePattern: 'fetchItem(consistent_read=true) + conditional update (version == expectedVersion)',
+    notes: 'Inspects response.update[0].status === Success.',
+  },
+  {
+    routeId: 'athlete.groceries.delete',
+    method: 'DELETE',
+    path: '/api/v1/athlete/groceries/:groceryId',
+    primaryTables: ['UserData', 'Users', 'SystemControl'],
+    indexesUsed: [],
+    requiresConsistentRead: true,
+    conditionalWritePattern: 'Idempotent key deletion on { pk, sk: GROCERY#<groceryId> }',
+    notes: 'Scoped to caller pk.',
+  },
+  {
+    routeId: 'athlete.workouts.start',
+    method: 'POST',
+    path: '/api/v1/athlete/workouts/start',
+    primaryTables: ['UserData', 'Users', 'SystemControl'],
+    indexesUsed: [],
+    requiresConsistentRead: true,
+    conditionalWritePattern: 'consistent_read existence probe + insert WORKOUT#<startedAt>#<id> with status=in_progress',
+    notes: 'Avoids insert conditional bug on absent key via consistent pre-read.',
+  },
+  {
+    routeId: 'athlete.workouts.logSet',
+    method: 'POST',
+    path: '/api/v1/athlete/workouts/:workoutId/sets',
+    primaryTables: ['UserData', 'Users', 'SystemControl'],
+    indexesUsed: [],
+    requiresConsistentRead: true,
+    conditionalWritePattern: 'consistent_read parent WORKOUT# lookup (must be in_progress) + insert SET#<wId>#<setId>',
+    notes: 'Rejects writes against completed/abandoned workouts.',
+  },
+  {
+    routeId: 'athlete.workouts.complete',
+    method: 'POST',
+    path: '/api/v1/athlete/workouts/:workoutId/complete',
+    primaryTables: ['UserData', 'Users', 'SystemControl'],
+    indexesUsed: [],
+    requiresConsistentRead: true,
+    conditionalWritePattern: 'conditional version lock (version == existing.version) inspecting update[0].status',
+    notes: 'Transitions workout to immutable terminal state.',
+  },
+  {
+    routeId: 'athlete.cardio.create',
+    method: 'POST',
+    path: '/api/v1/athlete/cardio',
+    primaryTables: ['UserData', 'Users', 'SystemControl'],
+    indexesUsed: [],
+    requiresConsistentRead: true,
+    conditionalWritePattern: 'Insert CARDIO#<date>#<id>, entityDateKey=CARDIO_SESSION#<date>#<id>',
+    notes: 'Enforces HR & duration bounds.',
+  },
+  {
+    routeId: 'athlete.cardio.delete',
+    method: 'DELETE',
+    path: '/api/v1/athlete/cardio/:cardioId',
+    primaryTables: ['UserData', 'Users', 'SystemControl'],
+    indexesUsed: [],
+    requiresConsistentRead: true,
+    conditionalWritePattern: 'queryTable(CARDIO#, consistent_read=true) + delete { pk, sk }',
+    notes: 'Idempotent within caller partition.',
+  },
+  {
+    routeId: 'athlete.notifications.create',
+    method: 'POST',
+    path: '/api/v1/athlete/notifications',
+    primaryTables: ['UserData', 'Users', 'SystemControl'],
+    indexesUsed: [],
+    requiresConsistentRead: true,
+    conditionalWritePattern: 'Insert NOTIF#<createdAt>#<id>, entityDateKey=NOTIFICATION#<createdAt>#<id>',
+    notes: 'Scoped to caller pk.',
+  },
+  {
+    routeId: 'athlete.notifications.markRead',
+    method: 'PATCH',
+    path: '/api/v1/athlete/notifications/:notificationId/read',
+    primaryTables: ['UserData', 'Users', 'SystemControl'],
+    indexesUsed: [],
+    requiresConsistentRead: true,
+    conditionalWritePattern: 'queryTable(NOTIF#, consistent_read=true) + conditional update (version == existing.version)',
+    notes: 'Inspects response.update[0].status.',
+  },
+  {
+    routeId: 'athlete.notifications.markAllRead',
+    method: 'POST',
+    path: '/api/v1/athlete/notifications/read-all',
+    primaryTables: ['UserData', 'Users', 'SystemControl'],
+    indexesUsed: [],
+    requiresConsistentRead: true,
+    conditionalWritePattern: 'queryTable(NOTIF#, consistent_read=true) + chunked <=25 delete/write batches',
+    notes: 'Reports atomicBatch=batchCalls<=1.',
+  },
+  {
+    routeId: 'athlete.recipes.put',
+    method: 'PUT',
+    path: '/api/v1/athlete/recipes/:recipeId',
+    primaryTables: ['UserData', 'Users', 'SystemControl'],
+    indexesUsed: [],
+    requiresConsistentRead: true,
+    conditionalWritePattern: 'Deterministic overwrite RECIPE#<recipeId> under <=350 KB budget',
+    notes: 'Rejects body.id !== params.recipeId.',
+  },
+  {
+    routeId: 'athlete.recipes.delete',
+    method: 'DELETE',
+    path: '/api/v1/athlete/recipes/:recipeId',
+    primaryTables: ['UserData', 'Users', 'SystemControl'],
+    indexesUsed: [],
+    requiresConsistentRead: true,
+    conditionalWritePattern: 'Idempotent key deletion { pk, sk: RECIPE#<recipeId> }',
+    notes: 'Scoped to caller pk.',
+  },
+  {
+    routeId: 'athlete.mealPlans.put',
+    method: 'PUT',
+    path: '/api/v1/athlete/meal-plans/:weekStart',
+    primaryTables: ['UserData', 'Users', 'SystemControl'],
+    indexesUsed: [],
+    requiresConsistentRead: true,
+    conditionalWritePattern: 'Deterministic overwrite PLAN#<weekStart> under <=350 KB budget',
+    notes: 'Rejects mismatched body.weekStart.',
+  },
+  {
+    routeId: 'athlete.routines.put',
+    method: 'PUT',
+    path: '/api/v1/athlete/routines/:routineId',
+    primaryTables: ['UserData', 'Users', 'SystemControl'],
+    indexesUsed: [],
+    requiresConsistentRead: true,
+    conditionalWritePattern: 'Deterministic overwrite ROUTINE#<routineId> under <=350 KB budget',
+    notes: 'Rejects body.id !== params.routineId.',
+  },
+  {
+    routeId: 'athlete.routines.setDefault',
+    method: 'POST',
+    path: '/api/v1/athlete/routines/:routineId/default',
+    primaryTables: ['UserData', 'Users', 'SystemControl'],
+    indexesUsed: [],
+    requiresConsistentRead: true,
+    conditionalWritePattern: 'queryTable(ROUTINE#, consistent_read=true) + chunked <=25 delete/write batches for changed flags',
+    notes: 'Verifies target routineId exists (404 otherwise).',
+  },
+
+  // Invitations & Admin Governance (12 routes -> Users, AdminInvitations, AuditLogs, SystemControl)
+  {
+    routeId: 'invitations.redeem',
+    method: 'POST',
+    path: '/api/v1/invitations/redeem',
+    primaryTables: ['AdminInvitations', 'Users', 'AuditLogs', 'SystemControl'],
+    indexesUsed: [],
+    requiresConsistentRead: true,
+    conditionalWritePattern: 'Conditional lock (status=pending -> redeeming) + expiresAtEpochSec > nowSec + SHA-256 timingSafeEqual',
+    notes: 'Never relies on async TTL for authorization expiration.',
+  },
+  {
+    routeId: 'admin.users.list',
+    method: 'GET',
+    path: '/api/v1/admin/users',
+    primaryTables: ['Users', 'SystemControl'],
+    indexesUsed: ['Users.GSI_Directory', 'Users.GSI_RoleStatus'],
+    requiresConsistentRead: false,
+    conditionalWritePattern: 'Parallel 4-segment fan-out (USER_SEG#0..3) or GSI_RoleStatus filter; limit<=100',
+    notes: 'GSI_Directory projects exact 11 INCLUDE columns.',
+  },
+  {
+    routeId: 'admin.stats.get',
+    method: 'GET',
+    path: '/api/v1/admin/stats',
+    primaryTables: ['Users', 'SystemControl'],
+    indexesUsed: ['Users.GSI_Directory'],
+    requiresConsistentRead: false,
+    conditionalWritePattern: 'Read-only aggregation across USER_SEG#0..3',
+    notes: 'Reads directory segments in parallel.',
+  },
+  {
+    routeId: 'admin.users.detail',
+    method: 'GET',
+    path: '/api/v1/admin/users/:uid',
+    primaryTables: ['Users', 'AuditLogs', 'SystemControl'],
+    indexesUsed: ['AuditLogs.GSI_AuditTarget'],
+    requiresConsistentRead: true,
+    conditionalWritePattern: 'Users fetchItem(consistent_read=true) + AuditLogs queryIndex(GSI_AuditTarget, limit=20)',
+    notes: 'Enforces SAFE_IDENTIFIER_RE on :uid.',
+  },
+  {
+    routeId: 'admin.invitations.create',
+    method: 'POST',
+    path: '/api/v1/admin/invitations',
+    primaryTables: ['AdminInvitations', 'AuditLogs', 'Users', 'SystemControl'],
+    indexesUsed: [],
+    requiresConsistentRead: true,
+    conditionalWritePattern: 'Writes INVITE#<id> with SHA-256 tokenHash + integer ttlEpochSec (Number) + append AuditLogs',
+    notes: 'Admin restricted to athlete invitations; superadmin may invite admin.',
+  },
+  {
+    routeId: 'admin.invitations.revoke',
+    method: 'POST',
+    path: '/api/v1/admin/invitations/:inviteId/revoke',
+    primaryTables: ['AdminInvitations', 'AuditLogs', 'Users', 'SystemControl'],
+    indexesUsed: [],
+    requiresConsistentRead: true,
+    conditionalWritePattern: 'Conditional update AdminInvitations (status=pending -> revoked) + append AuditLogs',
+    notes: 'Inspects update[0].status === Success.',
+  },
+  {
+    routeId: 'admin.users.setStatus',
+    method: 'POST',
+    path: '/api/v1/admin/users/:uid/status',
+    primaryTables: ['Users', 'SystemControl', 'AuditLogs'],
+    indexesUsed: ['Users.GSI_RoleStatus'],
+    requiresConsistentRead: true,
+    conditionalWritePattern: 'Users conditional sessionEpoch match + optional CTRL#SUPERADMIN_COUNT slot reserve + UserManagementAdmin status update',
+    notes: 'Superadmin targets blocked until live atomicity PASS-INTEGRATION.',
+  },
+  {
+    routeId: 'admin.users.setRole',
+    method: 'POST',
+    path: '/api/v1/admin/users/:uid/role',
+    primaryTables: ['Users', 'SystemControl', 'AuditLogs'],
+    indexesUsed: ['Users.GSI_RoleStatus'],
+    requiresConsistentRead: true,
+    conditionalWritePattern: 'Idempotency saga CTRL#SAGA#<key> (ttlEpochSec) + conditional roleVersion match + counter timeout recovery',
+    notes: 'Superadmin role transitions blocked until live atomicity PASS-INTEGRATION.',
+  },
+  {
+    routeId: 'admin.users.passwordReset',
+    method: 'POST',
+    path: '/api/v1/admin/users/:uid/password-reset',
+    primaryTables: ['Users', 'AuditLogs', 'SystemControl'],
+    indexesUsed: [],
+    requiresConsistentRead: true,
+    conditionalWritePattern: 'Users fetchItem(consistent_read=true) + Catalyst password reset (INT-08 gated) + AuditLogs append',
+    notes: 'Protected by INT-08 guard until live BaaS verification.',
+  },
+  {
+    routeId: 'admin.auditLogs.list',
+    method: 'GET',
+    path: '/api/v1/admin/audit-logs',
+    primaryTables: ['AuditLogs', 'Users', 'SystemControl'],
+    indexesUsed: ['AuditLogs.GSI_AuditTarget', 'AuditLogs.GSI_AuditActor', 'AuditLogs.GSI_GlobalChronology'],
+    requiresConsistentRead: true,
+    conditionalWritePattern: 'Single-month PK=AUDIT#YYYY-MM query OR target/actor/quarterly GSI_GlobalChronology fan-out',
+    notes: 'AuditLogs is strictly append-only (TTL disabled).',
+  },
+] as const;
+
+export const EIGHT_GSI_COVERAGE_AUDIT: readonly IndexCoverageAuditEntry[] = [
+  {
+    table: 'Users',
+    indexName: 'GSI_Email',
+    partitionKey: 'normalizedEmail',
+    sortKey: null,
+    projection: 'ALL',
+    includeColumnCount: null,
+    providerMethods: ['UsersTableProvider.findByNormalizedEmail'],
+    serviceAndRouteConsumers: ['CleanSlateAuthGuard.bootstrapAuthenticatedProfile', 'auth.session.bootstrapProfile'],
+    status: 'ACTIVE_IN_ROUTES_AND_PROVIDERS',
+    notes: 'Catalyst GSIs do not enforce uniqueness; app queries with consistent_read=true to block duplicate emails.',
+  },
+  {
+    table: 'Users',
+    indexName: 'GSI_Directory',
+    partitionKey: 'directorySegment',
+    sortKey: 'createdAt',
+    projection: 'SPECIFIC_ATTRIBUTES',
+    includeColumnCount: 11,
+    providerMethods: ['UsersTableProvider.listDirectorySegment', 'UsersTableProvider.listAllDirectorySegmentsConcurrently'],
+    serviceAndRouteConsumers: ['AdminGovernanceService.listDirectoryUsers', 'AdminGovernanceService.getAdminStats', 'admin.users.list', 'admin.stats.get'],
+    status: 'ACTIVE_IN_ROUTES_AND_PROVIDERS',
+    notes: 'Sharded across USER_SEG#0..3 with exact 11 INCLUDE columns; eliminates single-partition bottleneck.',
+  },
+  {
+    table: 'Users',
+    indexName: 'GSI_RoleStatus',
+    partitionKey: 'role',
+    sortKey: 'accountStatus',
+    projection: 'ALL',
+    includeColumnCount: null,
+    providerMethods: ['UsersTableProvider.queryByRoleStatus'],
+    serviceAndRouteConsumers: [
+      'AdminGovernanceService.listDirectoryUsers',
+      'AdminGovernanceService.assertNoSuperadminCounterDrift',
+      'AdminGovernanceService.executeOfflineAdminBootstrap',
+      'admin.users.list',
+      'admin.users.setRole',
+      'admin.users.setStatus',
+    ],
+    status: 'ACTIVE_IN_ROUTES_AND_PROVIDERS',
+    notes: 'Queried with consistent_read=true for superadmin drift verification & role-filtered directory listing.',
+  },
+  {
+    table: 'UserData',
+    indexName: 'GSI_UserEntityDate',
+    partitionKey: 'pk',
+    sortKey: 'entityDateKey',
+    projection: 'ALL',
+    includeColumnCount: null,
+    providerMethods: ['UserDataTableProvider.queryEntityDateIndex'],
+    serviceAndRouteConsumers: ['All 11 UserData entity writers populate entityDateKey=<TYPE>#<ISO>#<id>'],
+    status: 'ACTIVE_IN_PROVIDER_RESERVED_FOR_QUERY_EXPANSION',
+    notes:
+      'All 11 subcollections write deterministic entityDateKey and provider exposes queryEntityDateIndex(); current HTTP routes use primary sk prefix/BETWEEN queries while preserving frozen GSI_UserEntityDate and Additional SKs (entityType, updatedAt) against immutable schema lock.',
+  },
+  {
+    table: 'AdminInvitations',
+    indexName: 'GSI_InviteEmailStatus',
+    partitionKey: 'emailNormalized',
+    sortKey: 'status',
+    projection: 'ALL',
+    includeColumnCount: null,
+    providerMethods: ['AdminInvitationsTableProvider.findByEmailAndStatus'],
+    serviceAndRouteConsumers: ['AdminInvitationsTableProvider lookup / pending invitation deduplication'],
+    status: 'ACTIVE_IN_PROVIDER_RESERVED_FOR_QUERY_EXPANSION',
+    notes:
+      'Active in AdminInvitationsTableProvider.findByEmailAndStatus(); current create/revoke/redeem HTTP routes operate directly on INVITE#<inviteId>. Reserved on frozen table since Catalyst GSIs cannot be added lightly post-cutover without backfill.',
+  },
+  {
+    table: 'AuditLogs',
+    indexName: 'GSI_AuditActor',
+    partitionKey: 'actorUid',
+    sortKey: 'timestamp',
+    projection: 'ALL',
+    includeColumnCount: null,
+    providerMethods: ['AuditLogsTableProvider.listByActor'],
+    serviceAndRouteConsumers: ['AdminGovernanceService.listAuditLogs', 'admin.auditLogs.list'],
+    status: 'ACTIVE_IN_ROUTES_AND_PROVIDERS',
+    notes: 'Supports descending chronological lookup by actorUid.',
+  },
+  {
+    table: 'AuditLogs',
+    indexName: 'GSI_AuditTarget',
+    partitionKey: 'targetUid',
+    sortKey: 'timestamp',
+    projection: 'ALL',
+    includeColumnCount: null,
+    providerMethods: ['AuditLogsTableProvider.listByTarget'],
+    serviceAndRouteConsumers: ['AdminGovernanceService.getAdminUserDetail', 'AdminGovernanceService.listAuditLogs', 'admin.users.detail', 'admin.auditLogs.list'],
+    status: 'ACTIVE_IN_ROUTES_AND_PROVIDERS',
+    notes: 'Used both for target user audit history (top 20) and filtered audit logs.',
+  },
+  {
+    table: 'AuditLogs',
+    indexName: 'GSI_GlobalChronology',
+    partitionKey: 'auditPeriodBucket',
+    sortKey: 'globalChronologyKey',
+    projection: 'ALL',
+    includeColumnCount: null,
+    providerMethods: ['AuditLogsTableProvider.listByQuarterBucket'],
+    serviceAndRouteConsumers: ['AdminGovernanceService.listAuditLogs', 'admin.auditLogs.list'],
+    status: 'ACTIVE_IN_ROUTES_AND_PROVIDERS',
+    notes: 'Bounded quarterly buckets AUDIT_Q#YYYY-Q1..4 prevent global hot partitions.',
+  },
+] as const;
+
+export function verifyReconciliationCompleteness(): {
+  routeCount: number;
+  mappedCount: number;
+  missingRouteIds: string[];
+  extraRouteIds: string[];
+  gsiCount: number;
+  missingGsis: string[];
+  tableCount: number;
+} {
+  const canonicalIds = new Set(ROUTE_CONTRACT_SPECS.map(s => s.id));
+  const mappedIds = new Set(ROUTE_TO_SCHEMA_MAPPING.map(m => m.routeId));
+  const missingRouteIds = [...canonicalIds].filter(id => !mappedIds.has(id));
+  const extraRouteIds = [...mappedIds].filter(id => !canonicalIds.has(id));
+
+  const registryGsis = new Set<string>();
+  for (const [tName, spec] of Object.entries(TABLE_SCHEMA_REGISTRY)) {
+    for (const gsi of spec.secondaryIndexes) {
+      registryGsis.add(`${tName}.${gsi.indexName}`);
+    }
+  }
+  const auditedGsis = new Set(EIGHT_GSI_COVERAGE_AUDIT.map(g => `${g.table}.${g.indexName}`));
+  const missingGsis = [...registryGsis].filter(g => !auditedGsis.has(g));
+
+  return {
+    routeCount: ROUTE_CONTRACT_SPECS.length,
+    mappedCount: ROUTE_TO_SCHEMA_MAPPING.length,
+    missingRouteIds,
+    extraRouteIds,
+    gsiCount: registryGsis.size,
+    missingGsis,
+    tableCount: Object.keys(TABLE_SCHEMA_REGISTRY).length,
+  };
+}
