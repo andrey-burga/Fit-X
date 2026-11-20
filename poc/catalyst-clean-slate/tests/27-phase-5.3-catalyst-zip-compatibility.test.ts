@@ -72,7 +72,28 @@ interface RawZipEntryInfo {
   localHeaderOffset: number;
 }
 
+function readZipFileBytesStrict(filePath: string): Buffer {
+  if (!filePath || !fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+    throw new Error(`ZIP file does not exist or is not a regular file: ${filePath}`);
+  }
+  const stat = fs.statSync(filePath);
+  if (stat.size === 0) {
+    throw new Error(`Invalid ZIP file (0 bytes / empty file): ${filePath}`);
+  }
+  if (stat.size < 22) {
+    throw new Error(`Truncated or invalid ZIP file (< 22 bytes EOCD minimum): ${filePath}`);
+  }
+  const buf = fs.readFileSync(filePath);
+  if (buf.length !== stat.size) {
+    throw new Error(`Binary read length mismatch: ${buf.length} !== ${stat.size}`);
+  }
+  return buf;
+}
+
 function parseRawZipCentralDirectory(zipBuf: Buffer): { hasZip64Locator: boolean; entries: RawZipEntryInfo[] } {
+  if (zipBuf.length < 22) {
+    throw new Error('Truncated or invalid ZIP: shorter than 22-byte EOCD');
+  }
   let eocdOffset = -1;
   const minOff = Math.max(0, zipBuf.length - 65557);
   for (let i = zipBuf.length - 22; i >= minOff; i--) {
@@ -81,16 +102,27 @@ function parseRawZipCentralDirectory(zipBuf: Buffer): { hasZip64Locator: boolean
       break;
     }
   }
-  assert.ok(eocdOffset >= 0, 'ZIP End-of-Central-Directory missing');
+  if (eocdOffset < 0) {
+    throw new Error('Truncated or invalid ZIP: End-of-Central-Directory (PK 05 06) not found');
+  }
 
   const hasZip64Locator =
     eocdOffset >= 20 && zipBuf.readUInt32LE(eocdOffset - 20) === 0x07064b50;
   const totalEntries = zipBuf.readUInt16LE(eocdOffset + 10);
   const cdOffset = zipBuf.readUInt32LE(eocdOffset + 16);
+  if (totalEntries === 0) {
+    throw new Error('Invalid ZIP archive: Central Directory reports 0 entries');
+  }
+  if (cdOffset >= eocdOffset || cdOffset + 46 > zipBuf.length) {
+    throw new Error(`Truncated or corrupt ZIP: Central Directory offset ${cdOffset} out of bounds`);
+  }
 
   const entries: RawZipEntryInfo[] = [];
   let cursor = cdOffset;
   for (let i = 0; i < totalEntries; i++) {
+    if (cursor + 46 > zipBuf.length) {
+      throw new Error(`Truncated ZIP: Central Directory entry #${i} exceeds file bounds`);
+    }
     assert.equal(zipBuf.readUInt32LE(cursor), 0x02014b50, `Invalid CD header at ${cursor}`);
     const versionMade = zipBuf.readUInt16LE(cursor + 4);
     const versionNeeded = zipBuf.readUInt16LE(cursor + 6);
@@ -104,6 +136,9 @@ function parseRawZipCentralDirectory(zipBuf: Buffer): { hasZip64Locator: boolean
     const commentLen = zipBuf.readUInt16LE(cursor + 32);
     const externalAttributes = zipBuf.readUInt32LE(cursor + 38);
     const localHeaderOffset = zipBuf.readUInt32LE(cursor + 42);
+    if (cursor + 46 + nameLen + extraLen + commentLen > zipBuf.length) {
+      throw new Error(`Truncated ZIP: Central Directory metadata for entry #${i} exceeds bounds`);
+    }
     const name = zipBuf.subarray(cursor + 46, cursor + 46 + nameLen).toString('utf8');
 
     entries.push({
@@ -127,12 +162,18 @@ function parseRawZipCentralDirectory(zipBuf: Buffer): { hasZip64Locator: boolean
 
 function inflateZipEntry(zipBuf: Buffer, entry: RawZipEntryInfo): Buffer {
   const lh = entry.localHeaderOffset;
+  if (lh + 30 > zipBuf.length) {
+    throw new Error(`Truncated ZIP: Local File Header for ${entry.name} exceeds bounds`);
+  }
   assert.equal(zipBuf.readUInt32LE(lh), 0x04034b50, `Invalid LFH for ${entry.name}`);
   const lfhFlags = zipBuf.readUInt16LE(lh + 6);
   assert.equal(lfhFlags, entry.flagBits, `Flag mismatch LFH vs CD for ${entry.name}`);
   const lfhNameLen = zipBuf.readUInt16LE(lh + 26);
   const lfhExtraLen = zipBuf.readUInt16LE(lh + 28);
   const dataStart = lh + 30 + lfhNameLen + lfhExtraLen;
+  if (dataStart + entry.compressedSize > zipBuf.length) {
+    throw new Error(`Truncated ZIP: payload for ${entry.name} exceeds bounds`);
+  }
   const compressed = zipBuf.subarray(dataStart, dataStart + entry.compressedSize);
   const plain =
     entry.compressionMethod === 0
@@ -145,6 +186,71 @@ function inflateZipEntry(zipBuf: Buffer, entry: RawZipEntryInfo): Buffer {
   assert.equal(plain.length, entry.uncompressedSize, `Uncompressed length mismatch for ${entry.name}`);
   assert.equal(crc32(plain), entry.expectedCrc32, `CRC32 mismatch for ${entry.name}`);
   return plain;
+}
+
+function buildSyntheticZip(
+  items: Array<{ name: string; content: Buffer; method?: 0 | 8 }>
+): Buffer {
+  const localChunks: Buffer[] = [];
+  const cdChunks: Buffer[] = [];
+  let offset = 0;
+
+  for (const item of items) {
+    const method: 0 | 8 = item.method ?? 8;
+    const nameBuf = Buffer.from(item.name, 'utf8');
+    const compBuf = method === 8 ? zlib.deflateRawSync(item.content) : item.content;
+    const crc = crc32(item.content);
+
+    const lfh = Buffer.alloc(30);
+    lfh.writeUInt32LE(0x04034b50, 0);
+    lfh.writeUInt16LE(20, 4);
+    lfh.writeUInt16LE(0, 6);
+    lfh.writeUInt16LE(method, 8);
+    lfh.writeUInt16LE(0, 10);
+    lfh.writeUInt16LE(0, 12);
+    lfh.writeUInt32LE(crc, 14);
+    lfh.writeUInt32LE(compBuf.length, 18);
+    lfh.writeUInt32LE(item.content.length, 22);
+    lfh.writeUInt16LE(nameBuf.length, 26);
+    lfh.writeUInt16LE(0, 28);
+
+    localChunks.push(lfh, nameBuf, compBuf);
+
+    const cdh = Buffer.alloc(46);
+    cdh.writeUInt32LE(0x02014b50, 0);
+    cdh.writeUInt16LE(20, 4);
+    cdh.writeUInt16LE(20, 6);
+    cdh.writeUInt16LE(0, 8);
+    cdh.writeUInt16LE(method, 10);
+    cdh.writeUInt16LE(0, 12);
+    cdh.writeUInt16LE(0, 14);
+    cdh.writeUInt32LE(crc, 16);
+    cdh.writeUInt32LE(compBuf.length, 20);
+    cdh.writeUInt32LE(item.content.length, 24);
+    cdh.writeUInt16LE(nameBuf.length, 28);
+    cdh.writeUInt16LE(0, 30);
+    cdh.writeUInt16LE(0, 32);
+    cdh.writeUInt16LE(0, 34);
+    cdh.writeUInt16LE(0, 36);
+    cdh.writeUInt32LE(0x20, 38);
+    cdh.writeUInt32LE(offset, 42);
+
+    cdChunks.push(cdh, nameBuf);
+    offset += lfh.length + nameBuf.length + compBuf.length;
+  }
+
+  const cdBuf = Buffer.concat(cdChunks);
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);
+  eocd.writeUInt16LE(0, 4);
+  eocd.writeUInt16LE(0, 6);
+  eocd.writeUInt16LE(items.length, 8);
+  eocd.writeUInt16LE(items.length, 10);
+  eocd.writeUInt32LE(cdBuf.length, 12);
+  eocd.writeUInt32LE(offset, 16);
+  eocd.writeUInt16LE(0, 20);
+
+  return Buffer.concat([...localChunks, cdBuf, eocd]);
 }
 
 function collectRegularFiles(dir: string, skipNodeBin = false): string[] {
@@ -342,7 +448,7 @@ test('[PASS-LOCAL] Linux Info-ZIP regression: backslash entry produces exit=1, w
   }
 });
 
-test('[PASS-STATIC] diagnose-vigor-api-zip.ps1 is Windows PS 5.1 + Node 24.16.0 safe, preserves vigor_api.zip, and never runs remote calls', () => {
+test('[PASS-STATIC] diagnose-vigor-api-zip.ps1 is Windows PS 5.1 + Node 24.16.0 safe, handles 0-byte members, preserves both ZIPs, and never runs remote calls', () => {
   assert.ok(fs.existsSync(DIAG_PS1_PATH), `Missing script: ${DIAG_PS1_PATH}`);
   const ps1 = fs.readFileSync(DIAG_PS1_PATH, 'utf8');
 
@@ -358,6 +464,23 @@ test('[PASS-STATIC] diagnose-vigor-api-zip.ps1 is Windows PS 5.1 + Node 24.16.0 
   assert.ok(ps1.includes("PSObject.Properties['ExternalAttributes']"));
   assert.ok(ps1.includes('Compute-Crc32'));
   assert.ok(ps1.includes('exit 0'));
+
+  // PowerShell 5.1 binary array safety & 0-byte ZIP member fix regressions
+  assert.ok(ps1.includes('function Read-ZipFileBytes'));
+  assert.ok(ps1.includes('Test-Path -LiteralPath $Path -PathType Leaf'));
+  assert.ok(ps1.includes('$fileInfo.Length -eq 0'));
+  assert.ok(ps1.includes('$fileInfo.Length -lt 22'));
+  assert.ok(ps1.includes('[System.IO.File]::ReadAllBytes($fileInfo.FullName)'));
+  assert.ok(ps1.includes('$rawBytes.LongLength -ne $fileInfo.Length'));
+  assert.ok(ps1.includes('return , $rawBytes'), 'Must wrap byte[] with unary comma to prevent PS pipeline unwrapping');
+  assert.ok(ps1.includes('[AllowEmptyCollection()]'), 'Compute-Crc32 -Bytes must allow empty byte[0] for 0-byte ZIP members');
+  assert.ok(ps1.includes('$null -eq $Bytes -or $Bytes.Length -eq 0'));
+  assert.ok(ps1.includes('[System.IO.MemoryStream]::new($compSlice)'));
+  assert.ok(ps1.includes('Central Directory offset ($cdOffset) is out of bounds'));
+  assert.ok(ps1.includes('compressed payload for'));
+  assert.ok(ps1.includes('$origShaBefore -ne $origShaAfter'));
+  assert.ok(ps1.includes('$portablePreExisted -and -not $Force'));
+  assert.equal(ps1.includes('Get-Content'), false, 'Must never read binary ZIP files with Get-Content');
 
   // Audit inspects raw Central Directory without normalizing backslashes first
   assert.ok(ps1.includes('if ($rawName.Contains(\'\\\'))'));
@@ -377,7 +500,94 @@ test('[PASS-STATIC] diagnose-vigor-api-zip.ps1 is Windows PS 5.1 + Node 24.16.0 
   }
 });
 
-test('[PASS-STATIC] docs/35 records observed Catalyst failure, SHA-256 traceability, Zoho dossier, and final verdict', () => {
+test('[PASS-LOCAL] Synthetic local ZIP suite: 0-byte member (.npmignore), / vs \\ detection, and explicit empty/nonexistent/truncated rejections', () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vigor-zip-regression-'));
+  try {
+    // 1. Valid ZIP with a 0-byte member (both Stored method=0 and Deflated method=8) + regular file + '/' vs '\\' check
+    const goodWithZeroByte = buildSyntheticZip([
+      { name: 'package.json', content: Buffer.from('{"name":"vigor_api"}\n', 'utf8'), method: 8 },
+      { name: 'node_modules/mime/.npmignore', content: Buffer.alloc(0), method: 8 },
+      { name: 'empty-stored.txt', content: Buffer.alloc(0), method: 0 },
+    ]);
+    const goodPath = path.join(tmpDir, 'good-zero-member.zip');
+    fs.writeFileSync(goodPath, goodWithZeroByte);
+
+    const parsedGood = parseRawZipCentralDirectory(readZipFileBytesStrict(goodPath));
+    assert.equal(parsedGood.entries.length, 3);
+    assert.equal(parsedGood.entries.filter(e => e.name.includes('\\')).length, 0);
+    for (const entry of parsedGood.entries) {
+      const plain = inflateZipEntry(goodWithZeroByte, entry);
+      if (entry.name.includes('.npmignore') || entry.name === 'empty-stored.txt') {
+        assert.equal(plain.length, 0);
+        assert.equal(crc32(plain), 0);
+      }
+    }
+
+    // 2. Valid ZIP containing Windows backslash '\\' alongside '/' detects exactly the '\\' entry
+    const backslashZip = buildSyntheticZip([
+      { name: 'package.json', content: Buffer.from('{}', 'utf8'), method: 8 },
+      { name: 'dist\\server\\catalystEntry.js', content: Buffer.from('export default 1;\n', 'utf8'), method: 8 },
+    ]);
+    const bsPath = path.join(tmpDir, 'backslash.zip');
+    fs.writeFileSync(bsPath, backslashZip);
+    const parsedBs = parseRawZipCentralDirectory(readZipFileBytesStrict(bsPath));
+    assert.deepEqual(
+      parsedBs.entries.filter(e => e.name.includes('\\')).map(e => e.name),
+      ['dist\\server\\catalystEntry.js']
+    );
+    assert.deepEqual(
+      parsedBs.entries.filter(e => !e.name.includes('\\')).map(e => e.name),
+      ['package.json']
+    );
+
+    // 3. Explicit rejection: 0-byte ZIP file
+    const emptyFile = path.join(tmpDir, 'empty.zip');
+    fs.writeFileSync(emptyFile, Buffer.alloc(0));
+    assert.throws(() => readZipFileBytesStrict(emptyFile), /0 bytes \/ empty file/);
+
+    // 4. Explicit rejection: nonexistent file
+    assert.throws(() => readZipFileBytesStrict(path.join(tmpDir, 'does-not-exist.zip')), /does not exist/);
+
+    // 5. Explicit rejection: < 22-byte truncated ZIP file
+    const tinyTruncated = path.join(tmpDir, 'tiny.zip');
+    fs.writeFileSync(tinyTruncated, goodWithZeroByte.subarray(0, 12));
+    assert.throws(() => readZipFileBytesStrict(tinyTruncated), /Truncated or invalid ZIP/);
+
+    // 6. Explicit rejection: truncated mid-Central-Directory / payload
+    const midTruncated = goodWithZeroByte.subarray(0, goodWithZeroByte.length - 10);
+    assert.throws(() => parseRawZipCentralDirectory(midTruncated), /Truncated or invalid ZIP/);
+
+    const truncatedBeforePayloadEnd = Buffer.from(goodWithZeroByte);
+    // Corrupt compressedSize of first entry to exceed buffer length
+    const firstCdOff = truncatedBeforePayloadEnd.readUInt32LE(truncatedBeforePayloadEnd.length - 6);
+    truncatedBeforePayloadEnd.writeUInt32LE(999999, firstCdOff + 20);
+    const parsedCorrupt = parseRawZipCentralDirectory(truncatedBeforePayloadEnd);
+    assert.throws(() => inflateZipEntry(truncatedBeforePayloadEnd, parsedCorrupt.entries[0]!), /exceeds bounds/);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('[PASS-LOCAL] Existing artifacts/vigor_api.zip and artifacts/vigor_api-portable.zip remain intact with exact SHA-256 and zero-byte member verified', () => {
+  const origSha = sha256File(ORIGINAL_ZIP_PATH);
+  const portSha = sha256File(PORTABLE_ZIP_PATH);
+  assert.equal(origSha, 'd0b6e60814f50fb7e47363fb9bef725b3fa5182ae31c826c075e3bab0ec34d64');
+  assert.equal(portSha, 'd009bcc01cb1afa77012f47bfc5307d91a1b75101231982bce4e045eda52b8d8');
+
+  // Verify the actual 0-byte member (`node_modules/mime/.npmignore`) inside both preserved ZIPs
+  for (const zipPath of [ORIGINAL_ZIP_PATH, PORTABLE_ZIP_PATH]) {
+    const buf = readZipFileBytesStrict(zipPath);
+    const parsed = parseRawZipCentralDirectory(buf);
+    const zeroEntry = parsed.entries.find(e => e.name === 'node_modules/mime/.npmignore');
+    assert.ok(zeroEntry, `Expected 0-byte member node_modules/mime/.npmignore in ${zipPath}`);
+    assert.equal(zeroEntry.uncompressedSize, 0);
+    assert.equal(zeroEntry.expectedCrc32, 0);
+    const inflated = inflateZipEntry(buf, zeroEntry);
+    assert.equal(inflated.length, 0);
+  }
+});
+
+test('[PASS-STATIC] docs/35 records observed Catalyst failure, SHA-256 traceability, PS 5.1 0-byte member fix, Zoho dossier, and final verdict', () => {
   assert.ok(fs.existsSync(DOC_35_PATH), `Missing forensic doc: ${DOC_35_PATH}`);
   const doc = fs.readFileSync(DOC_35_PATH, 'utf8');
 
@@ -391,5 +601,7 @@ test('[PASS-STATIC] docs/35 records observed Catalyst failure, SHA-256 traceabil
   assert.ok(doc.includes(sha256File(ORIGINAL_ZIP_PATH)));
   assert.ok(doc.includes(sha256File(PORTABLE_ZIP_PATH)));
   assert.ok(doc.includes('diagnose-vigor-api-zip.ps1'));
+  assert.ok(doc.includes('AllowEmptyCollection'));
+  assert.ok(doc.includes('node_modules/mime/.npmignore'));
   assert.ok(doc.includes('Zoho'));
 });

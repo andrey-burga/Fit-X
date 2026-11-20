@@ -17,12 +17,18 @@
 
 .PARAMETER SkipPortableBuild
     Optional switch to run the forensic audit only without generating `vigor_api-portable.zip`.
+
+.PARAMETER Force
+    Optional switch to rebuild `vigor_api-portable.zip` even if it already exists.
 #>
 
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $false)]
-    [switch]$SkipPortableBuild
+    [switch]$SkipPortableBuild,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$Force
 )
 
 Set-StrictMode -Version Latest
@@ -88,8 +94,42 @@ function Get-FileSha256Hex {
     }
 }
 
+function Read-ZipFileBytes {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "ZIP file does not exist or is not a regular file: '$Path'"
+    }
+
+    $fileInfo = [System.IO.FileInfo]::new((Resolve-Path -LiteralPath $Path).Path)
+    if ($fileInfo.Length -eq 0) {
+        throw "Invalid ZIP file (0 bytes / empty file): '$($fileInfo.FullName)'"
+    }
+    if ($fileInfo.Length -lt 22) {
+        throw "Truncated or invalid ZIP file (only $($fileInfo.Length) bytes; minimum EOCD size is 22 bytes): '$($fileInfo.FullName)'"
+    }
+
+    [byte[]]$rawBytes = [System.IO.File]::ReadAllBytes($fileInfo.FullName)
+    if ($null -eq $rawBytes -or $rawBytes.LongLength -ne $fileInfo.Length) {
+        $actualLen = if ($null -eq $rawBytes) { 0 } else { $rawBytes.LongLength }
+        throw "Binary read length mismatch for '$($fileInfo.FullName)': expected $($fileInfo.Length) bytes, read $actualLen bytes."
+    }
+
+    # Unary comma prevents PowerShell pipeline enumeration/unwrapping of the byte[]
+    return , $rawBytes
+}
+
 function Compute-Crc32 {
-    param([Parameter(Mandatory = $true)][byte[]]$Bytes)
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [byte[]]$Bytes
+    )
+
+    if ($null -eq $Bytes -or $Bytes.Length -eq 0) {
+        return [uint32]0
+    }
+
     [uint32]$crc = [uint32]::MaxValue
     foreach ($b in $Bytes) {
         $crc = $crc -bxor [uint32]$b
@@ -108,11 +148,8 @@ function Compute-Crc32 {
 function Inspect-ZipRawHeaders {
     param([Parameter(Mandatory = $true)][string]$ZipFile)
 
-    $bytes = [System.IO.File]::ReadAllBytes($ZipFile)
+    [byte[]]$bytes = Read-ZipFileBytes -Path $ZipFile
     $len = $bytes.Length
-    if ($len -lt 22) {
-        throw "Invalid ZIP file (too small: $len bytes): $ZipFile"
-    }
 
     # Find End of Central Directory (0x06054b50)
     $eocdOffset = -1
@@ -124,7 +161,7 @@ function Inspect-ZipRawHeaders {
         }
     }
     if ($eocdOffset -lt 0) {
-        throw "End-of-Central-Directory (PK 05 06) not found in $ZipFile"
+        throw "Truncated or invalid ZIP: End-of-Central-Directory (PK 05 06) not found in '$ZipFile'."
     }
 
     # Check ZIP64 EOCD Locator (0x07064b50) immediately preceding EOCD
@@ -138,6 +175,12 @@ function Inspect-ZipRawHeaders {
 
     $totalEntries = [System.BitConverter]::ToUInt16($bytes, $eocdOffset + 10)
     $cdOffset = [System.BitConverter]::ToUInt32($bytes, $eocdOffset + 16)
+    if ($totalEntries -eq 0) {
+        throw "Invalid ZIP archive '$ZipFile': Central Directory reports 0 entries."
+    }
+    if ([int64]$cdOffset -ge [int64]$eocdOffset -or ([int64]$cdOffset + 46) -gt [int64]$len) {
+        throw "Truncated or corrupt ZIP '$ZipFile': Central Directory offset ($cdOffset) is out of bounds (fileLength=$len, eocdOffset=$eocdOffset)."
+    }
     $cursor = [int]$cdOffset
 
     $findings = [ordered]@{
@@ -172,6 +215,9 @@ function Inspect-ZipRawHeaders {
     $seenLower = @{}
 
     for ($idx = 0; $idx -lt $totalEntries; $idx++) {
+        if (($cursor + 46) -gt $len) {
+            throw "Truncated ZIP '$ZipFile': Central Directory entry #$idx exceeds file bounds at offset $cursor."
+        }
         $sig = [System.BitConverter]::ToUInt32($bytes, $cursor)
         if ($sig -ne 0x02014B50) {
             throw ("Invalid Central Directory signature at offset {0}: 0x{1:X8}" -f $cursor, $sig)
@@ -190,6 +236,9 @@ function Inspect-ZipRawHeaders {
         $extAttr = [System.BitConverter]::ToUInt32($bytes, $cursor + 38)
         $localOff = [System.BitConverter]::ToUInt32($bytes, $cursor + 42)
 
+        if (($cursor + 46 + $nameLen + $extraLen + $commentLen) -gt $len) {
+            throw "Truncated ZIP '$ZipFile': Central Directory metadata for entry #$idx exceeds file bounds."
+        }
         $rawName = [System.Text.Encoding]::UTF8.GetString($bytes, $cursor + 46, $nameLen)
 
         $csKey = [string]$createSys
@@ -260,27 +309,36 @@ function Inspect-ZipRawHeaders {
         }
 
         # Verify Local File Header CRC32 via decompressed stream read
+        if (([int64]$localOff + 30) -gt [int64]$len) {
+            throw "Truncated ZIP '$ZipFile': Local File Header for '$rawName' exceeds file bounds."
+        }
         $localSig = [System.BitConverter]::ToUInt32($bytes, [int]$localOff)
         if ($localSig -ne 0x04034B50) {
             throw ("Invalid Local File Header signature for '{0}' at offset {1}" -f $rawName, $localOff)
         }
         $lhNameLen = [System.BitConverter]::ToUInt16($bytes, [int]$localOff + 26)
         $lhExtraLen = [System.BitConverter]::ToUInt16($bytes, [int]$localOff + 28)
-        $dataStart = [int]$localOff + 30 + $lhNameLen + $lhExtraLen
+        $dataStart64 = [int64]$localOff + 30 + [int64]$lhNameLen + [int64]$lhExtraLen
+        if (($dataStart64 + [int64]$compSize) -gt [int64]$len) {
+            throw "Truncated ZIP '$ZipFile': compressed payload for '$rawName' exceeds file bounds."
+        }
+        $dataStart = [int]$dataStart64
 
-        if (-not $rawName.EndsWith('/') -and -not $rawName.EndsWith('\')) {
-            $compSlice = New-Object byte[] $compSize
-            [System.Array]::Copy($bytes, $dataStart, $compSlice, 0, [int]$compSize)
-            $plainBytes = $compSlice
+        if (-not $rawName.EndsWith('/') -and -not $rawName.EndsWith('\') -and ($method -eq 0 -or $method -eq 8)) {
+            [byte[]]$compSlice = New-Object byte[] ([int]$compSize)
+            if ($compSize -gt 0) {
+                [System.Array]::Copy($bytes, $dataStart, $compSlice, 0, [int]$compSize)
+            }
+            [byte[]]$plainBytes = $compSlice
             if ($method -eq 8) {
-                $msIn = New-Object System.IO.MemoryStream(, $compSlice)
+                $msIn = [System.IO.MemoryStream]::new($compSlice)
                 try {
                     $ds = New-Object System.IO.Compression.DeflateStream($msIn, [System.IO.Compression.CompressionMode]::Decompress)
                     try {
                         $msOut = New-Object System.IO.MemoryStream
                         try {
                             $ds.CopyTo($msOut)
-                            $plainBytes = $msOut.ToArray()
+                            [byte[]]$plainBytes = $msOut.ToArray()
                         }
                         finally { $msOut.Dispose() }
                     }
@@ -355,8 +413,14 @@ if (-not (Test-Path -LiteralPath $OriginalZipPath)) {
 }
 
 Write-Host '[1/4] Auditing existing vigor_api.zip (read-only, never overwritten)...'
+$origShaBefore = Get-FileSha256Hex -Path $OriginalZipPath
 $origAudit = Inspect-ZipRawHeaders -ZipFile $OriginalZipPath
+$origShaAfter = Get-FileSha256Hex -Path $OriginalZipPath
+if ($origShaBefore -ne $origShaAfter) {
+    throw "Integrity violation: original ZIP SHA-256 changed during read-only inspection ($origShaBefore != $origShaAfter)."
+}
 Print-AuditSummary -Report $origAudit
+Write-Host ("  Read-Only Hash Preserved: {0}" -f $origShaAfter)
 
 if (@($origAudit.CrcMismatches).Count -gt 0) {
     throw "Original ZIP failed CRC/size integrity verification."
@@ -415,38 +479,55 @@ foreach ($dirPath in $allDirs) {
 }
 
 $portableCandidates = @($portableCandidates | Sort-Object -Property RelPath)
-$fsOut = [System.IO.File]::Open($PortableZipPath, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
-try {
-    $zipArchive = New-Object System.IO.Compression.ZipArchive($fsOut, [System.IO.Compression.ZipArchiveMode]::Create, $false)
+$portablePreExisted = Test-Path -LiteralPath $PortableZipPath -PathType Leaf
+$portShaBefore = if ($portablePreExisted) { Get-FileSha256Hex -Path $PortableZipPath } else { $null }
+
+if ($portablePreExisted -and -not $Force) {
+    Write-Host '[2/4] Existing vigor_api-portable.zip found; preserving untouched (pass -Force to rebuild)...'
+}
+else {
+    Write-Host '[2/4] Building conservative portable ZIP (vigor_api-portable.zip) with forward slashes & zero symlinks...'
+    if ($portablePreExisted) {
+        Remove-Item -LiteralPath $PortableZipPath -Force
+    }
+
+    $fixedUtc = New-Object System.DateTimeOffset(2026, 11, 20, 0, 0, 0, [System.TimeSpan]::Zero)
+    $fsOut = [System.IO.File]::Open($PortableZipPath, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
     try {
-        foreach ($item in $portableCandidates) {
-            # Explicit '/' forward slashes prevent .NET Framework 4.x UseBackslash quirk on PS 5.1
-            $entry = $zipArchive.CreateEntry($item.RelPath, [System.IO.Compression.CompressionLevel]::Optimal)
-            $entry.LastWriteTime = $fixedUtc
-            if ($null -ne $entry.PSObject.Properties['ExternalAttributes']) {
-                $entry.ExternalAttributes = 0x20
-            }
-            $entryStream = $entry.Open()
-            try {
-                $srcStream = [System.IO.File]::OpenRead($item.FullPath)
-                try {
-                    $srcStream.CopyTo($entryStream)
+        $zipArchive = New-Object System.IO.Compression.ZipArchive($fsOut, [System.IO.Compression.ZipArchiveMode]::Create, $false)
+        try {
+            foreach ($item in $portableCandidates) {
+                # Explicit '/' forward slashes prevent .NET Framework 4.x UseBackslash quirk on PS 5.1
+                $entry = $zipArchive.CreateEntry($item.RelPath, [System.IO.Compression.CompressionLevel]::Optimal)
+                $entry.LastWriteTime = $fixedUtc
+                if ($null -ne $entry.PSObject.Properties['ExternalAttributes']) {
+                    $entry.ExternalAttributes = 0x20
                 }
-                finally { $srcStream.Dispose() }
+                $entryStream = $entry.Open()
+                try {
+                    $srcStream = [System.IO.File]::OpenRead($item.FullPath)
+                    try {
+                        $srcStream.CopyTo($entryStream)
+                    }
+                    finally { $srcStream.Dispose() }
+                }
+                finally { $entryStream.Dispose() }
             }
-            finally { $entryStream.Dispose() }
+        }
+        finally {
+            $zipArchive.Dispose()
         }
     }
     finally {
-        $zipArchive.Dispose()
+        $fsOut.Dispose()
     }
-}
-finally {
-    $fsOut.Dispose()
 }
 
 Write-Host '[3/4] Running forensic audit & clean extraction check on vigor_api-portable.zip...'
 $portAudit = Inspect-ZipRawHeaders -ZipFile $PortableZipPath
+if ($portablePreExisted -and -not $Force -and $portAudit.Sha256 -ne $portShaBefore) {
+    throw "Integrity violation: existing portable ZIP SHA-256 changed ($portShaBefore != $($portAudit.Sha256))."
+}
 Print-AuditSummary -Report $portAudit
 
 if (@($portAudit.BackslashEntries).Count -gt 0 -or
