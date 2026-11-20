@@ -1,0 +1,10 @@
+{
+  "deployment": {
+    "name": "vigor_api",
+    "type": "advancedio",
+    "stack": "node22"
+  },
+  "execution": {
+    "main": "dist/server/catalystEntry.js"
+  }
+}

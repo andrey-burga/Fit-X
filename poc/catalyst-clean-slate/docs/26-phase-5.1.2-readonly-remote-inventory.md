@@ -3,8 +3,9 @@
 **Alcance:** Exclusivo dentro de `poc/catalyst-clean-slate/`  
 **Fecha:** 18 de noviembre de 2026  
 **Complementa:** `docs/25-phase-5.1.2-operational-preparation-pack.md`  
+**Cierre formal actualizado en:** `docs/27-phase-5.1.2-closure-and-phase-5.2-plan.md` *(tras inspección visual del operador sobre **`Project-Rainfall`**)*  
 **Estación del operador soportada:** Windows PowerShell 5.1 + Node.js v24.16.0  
-**Dictamen honesto vigente:** **`PREPARATION_PARTIAL`** *(El inventario local está completo y se comprobó por DNS público de solo lectura que `app.vigorcore.lat` resuelve por CNAME hacia Slate US y `api.vigorcore.lat` aún no tiene registro CNAME configurado [`NOT_CONFIGURED`]; sin embargo, el inventario interno del proyecto en Zoho Catalyst —ID real, funciones existentes, Security Rules snapshot, estado de API Gateway, tablas NoSQL, usuarios Auth y Domain Mapping/Authorized Domains— permanece en `PENDING_OPERATOR` / `NOT_ACCESSIBLE` desde este entorno hasta que el operador ejecute el script PowerShell 5.1 y/o complete la lista de verificación de solo lectura en Catalyst Console. **La Fase 5.2 NO está iniciada ni autorizada.**)*
+**Dictamen histórico previo a Consola:** `PREPARATION_PARTIAL` *(superado en lo relativo a colisiones de proyecto/tablas/funciones/Security Rules por la inspección visual del operador; dictamen actualizado de cierre de preparación en `docs/27`: **`PHASE_5_1_2_CLOSED_READY_FOR_PHASE_5_2`**, manteniendo **`BLOCKED_PENDING_ZOHO_CLARIFICATION`** para el cutover del dominio personalizado `api.vigorcore.lat`. **La Fase 5.2 aún NO ha sido ejecutada.**)*
 
 ---
 
@@ -200,6 +201,26 @@ Taxonomía permitida aplicada estrictamente: `VERIFIED_REMOTE`, `VERIFIED_LOCAL_
 | **¿Está suficientemente documentado el impacto de API Gateway?** | **Sí:** la desactivación global de Project Security Rules al ejecutar `catalyst apig:enable`, la exigencia de inventario previo + snapshot JSON y el rollback inmediato vía `catalyst apig:disable` están documentados en código (`buildApiGatewayGlobalImpactAudit`), en `docs/24`, `docs/25` y en `Sección 6` de este complemento. |
 | **¿Qué bloqueos impiden solicitar la Fase 5.2?** | 1) Falta de ejecución del inventario asistido PowerShell 5.1 + checklist `4.A–4.G` en Catalyst Console;<br>2) Falta de snapshot JSON de Project Security Rules e inventario de funciones previas;<br>3) Falta de confirmación remota de `0` colisiones en nombres de tablas NoSQL y conteo de usuarios en Catalyst Auth;<br>4) Definición pendiente (tras ver el inventario real) de si Fase 5.2 se ejecutará en entorno aislado del proyecto o proyecto dedicado. |
 
-### Dictamen Final
-- **Dictamen:** **`PREPARATION_PARTIAL`**
+### Dictamen Final *(Histórico pre-inspección visual)*
+- **Dictamen previo:** **`PREPARATION_PARTIAL`**
 - **Condición para recomendar paso a Fase 5.2:** Únicamente cuando el operador devuelva los resultados sanitizados de `scripts/phase-5.1.2-readonly-inventory.ps1` y de las secciones `4.A–4.G` de Catalyst Console, se reconcilien posibles colisiones mediante plan aprobado y se confirme un procedimiento de recuperación verificable (`snapshot Security Rules` + `catalyst apig:disable`). **No se aprovisiona, despliega ni modifica ningún recurso remoto.**
+
+---
+
+## 9. Actualización Reconciliada Post-Inspección Visual en Consola (`Project-Rainfall`)
+
+> **Expediente completo en `docs/27-phase-5.1.2-closure-and-phase-5.2-plan.md` y `buildPhase512ClosureReport()`.**
+
+El operador completó la inspección visual read-only en Catalyst Console confirmando:
+- **DC:** `US` (`accounts.zoho.com`) — coherente con Slate `*-us.nimbuspop.com` (`VERIFIED_REMOTE`).
+- **Proyecto:** `Project-Rainfall` con Catalyst Project ID confirmado **`136967000000014024`** (`VERIFIED_REMOTE`; sin contradicción con los placeholders ni con el ID Slate DNS `16391000000005003`; entornos `Development` / `Production` y `Org ID` por anotar antes de `--live`).
+- **Functions & Security Rules:** `Functions are not created yet!!` (`VERIFIED_REMOTE`, `0` funciones heredadas previas; esto limita a cero únicamente la exposición de funciones heredadas previas, **sin** eliminar el impacto global de `apig:enable` sobre la futura función `vigor_api`).
+- **API Gateway:** `Enable now` (`NOT_CONFIGURED` / deshabilitado).
+- **NoSQL:** `Create your first table` (`NOT_CONFIGURED` / `0` tablas, `0` colisiones).
+- **Authentication:** Native & Third-party muestran `Set Up` (`NOT_CONFIGURED`). **Evidencia vs inferencia:** aunque `Set Up` sugiere ausencia de flujo configurado (inferencia plausible), el recuento de usuarios en *Authentication > Users* **no se inspeccionó directamente** y debe verificarse de forma directa tras `Set Up` antes del bootstrap.
+- **Domain Mapping:** solo `Add Mapping` visible (`PENDING_ZOHO_CLARIFICATION` respecto al destino exacto de API Gateway sin Web Client Hosting; Slate `app.vigorcore.lat` opera independientemente con SSL activo).
+- **DNS `api.vigorcore.lat`:** no resuelve (`NOT_CONFIGURED`).
+- **Authorized Domains (`Whitelisting`):** permanece `PENDING_OPERATOR` antes de Etapa 4 (API Gateway).
+
+**Dictamen actualizado de cierre (Fase 5.1.2):** **`PHASE_5_1_2_CLOSED_READY_FOR_PHASE_5_2`** (cero operaciones remotas ejecutadas; `api.vigorcore.lat` queda en **`BLOCKED_PENDING_ZOHO_CLARIFICATION`**).
+

@@ -17,11 +17,13 @@ import { ServerSessionTokenManager } from '../src/auth/cleanSlateAuthGuard.js';
 import {
   auditEnvironmentVariableCoverage,
   buildConsolidatedProvisioningManifest,
+  buildPhase512ClosureReport,
   buildPhase512OperationalPlan,
   CATALYST_RESOURCE_INVENTORY_BASELINE,
   detectRouteAndManifestAnomalies,
   EXHAUSTIVE_ENV_VAR_MATRIX,
   getFunctionDeploymentManifest,
+  PROJECT_RAINFALL_RECONCILED_INVENTORY,
   validateConsolidatedProvisioningManifest,
 } from '../src/provisioning/operationalPreparationManifest.js';
 import { ROUTE_CONTRACT_SPECS } from '../src/routes/routeContracts.js';
@@ -317,5 +319,91 @@ test('Phase 5.1.2 [PASS-STATIC] Windows PowerShell 5.1 read-only inventory scrip
     'verify-clean-slate-provisioning.ts --live --confirm-readonly',
   ]) {
     assert.ok(docs26.includes(marker), `docs/26 missing required section/marker: ${marker}`);
+  }
+});
+
+test('Phase 5.1.2 [PASS-UNIT] Reconciled Project-Rainfall (136967000000014024) closure separates Auth evidence vs inference, external_oauth CLI vs hosted_native, Security Rules scope & domain gate', async () => {
+  const closure = buildPhase512ClosureReport();
+  assert.equal(closure.projectObservedName, 'Project-Rainfall');
+  assert.equal(closure.projectObservedId, '136967000000014024');
+  assert.equal(closure.applied, false);
+  assert.equal(closure.remoteOperationsExecutedInThisStep, 0);
+  assert.equal(closure.phase52Executed, false);
+  assert.equal(closure.closureVerdict, 'PHASE_5_1_2_CLOSED_READY_FOR_PHASE_5_2');
+  assert.equal(closure.apiDomainCutoverGate, 'BLOCKED_PENDING_ZOHO_CLARIFICATION');
+
+  // Point 1: Confirmed public Project ID passes preflight placeholder validation cleanly
+  const preflightWithConfirmedProject = await runPreparationCli(
+    ['--mode', 'preflight', '--auth-mode', 'hosted_native'],
+    {
+      VIGOR_CATALYST_AUTH_MODE: 'hosted_native',
+      VIGOR_CORS_MODE: 'platform_managed',
+      CATALYST_PROJECT_ID: closure.projectObservedId,
+      CATALYST_ENVIRONMENT: 'Development',
+      VIGOR_ENVIRONMENT: 'development',
+      CATALYST_API_DOMAIN: 'https://api.catalyst.zoho.com',
+      CATALYST_ACCOUNTS_URL: 'https://accounts.zoho.com',
+      VIGOR_SESSION_HMAC_SECRET: ServerSessionTokenManager.generateStrongSecret(32),
+      VIGOR_ALLOWED_ORIGINS: 'https://app.vigorcore.lat',
+    }
+  );
+  assert.equal(preflightWithConfirmedProject.verdict, 'PASS');
+
+  // Point 2: Auth Set Up evidence is separated from unverified user count inference
+  assert.equal(closure.authEvidenceVsInference.userCountVerificationStatus, 'NOT_DIRECTLY_INSPECTED');
+
+  // Point 3: --auth-mode external_oauth in verifier CLI is strictly operator admin read-only and does NOT alter hosted_native app mode
+  assert.equal(closure.cliExternalOauthVsAppHostedNative.verifierCliAuthMode, 'external_oauth');
+  assert.equal(closure.cliExternalOauthVsAppHostedNative.altersAppAuthMode, false);
+  assert.equal(closure.cliExternalOauthVsAppHostedNative.applicationHostedRuntimeMode, 'hosted_native');
+
+  // Point 4: Security Rules zero risk bounded strictly to legacy functions; vigor_api protections stay mandatory
+  assert.equal(closure.securityRulesImpactScope.legacyFunctionsExposureRisk, 'ZERO_VERIFIED_LEGACY_FUNCTIONS');
+  assert.equal(closure.securityRulesImpactScope.globalImpactOnFutureVigorApi, 'NON_ZERO_REQUIRES_FULL_GATEWAY_AND_APP_CONTROLS');
+  assert.ok(closure.securityRulesImpactScope.mandatoryVigorApiProtections.length >= 4);
+
+  assert.equal(PROJECT_RAINFALL_RECONCILED_INVENTORY.length, 11);
+  assert.equal(closure.domainMappingDifferentiation.webClientDomainMapping.applicableToVigorCoreApi, false);
+  assert.equal(closure.domainMappingDifferentiation.apiGatewayAdvancedIoCustomDomain.zohoClarificationRequired, true);
+  assert.ok(closure.domainMappingDifferentiation.apiGatewayAdvancedIoCustomDomain.openClarificationQuestions.length >= 3);
+
+  assert.deepEqual(
+    closure.nextPhaseExecutionSequence.map(s => s.stageId),
+    [
+      'STAGE_1_NOSQL_TABLES',
+      'STAGE_2_CATALYST_AUTH',
+      'STAGE_3_FUNCTION_VIGOR_API',
+      'STAGE_4_API_GATEWAY',
+      'STAGE_5_DOMAIN_API_VIGORCORE',
+    ]
+  );
+  assert.equal(closure.nextPhaseExecutionSequence[0].blockedByZohoClarification, false);
+  assert.equal(closure.nextPhaseExecutionSequence[4].blockedByZohoClarification, true);
+  for (const stage of closure.nextPhaseExecutionSequence) {
+    assert.equal(stage.applied, false);
+    assert.ok(stage.costAndQuotaConsiderations.length >= 1);
+    assert.ok(stage.prerequisitesBeforeRemoteWrite.length >= 1);
+    assert.ok(stage.postOperationVerifications.length >= 1);
+  }
+
+  const docs27Path = path.join(POC_ROOT, 'docs', '27-phase-5.1.2-closure-and-phase-5.2-plan.md');
+  assert.equal(fs.existsSync(docs27Path), true, 'Missing docs/27-phase-5.1.2-closure-and-phase-5.2-plan.md');
+  const docs27 = fs.readFileSync(docs27Path, 'utf8');
+  for (const marker of [
+    'Project-Rainfall',
+    '136967000000014024',
+    'NOT_DIRECTLY_INSPECTED',
+    'external_oauth',
+    'hosted_native',
+    'PHASE_5_1_2_CLOSED_READY_FOR_PHASE_5_2',
+    'BLOCKED_PENDING_ZOHO_CLARIFICATION',
+    'Web Client Hosting',
+    'API Gateway',
+    'app.vigorcore.lat',
+    'api.vigorcore.lat',
+    'Etapa 1',
+    'Etapa 5',
+  ]) {
+    assert.ok(docs27.includes(marker), `docs/27 missing required marker: ${marker}`);
   }
 });

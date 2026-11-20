@@ -1,0 +1,19 @@
+{
+  "name": "vigor_api",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "VigorCore Advanced I/O API backend for Zoho Catalyst (Node.js 22)",
+  "main": "dist/server/catalystEntry.js",
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@zcatalyst/auth": "^1.0.0",
+    "@zcatalyst/auth-admin": "^1.1.0",
+    "@zcatalyst/nosql": "^1.0.0",
+    "@zcatalyst/transport": "^1.1.0",
+    "@zcatalyst/utils": "^1.1.0",
+    "express": "^4.22.3"
+  }
+}

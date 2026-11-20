@@ -7,3 +7,5 @@ coverage/
 *.log
 reports/
 checkpoint*.json
+artifacts/
+*.zip

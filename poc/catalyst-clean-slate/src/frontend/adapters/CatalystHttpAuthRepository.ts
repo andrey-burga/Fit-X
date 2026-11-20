@@ -64,7 +64,10 @@ export class CatalystHttpAuthRepository {
     return token;
   }
 
-  async bootstrapProfile(displayName?: string): Promise<HttpAuthSessionResult> {
+  async bootstrapProfile(
+    displayName?: string,
+    options?: { headers?: Record<string, string> }
+  ): Promise<HttpAuthSessionResult> {
     const res = await this.transport.request<{
       actor?: Record<string, unknown>;
       sid?: string;
@@ -76,6 +79,7 @@ export class CatalystHttpAuthRepository {
       method: 'POST',
       path: '/api/v1/auth/session/bootstrap-profile',
       preSessionExchange: true,
+      headers: options?.headers,
       body: displayName ? { displayName } : {},
     });
 
@@ -99,7 +103,9 @@ export class CatalystHttpAuthRepository {
     };
   }
 
-  async exchangeSession(): Promise<HttpAuthSessionResult> {
+  async exchangeSession(
+    options?: { headers?: Record<string, string> }
+  ): Promise<HttpAuthSessionResult> {
     const res = await this.transport.request<{
       actor?: Record<string, unknown>;
       sid?: string;
@@ -111,6 +117,7 @@ export class CatalystHttpAuthRepository {
       method: 'POST',
       path: '/api/v1/auth/session/exchange',
       preSessionExchange: true,
+      headers: options?.headers,
       body: {},
     });
 

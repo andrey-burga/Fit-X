@@ -1131,3 +1131,384 @@ export function runSafePreflightValidation(
       configPreflight.verdict === 'PASS',
   };
 }
+
+export type ReconciledRemoteStatus =
+  | 'VERIFIED_REMOTE'
+  | 'VERIFIED_LOCAL_ONLY'
+  | 'NOT_CONFIGURED'
+  | 'NOT_ACCESSIBLE'
+  | 'AMBIGUOUS'
+  | 'PENDING_OPERATOR'
+  | 'PENDING_ZOHO_CLARIFICATION';
+
+export interface ReconciledInventoryEntry {
+  readonly id: string;
+  readonly area: string;
+  readonly status: ReconciledRemoteStatus;
+  readonly observedEvidence: string;
+  readonly phase511And512Impact: string;
+  readonly pendingBeforeNextOperation: string;
+}
+
+export interface NextPhaseStageSpec {
+  readonly stageOrder: number;
+  readonly stageId:
+    | 'STAGE_1_NOSQL_TABLES'
+    | 'STAGE_2_CATALYST_AUTH'
+    | 'STAGE_3_FUNCTION_VIGOR_API'
+    | 'STAGE_4_API_GATEWAY'
+    | 'STAGE_5_DOMAIN_API_VIGORCORE';
+  readonly targetPhase: string;
+  readonly title: string;
+  readonly applied: false;
+  readonly blockedByZohoClarification: boolean;
+  readonly dependencies: readonly string[];
+  readonly prerequisitesBeforeRemoteWrite: readonly string[];
+  readonly costAndQuotaConsiderations: readonly string[];
+  readonly postOperationVerifications: readonly string[];
+  readonly rollbackOrStopCondition: string;
+}
+
+export interface Phase512ClosureReport {
+  readonly phase: '5.1.2-closure';
+  readonly projectObservedName: 'Project-Rainfall';
+  readonly projectObservedId: '136967000000014024';
+  readonly dataCenterConfirmed: 'US (accounts.zoho.com)';
+  readonly applied: false;
+  readonly remoteOperationsExecutedInThisStep: 0;
+  readonly phase52Executed: false;
+  readonly closureVerdict: 'PHASE_5_1_2_CLOSED_READY_FOR_PHASE_5_2';
+  readonly apiDomainCutoverGate: 'BLOCKED_PENDING_ZOHO_CLARIFICATION';
+  readonly projectIdNonContradictionNote: string;
+  readonly authEvidenceVsInference: {
+    readonly directObservedEvidence: string;
+    readonly inferenceBoundary: string;
+    readonly userCountVerificationStatus: 'NOT_DIRECTLY_INSPECTED';
+    readonly requiredDirectVerificationBeforeBootstrap: string;
+  };
+  readonly cliExternalOauthVsAppHostedNative: {
+    readonly verifierCliAuthMode: 'external_oauth';
+    readonly verifierCliScope: 'OPERATOR_ADMIN_READONLY_CLI_ONLY';
+    readonly altersAppAuthMode: false;
+    readonly applicationHostedRuntimeMode: 'hosted_native';
+    readonly explanation: string;
+  };
+  readonly securityRulesImpactScope: {
+    readonly legacyFunctionsExposureRisk: 'ZERO_VERIFIED_LEGACY_FUNCTIONS';
+    readonly globalImpactOnFutureVigorApi: 'NON_ZERO_REQUIRES_FULL_GATEWAY_AND_APP_CONTROLS';
+    readonly mandatoryVigorApiProtections: readonly string[];
+  };
+  readonly reconciledInventory: readonly ReconciledInventoryEntry[];
+  readonly domainMappingDifferentiation: {
+    readonly slateCustomDomain: {
+      readonly hostname: 'https://app.vigorcore.lat';
+      readonly mechanism: 'Catalyst Slate custom domain (independent of CloudScale > Domain Mapping)';
+      readonly currentRemoteState: 'Active domain & SSL active (CNAME -> slate-16391000000005003-us.nimbuspop.com)';
+      readonly action: 'DO NOT TOUCH OR OVERWRITE';
+    };
+    readonly webClientDomainMapping: {
+      readonly mechanism: 'CloudScale > Domain Mapping -> Web Client Hosting target';
+      readonly currentRemoteState: 'No Web Client Hosting mapped (Add Mapping only)';
+      readonly applicableToVigorCoreApi: false;
+      readonly reason: 'VigorCore uses Slate for the frontend SPA and Advanced I/O + API Gateway for the backend API; Web Client Hosting must NOT be enabled over Slate.';
+    };
+    readonly apiGatewayAdvancedIoCustomDomain: {
+      readonly targetHostname: 'https://api.vigorcore.lat';
+      readonly mechanism: 'API Gateway routing to Advanced I/O `vigor_api` + custom domain mapping without Web Client Hosting';
+      readonly currentRemoteState: 'API Gateway disabled (Enable now); Domain Mapping shows Add Mapping only; DNS NXDOMAIN';
+      readonly zohoClarificationRequired: true;
+      readonly openClarificationQuestions: readonly string[];
+    };
+  };
+  readonly nextPhaseExecutionSequence: readonly NextPhaseStageSpec[];
+}
+
+export const PROJECT_RAINFALL_RECONCILED_INVENTORY: readonly ReconciledInventoryEntry[] = [
+  {
+    id: 'CON-DC-US',
+    area: 'Data Center / Region',
+    status: 'VERIFIED_REMOTE',
+    observedEvidence: 'US confirmado mediante accounts.zoho.com; coherente con DNS Slate *-us.nimbuspop.com.',
+    phase511And512Impact: 'Valida CATALYST_API_DOMAIN=https://api.catalyst.zoho.com y CATALYST_ACCOUNTS_URL=https://accounts.zoho.com.',
+    pendingBeforeNextOperation: 'Ninguno.',
+  },
+  {
+    id: 'CON-PROJECT',
+    area: 'Proyecto Catalyst y Entornos',
+    status: 'VERIFIED_REMOTE',
+    observedEvidence:
+      'Proyecto identificado: Project-Rainfall, Catalyst Project ID confirmado: 136967000000014024 (sin contradicción con placeholders ni con el ID Slate DNS 16391000000005003).',
+    phase511And512Impact:
+      'Fija CATALYST_PROJECT_ID=136967000000014024 para preflight, verificación --live y futuro pinning x-zc-projectid sin tocar producción.',
+    pendingBeforeNextOperation:
+      'Confirmar entornos disponibles (Development / Production) y X_ZOHO_CATALYST_ORG_ID (si aplica) antes de crear tablas o ejecutar --live.',
+  },
+  {
+    id: 'CON-FUNCTIONS',
+    area: 'Functions (Basic I/O, Advanced I/O, Cron, Event)',
+    status: 'VERIFIED_REMOTE',
+    observedEvidence: 'Catalyst Console muestra "Functions are not created yet!!".',
+    phase511And512Impact: 'Cero funciones heredadas previas: no existe vigor_api ni funciones heredadas en conflicto.',
+    pendingBeforeNextOperation: 'Despliegue de vigor_api queda para Etapa 3 (fase posterior de funciones).',
+  },
+  {
+    id: 'CON-SECURITY-RULES',
+    area: 'Project Security Rules',
+    status: 'VERIFIED_REMOTE',
+    observedEvidence: 'Catalyst Console muestra "Functions are not created yet!!" (0 funciones heredadas previas).',
+    phase511And512Impact:
+      'Limita a cero únicamente la exposición de funciones heredadas previas; NO anula el impacto futuro sobre vigor_api cuando apig:enable desactive Security Rules globalmente.',
+    pendingBeforeNextOperation:
+      'Antes de Etapa 4: confirmar ausencia de terceros y mantener todos los controles de Gateway + HMAC + CSRF + RBAC + anti-IDOR + prueba de ruta directa sobre vigor_api.',
+  },
+  {
+    id: 'CON-API-GATEWAY',
+    area: 'API Gateway',
+    status: 'NOT_CONFIGURED',
+    observedEvidence: 'Catalyst Console muestra botón "Enable now" (API Gateway deshabilitado, 0 rutas previas).',
+    phase511And512Impact: 'Confirma estado limpio sin rutas heredadas que colisionen con las 41 rutas de alternative-b-api-gateway.routes.json.',
+    pendingBeforeNextOperation: 'Validar cuotas/costes de API Gateway y mantener Disabled hasta Etapa 4.',
+  },
+  {
+    id: 'CON-NOSQL',
+    area: 'CloudScale NoSQL (5 tablas / 8 GSIs)',
+    status: 'NOT_CONFIGURED',
+    observedEvidence: 'Catalyst Console muestra "Create your first table" (0 tablas existentes).',
+    phase511And512Impact: 'Confirma 0 colisiones con Users, UserData, AdminInvitations, AuditLogs y SystemControl; apto para creación ordenada en Fase 5.2.',
+    pendingBeforeNextOperation:
+      'Autorización explícita de Fase 5.2 para crear las 5 tablas vacías en Project-Rainfall (136967000000014024) y validar con --live --confirm-readonly (--auth-mode external_oauth solo para CLI del operador).',
+  },
+  {
+    id: 'CON-AUTH',
+    area: 'Catalyst Authentication',
+    status: 'NOT_CONFIGURED',
+    observedEvidence:
+      'Evidencia directa: Native Catalyst Authentication y Third-party Authentication muestran "Set Up". El listado/recuento de usuarios NO fue inspeccionado directamente.',
+    phase511And512Impact:
+      'Aunque "Set Up" sugiere ausencia de flujo Auth configurado (inferencia plausible de 0 usuarios), NO equivale a verificación directa de conteo=0 y exige inicializar Native Auth en Etapa 2 antes de vigor_api.',
+    pendingBeforeNextOperation:
+      'Tras configurar Native Catalyst Authentication (Set Up) en Etapa 2 y antes del bootstrap de usuarios/admin, inspeccionar directamente Authentication > Users para confirmar conteo=0 real.',
+  },
+  {
+    id: 'CON-DOMAIN-MAPPING',
+    area: 'CloudScale > Domain Mapping (api.vigorcore.lat)',
+    status: 'PENDING_ZOHO_CLARIFICATION',
+    observedEvidence: 'Únicamente aparece "Add Mapping" sin mapeos visibles (pese a existir app.vigorcore.lat en Slate).',
+    phase511And512Impact: 'Evidencia que Slate gestiona su dominio fuera de CloudScale Domain Mapping; falta aclarar el destino exacto de API Gateway en Add Mapping sin Web Client Hosting.',
+    pendingBeforeNextOperation: 'Mantener abierta aclaración oficial con Zoho Support antes de Etapa 5.',
+  },
+  {
+    id: 'CON-DNS-API',
+    area: 'DNS público api.vigorcore.lat',
+    status: 'NOT_CONFIGURED',
+    observedEvidence: 'No resuelve (ENOTFOUND confirmado en consola y en sonda DNS read-only).',
+    phase511And512Impact: 'Estado esperado previo a Etapa 5.',
+    pendingBeforeNextOperation: 'No crear CNAME hasta obtener destino oficial de Zoho (Etapa 5).',
+  },
+  {
+    id: 'CON-SLATE-APP',
+    area: 'Frontend Slate (app.vigorcore.lat)',
+    status: 'VERIFIED_REMOTE',
+    observedEvidence: 'Dominio app.vigorcore.lat existente en Slate y SSL activo (CNAME slate-16391000000005003-us.nimbuspop.com).',
+    phase511And512Impact: 'Confirma integridad total de producción actual; Slate opera fuera de CloudScale Domain Mapping.',
+    pendingBeforeNextOperation: 'Mantener intacto sin modificaciones.',
+  },
+  {
+    id: 'CON-AUTH-DOMAINS',
+    area: 'CloudScale > Whitelisting > Authorized Domains',
+    status: 'PENDING_OPERATOR',
+    observedEvidence: 'No reportado todavía en esta inspección visual de Consola.',
+    phase511And512Impact: 'Requerido en Etapa 4 para CORS sin iFrame (https://app.vigorcore.lat, sin wildcard *).',
+    pendingBeforeNextOperation: 'Verificar en solo lectura antes de habilitar API Gateway en Etapa 4.',
+  },
+] as const;
+
+export function buildPhase512ClosureReport(): Phase512ClosureReport {
+  return {
+    phase: '5.1.2-closure',
+    projectObservedName: 'Project-Rainfall',
+    projectObservedId: '136967000000014024',
+    dataCenterConfirmed: 'US (accounts.zoho.com)',
+    applied: false,
+    remoteOperationsExecutedInThisStep: 0,
+    phase52Executed: false,
+    closureVerdict: 'PHASE_5_1_2_CLOSED_READY_FOR_PHASE_5_2',
+    apiDomainCutoverGate: 'BLOCKED_PENDING_ZOHO_CLARIFICATION',
+    projectIdNonContradictionNote:
+      'CATALYST_PROJECT_ID=136967000000014024 (Project-Rainfall) no contradice ningún archivo del POC (que solo usaba placeholders <CATALYST_PROJECT_ID> e IDs sintéticos de test) ni al ID 16391000000005003 del CNAME de hospedaje Slate (slate-16391000000005003-us.nimbuspop.com).',
+    authEvidenceVsInference: {
+      directObservedEvidence:
+        'Native Catalyst Authentication y Third-party Authentication muestran "Set Up" en Project-Rainfall (136967000000014024).',
+      inferenceBoundary:
+        'La ausencia de un flujo Auth configurado hace plausible inferir 0 usuarios de aplicación, pero el recuento de usuarios NO fue inspeccionado directamente en consola.',
+      userCountVerificationStatus: 'NOT_DIRECTLY_INSPECTED',
+      requiredDirectVerificationBeforeBootstrap:
+        'Inspeccionar directamente Authentication > Users (Development y Production) tras ejecutar Set Up de Native Catalyst Authentication para verificar conteo real = 0 antes del bootstrap.',
+    },
+    cliExternalOauthVsAppHostedNative: {
+      verifierCliAuthMode: 'external_oauth',
+      verifierCliScope: 'OPERATOR_ADMIN_READONLY_CLI_ONLY',
+      altersAppAuthMode: false,
+      applicationHostedRuntimeMode: 'hosted_native',
+      explanation:
+        'En verify-clean-slate-provisioning.ts (--live --confirm-readonly), --auth-mode external_oauth representa exclusivamente la autenticación administrativa OAuth del operador/CLI local fuera de Catalyst Advanced I/O (donde Catalyst Edge no inyecta x-zc-admin-cred-token). NO configura Catalyst Authentication ni altera VIGOR_CATALYST_AUTH_MODE=hosted_native dentro de vigor_api.',
+    },
+    securityRulesImpactScope: {
+      legacyFunctionsExposureRisk: 'ZERO_VERIFIED_LEGACY_FUNCTIONS',
+      globalImpactOnFutureVigorApi: 'NON_ZERO_REQUIRES_FULL_GATEWAY_AND_APP_CONTROLS',
+      mandatoryVigorApiProtections: [
+        'Mapeo estricto de 41 rutas en alternative-b-api-gateway.routes.json sin endpoints ocultos expuestos.',
+        'Autenticación Express fail-closed en vigor_api: HMAC __Host-vigor_session, SESSION#<sid> consistent_read, X-Vigor-CSRF ligado a sesión, RBAC, anti-IDOR y rechazo 403 ante x-zc-user-type: admin.',
+        'CATALYST_USERS_AUTHENTICATION (o fallback verificado) en /bootstrap-profile y /exchange.',
+        'CloudScale > Whitelisting > Authorized Domains exclusivo para https://app.vigorcore.lat (cero *), auditoría de ruta directa /server/vigor_api/* tras apig:enable y rollback inmediato vía catalyst apig:disable.',
+      ],
+    },
+    reconciledInventory: PROJECT_RAINFALL_RECONCILED_INVENTORY,
+    domainMappingDifferentiation: {
+      slateCustomDomain: {
+        hostname: 'https://app.vigorcore.lat',
+        mechanism: 'Catalyst Slate custom domain (independent of CloudScale > Domain Mapping)',
+        currentRemoteState: 'Active domain & SSL active (CNAME -> slate-16391000000005003-us.nimbuspop.com)',
+        action: 'DO NOT TOUCH OR OVERWRITE',
+      },
+      webClientDomainMapping: {
+        mechanism: 'CloudScale > Domain Mapping -> Web Client Hosting target',
+        currentRemoteState: 'No Web Client Hosting mapped (Add Mapping only)',
+        applicableToVigorCoreApi: false,
+        reason:
+          'VigorCore uses Slate for the frontend SPA and Advanced I/O + API Gateway for the backend API; Web Client Hosting must NOT be enabled over Slate.',
+      },
+      apiGatewayAdvancedIoCustomDomain: {
+        targetHostname: 'https://api.vigorcore.lat',
+        mechanism: 'API Gateway routing to Advanced I/O `vigor_api` + custom domain mapping without Web Client Hosting',
+        currentRemoteState: 'API Gateway disabled (Enable now); Domain Mapping shows Add Mapping only; DNS NXDOMAIN',
+        zohoClarificationRequired: true,
+        openClarificationQuestions: [
+          'Con API Gateway habilitado y sin Web Client Hosting, ¿qué tipo de destino exacto acepta CloudScale > Domain Mapping > Add Mapping para enrutar https://api.vigorcore.lat hacia API Gateway / vigor_api?',
+          '¿El selector de destino en Add Mapping aparece únicamente después de activar API Gateway o requiere un paso específico dentro de la sección API Gateway?',
+          '¿Cuál es el hostname CNAME exacto en región US que debemos apuntar desde api.vigorcore.lat sin interferir con app.vigorcore.lat alojado en Slate?',
+        ],
+      },
+    },
+    nextPhaseExecutionSequence: [
+      {
+        stageOrder: 1,
+        stageId: 'STAGE_1_NOSQL_TABLES',
+        targetPhase: 'Fase 5.2',
+        title: 'Aprovisionamiento manual ordenado de 5 tablas NoSQL + 8 GSIs en Project-Rainfall (136967000000014024)',
+        applied: false,
+        blockedByZohoClarification: false,
+        dependencies: ['Project-Rainfall (136967000000014024) confirmado vacío (Create your first table)'],
+        prerequisitesBeforeRemoteWrite: [
+          'Autorización explícita del operador para Fase 5.2.',
+          'Usar CATALYST_PROJECT_ID=136967000000014024, anotar X_ZOHO_CATALYST_ORG_ID (si aplica) y confirmar entorno objetivo (Development / Production).',
+          'Confirmar manualmente el orden Users -> UserData -> AdminInvitations -> AuditLogs -> SystemControl y la inmutabilidad de claves/GSIs.',
+        ],
+        costAndQuotaConsiderations: [
+          'Nivel gratuito inicial de Catalyst NoSQL cubre creación de tablas vacías y pruebas iniciales; 8 GSIs están dentro de límites Catalyst.',
+          'Lecturas/escrituras (RCU/WCU) y almacenamiento adicional escalan según plan Catalyst; claves/GSIs erróneos obligan a recrear tabla vacía.',
+        ],
+        postOperationVerifications: [
+          'Verificar visualmente en Consola que ttlEpochSec es tipo Number en AdminInvitations y SystemControl y que Users.GSI_Directory proyecta exactas 11 columnas.',
+          'Ejecutar npx --prefix poc/catalyst-clean-slate tsx scripts/verify-clean-slate-provisioning.ts --live --confirm-readonly --auth-mode external_oauth --expected-project 136967000000014024 (credencial administrativa exclusiva del operador/CLI que no altera el modo hosted_native de la app) confirmando 5/5 tablas ONLINE, 8/8 GSIs ONLINE y 0 filas.',
+        ],
+        rollbackOrStopCondition:
+          'STOP inmediato ante cualquier discrepancia de PK/SK/GSI/TTL antes de insertar datos; recrear tabla vacía afectada antes de continuar.',
+      },
+      {
+        stageOrder: 2,
+        stageId: 'STAGE_2_CATALYST_AUTH',
+        targetPhase: 'Fase 5.2 / Pre-Deploy Auth',
+        title: 'Inicialización de Native Catalyst Authentication (Set Up) y verificación directa de usuarios=0',
+        applied: false,
+        blockedByZohoClarification: false,
+        dependencies: ['Project-Rainfall (136967000000014024) DC US (accounts.zoho.com)', 'Etapa 1 o preparación previa a vigor_api'],
+        prerequisitesBeforeRemoteWrite: [
+          'Configurar únicamente Native Catalyst Authentication mediante Set Up; dejar Third-party Authentication sin activar.',
+          'Definir URL de retorno de reset de contraseña hacia https://app.vigorcore.lat (ruta de login/reset del cliente Slate).',
+          'Verificar si el remitente de correos transaccionales usa Zoho por defecto o SMTP verificado.',
+        ],
+        costAndQuotaConsiderations: [
+          'Incluido por MAU y cuota de correos de verificación/reset según plan de Zoho Catalyst.',
+        ],
+        postOperationVerifications: [
+          'Inspeccionar directamente Authentication > Users (en Development y Production) para verificar por evidencia directa que el conteo real de usuarios es 0 antes del bootstrap (no inferido solo de Set Up).',
+          'Registrar el ZAID público del Web SDK si la vista de login de Slate lo requiere (sin almacenar secretos).',
+        ],
+        rollbackOrStopCondition:
+          'Si apareciera algún usuario preexistente inesperado al inspeccionar Authentication > Users, detener bootstrap y evaluar limpieza/aislamiento antes de continuar.',
+      },
+      {
+        stageOrder: 3,
+        stageId: 'STAGE_3_FUNCTION_VIGOR_API',
+        targetPhase: 'Fase 5.3 (Deploy Backend)',
+        title: 'Compilación y despliegue de función Advanced I/O vigor_api (Node 22)',
+        applied: false,
+        blockedByZohoClarification: false,
+        dependencies: ['Etapa 1 (5 tablas NoSQL ONLINE)', 'Etapa 2 (Native Catalyst Auth activa y conteo usuarios=0 verificado directamente)'],
+        prerequisitesBeforeRemoteWrite: [
+          'Ejecutar localmente build, build:server (dist/server/catalystEntry.js) y suite completa de pruebas.',
+          'Configurar en Catalyst variables no-secretas (VIGOR_CATALYST_AUTH_MODE=hosted_native, VIGOR_CORS_MODE=platform_managed, CATALYST_PROJECT_ID=136967000000014024, CATALYST_ENVIRONMENT, VIGOR_ENVIRONMENT, CATALYST_API_DOMAIN=https://api.catalyst.zoho.com, CATALYST_ACCOUNTS_URL=https://accounts.zoho.com, VIGOR_ALLOWED_ORIGINS=https://app.vigorcore.lat) y secreto VIGOR_SESSION_HMAC_SECRET (CSPRNG >= 256 bits) + ZC_SECURE sin definir.',
+          'Mantener listas fuera del repo credenciales external_oauth como fallback operativo únicamente si NO_AUTHENTICATION no inyectara x-zc-admin-cred-token.',
+        ],
+        costAndQuotaConsiderations: [
+          'Consumo por invocaciones Advanced I/O, tiempo/memoria de ejecución Node 22 (GB-segundos) y transferencia saliente según plan.',
+        ],
+        postOperationVerifications: [
+          'Desplegar primero en Development y validar GET /health (200 OK, routeCount: 41, sin secretos).',
+          'Validar en logs/diagnóstico controlado la disponibilidad de x-zc-admin-cred-token y x-zc-projectid en tiempo de ejecución alojado.',
+        ],
+        rollbackOrStopCondition:
+          'Revertir a versión previa o deshabilitar endpoint si /health falla o si x-zc-admin-cred-token falta (activar fallback VIGOR_CATALYST_AUTH_MODE=external_oauth).',
+      },
+      {
+        stageOrder: 4,
+        stageId: 'STAGE_4_API_GATEWAY',
+        targetPhase: 'Fase 5.3 (API Gateway & CORS)',
+        title: 'Configuración de Authorized Domains y habilitación controlada de API Gateway',
+        applied: false,
+        blockedByZohoClarification: false,
+        dependencies: ['Etapa 3 (vigor_api desplegada y sana)', 'Verificación previa de Whitelisting > Authorized Domains'],
+        prerequisitesBeforeRemoteWrite: [
+          'Verificar que no existen funciones de terceros no inventariadas antes de desactivar Project Security Rules globalmente con apig:enable.',
+          'Configurar CloudScale > Whitelisting > Authorized Domains exclusivamente con https://app.vigorcore.lat (prohibido *).',
+          'Mantener obligatorios todos los controles de protección para vigor_api tras la desactivación global de Security Rules (41 rutas explícitas en alternative-b-api-gateway.routes.json, HMAC __Host-vigor_session, SESSION#<sid> consistent_read, bound X-Vigor-CSRF, RBAC, anti-IDOR y bloqueo x-zc-user-type: admin).',
+        ],
+        costAndQuotaConsiderations: [
+          'API Gateway consume cuota de peticiones API Gateway / CloudScale y puede requerir tier habilitado en el plan de facturación Catalyst.',
+          'Aunque hoy existen 0 funciones heredadas previas, apig:enable desactiva Project Security Rules globalmente, dejando la futura vigor_api sin protección de Security Rules y dependiente 100% de Gateway + controles de Express.',
+        ],
+        postOperationVerifications: [
+          'Verificar que no existan cabeceras Access-Control-* duplicadas (VIGOR_CORS_MODE=platform_managed) ni exposición directa desprotegida de /server/vigor_api/*.',
+          'Ejecutar pruebas INT-06 (CORS/OPTIONS), INT-08 (CATALYST_USERS_AUTHENTICATION vs NO_AUTHENTICATION en bootstrap/exchange) y passthrough de CSRF/Origin.',
+        ],
+        rollbackOrStopCondition:
+          'Ejecutar catalyst apig:disable de inmediato para restaurar Project Security Rules si aparece exposición no deseada o regresión.',
+      },
+      {
+        stageOrder: 5,
+        stageId: 'STAGE_5_DOMAIN_API_VIGORCORE',
+        targetPhase: 'Fase 5.4 (Cutover Dominio API — BLOQUEADO POR ACLARACIÓN ZOHO)',
+        title: 'Mapeo personalizado api.vigorcore.lat, CNAME DNS y validación SameSite=Strict',
+        applied: false,
+        blockedByZohoClarification: true,
+        dependencies: ['Etapa 4 (API Gateway operativo)', 'Respuesta oficial escrita de Zoho sobre destino Domain Mapping para API Gateway'],
+        prerequisitesBeforeRemoteWrite: [
+          'BLOQUEANTE: Recibir aclaración de Zoho diferenciando Web Client Domain Mapping vs API Gateway custom domain en CloudScale > Domain Mapping -> Add Mapping y destino CNAME exacto en US.',
+          'Confirmar que el mapeo de api.vigorcore.lat no modifica ni sustituye el dominio activo app.vigorcore.lat en Slate.',
+        ],
+        costAndQuotaConsiderations: [
+          'Cuota de dominios personalizados por proyecto/organización y emisión/renovación SSL administrada por Catalyst; ventana de propagación DNS.',
+        ],
+        postOperationVerifications: [
+          'Verificar SSL activo en https://api.vigorcore.lat/health y que https://app.vigorcore.lat (Slate) sigue 100% operativo.',
+          'Ejecutar suite real Chromium + Safari/WebKit (INT-07 y BR-01..BR-20) validando Set-Cookie __Host-vigor_session; HttpOnly; Secure; SameSite=Strict; Path=/.',
+        ],
+        rollbackOrStopCondition:
+          'Eliminar mapeo/CNAME de api.vigorcore.lat sin tocar en ningún caso el CNAME ni la configuración Slate de app.vigorcore.lat.',
+      },
+    ],
+  };
+}
+
+

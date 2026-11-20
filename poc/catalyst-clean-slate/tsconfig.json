@@ -23,6 +23,7 @@
     "frontend/**/*",
     "tests/09-frontend-*",
     "tests/10-frontend-*",
-    "tests/11-http-*"
+    "tests/11-http-*",
+    "tests/22-phase-5.2-*"
   ]
 }
