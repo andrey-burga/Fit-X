@@ -448,7 +448,7 @@ test('[PASS-LOCAL] Linux Info-ZIP regression: backslash entry produces exit=1, w
   }
 });
 
-test('[PASS-STATIC] diagnose-vigor-api-zip.ps1 is Windows PS 5.1 + Node 24.16.0 safe, handles 0-byte members, preserves both ZIPs, and never runs remote calls', () => {
+test('[PASS-STATIC] diagnose-vigor-api-zip.ps1 is Windows PS 5.1 + Node 24.16.0 safe, uses UInt64 CRC32 math without signed hex traps, preserves both ZIPs, and never runs remote calls', () => {
   assert.ok(fs.existsSync(DIAG_PS1_PATH), `Missing script: ${DIAG_PS1_PATH}`);
   const ps1 = fs.readFileSync(DIAG_PS1_PATH, 'utf8');
 
@@ -482,6 +482,21 @@ test('[PASS-STATIC] diagnose-vigor-api-zip.ps1 is Windows PS 5.1 + Node 24.16.0 
   assert.ok(ps1.includes('$portablePreExisted -and -not $Force'));
   assert.equal(ps1.includes('Get-Content'), false, 'Must never read binary ZIP files with Get-Content');
 
+  // PowerShell 5.1 UInt64 CRC32 arithmetic & zero signed-Int32 hex literal regressions
+  assert.ok(ps1.includes('function Initialize-Crc32Table'));
+  assert.ok(ps1.includes('function Test-Crc32SelfCheck'));
+  assert.ok(ps1.includes('[uint64]4294967295'));
+  assert.ok(ps1.includes('[uint64]3988292384'));
+  assert.ok(ps1.includes('[System.Convert]::ToUInt32($final)'));
+  assert.ok(ps1.includes('00000000'));
+  assert.ok(ps1.includes('CBF43926'));
+  assert.ok(ps1.includes('E8B7BE43'));
+  assert.ok(ps1.includes('29058C73'));
+  assert.ok(ps1.includes('D424BDC1'));
+  for (const forbiddenSignedHex of ['0xEDB88320', '0xFFFFFFFF', '0x7FFFFFFF', '0xF000', '0xA000', '[uint32]::MaxValue']) {
+    assert.equal(ps1.includes(forbiddenSignedHex), false, `Forbidden PS 5.1 signed/ambiguous literal: ${forbiddenSignedHex}`);
+  }
+
   // Audit inspects raw Central Directory without normalizing backslashes first
   assert.ok(ps1.includes('if ($rawName.Contains(\'\\\'))'));
   // Never deletes or overwrites OriginalZipPath (`vigor_api.zip`)
@@ -497,6 +512,82 @@ test('[PASS-STATIC] diagnose-vigor-api-zip.ps1 is Windows PS 5.1 + Node 24.16.0 
     'Invoke-WebRequest',
   ]) {
     assert.equal(ps1.includes(remoteCmd), false, `Forbidden remote cmd in PS1: ${remoteCmd}`);
+  }
+});
+
+test('[PASS-LOCAL] CRC32 UInt64 arithmetic matches Node zlib.crc32 across empty, ASCII 123456789, >7FFFFFFF, 0..255, and large file vectors', () => {
+  // Exact BigInt mirror of the PowerShell UInt64 table-driven algorithm using decimal 3988292384 and mask 4294967295
+  const MASK = 4294967295n;
+  const POLY = 3988292384n;
+  const SHIFT1_MASK = 2147483647n;
+  const SHIFT8_MASK = 16777215n;
+
+  const table: bigint[] = new Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = BigInt(n);
+    for (let k = 0; k < 8; k++) {
+      const lsb = c & 1n;
+      const shifted = (c >> 1n) & SHIFT1_MASK;
+      c = lsb !== 0n ? (shifted ^ POLY) & MASK : shifted & MASK;
+      assert.ok(c >= 0n && c <= MASK, 'CRC32 table intermediate escaped 32-bit unsigned range');
+    }
+    table[n] = c & MASK;
+  }
+
+  const computeUInt64Mirror = (buf: Buffer): number => {
+    if (buf.length === 0) return 0;
+    let crc = MASK;
+    for (let i = 0; i < buf.length; i++) {
+      const idx = Number((crc ^ BigInt(buf[i]!)) & 255n);
+      const shifted = (crc >> 8n) & SHIFT8_MASK;
+      crc = (shifted ^ table[idx]!) & MASK;
+      assert.ok(crc >= 0n && crc <= MASK, 'CRC32 state escaped 32-bit unsigned range');
+    }
+    const finalVal = (crc ^ MASK) & MASK;
+    assert.ok(finalVal >= 0n && finalVal <= MASK);
+    return Number(finalVal);
+  };
+
+  const toHex8 = (val: number): string => (val >>> 0).toString(16).toUpperCase().padStart(8, '0');
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vigor-crc-large-'));
+  try {
+    const all256 = Buffer.from(Array.from({ length: 256 }, (_, i) => i));
+    const largeFilePath = path.join(tmpDir, 'large-1mib.bin');
+    const largeInit = Buffer.alloc(1048576);
+    for (let i = 0; i < largeInit.length; i++) {
+      largeInit[i] = ((i * 31) + 7) & 0xff;
+    }
+    fs.writeFileSync(largeFilePath, largeInit);
+    const largeFromDisk = fs.readFileSync(largeFilePath);
+
+    const cases: Array<{ label: string; buf: Buffer; expectedHex: string; expectAboveInt32Max?: boolean }> = [
+      { label: 'empty byte[]', buf: Buffer.alloc(0), expectedHex: '00000000' },
+      { label: 'ASCII 123456789', buf: Buffer.from('123456789', 'ascii'), expectedHex: 'CBF43926', expectAboveInt32Max: true },
+      { label: 'ASCII a (>7FFFFFFF)', buf: Buffer.from('a', 'ascii'), expectedHex: 'E8B7BE43', expectAboveInt32Max: true },
+      { label: 'all byte values 0..255', buf: all256, expectedHex: '29058C73' },
+      { label: 'large 1 MiB file', buf: largeFromDisk, expectedHex: 'D424BDC1', expectAboveInt32Max: true },
+    ];
+
+    for (const c of cases) {
+      const mirrorVal = computeUInt64Mirror(c.buf);
+      const localCrcVal = crc32(c.buf);
+      const nativeZlibVal = zlib.crc32(c.buf) >>> 0;
+
+      const mirrorHex = toHex8(mirrorVal);
+      const localHex = toHex8(localCrcVal);
+      const zlibHex = toHex8(nativeZlibVal);
+
+      assert.equal(mirrorHex, c.expectedHex, `${c.label} UInt64 mirror mismatch`);
+      assert.equal(localHex, c.expectedHex, `${c.label} TS crc32 mismatch`);
+      assert.equal(zlibHex, c.expectedHex, `${c.label} Node zlib.crc32 mismatch`);
+      assert.equal(mirrorHex.length, 8);
+      if (c.expectAboveInt32Max) {
+        assert.ok(mirrorVal > 0x7fffffff, `${c.label} must exceed Int32.MaxValue`);
+      }
+    }
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
 
@@ -558,7 +649,6 @@ test('[PASS-LOCAL] Synthetic local ZIP suite: 0-byte member (.npmignore), / vs \
     assert.throws(() => parseRawZipCentralDirectory(midTruncated), /Truncated or invalid ZIP/);
 
     const truncatedBeforePayloadEnd = Buffer.from(goodWithZeroByte);
-    // Corrupt compressedSize of first entry to exceed buffer length
     const firstCdOff = truncatedBeforePayloadEnd.readUInt32LE(truncatedBeforePayloadEnd.length - 6);
     truncatedBeforePayloadEnd.writeUInt32LE(999999, firstCdOff + 20);
     const parsedCorrupt = parseRawZipCentralDirectory(truncatedBeforePayloadEnd);
@@ -574,7 +664,6 @@ test('[PASS-LOCAL] Existing artifacts/vigor_api.zip and artifacts/vigor_api-port
   assert.equal(origSha, 'd0b6e60814f50fb7e47363fb9bef725b3fa5182ae31c826c075e3bab0ec34d64');
   assert.equal(portSha, 'd009bcc01cb1afa77012f47bfc5307d91a1b75101231982bce4e045eda52b8d8');
 
-  // Verify the actual 0-byte member (`node_modules/mime/.npmignore`) inside both preserved ZIPs
   for (const zipPath of [ORIGINAL_ZIP_PATH, PORTABLE_ZIP_PATH]) {
     const buf = readZipFileBytesStrict(zipPath);
     const parsed = parseRawZipCentralDirectory(buf);
@@ -587,11 +676,11 @@ test('[PASS-LOCAL] Existing artifacts/vigor_api.zip and artifacts/vigor_api-port
   }
 });
 
-test('[PASS-STATIC] docs/35 records observed Catalyst failure, SHA-256 traceability, PS 5.1 0-byte member fix, Zoho dossier, and final verdict', () => {
+test('[PASS-STATIC] docs/35 differentiates both PS 5.1 failures, documents UInt64 CRC32 fix, honest open statuses, SHA-256 traceability, and final verdict', () => {
   assert.ok(fs.existsSync(DOC_35_PATH), `Missing forensic doc: ${DOC_35_PATH}`);
   const doc = fs.readFileSync(DOC_35_PATH, 'utf8');
 
-  assert.ok(doc.includes('PHASE_5_3_CATALYST_UNZIP_FAILURE_ANALYZED'));
+  assert.ok(doc.includes('PHASE_5_3_ZIP_DIAGNOSTIC_CRC32_FIXED_NOT_EXECUTED'));
   assert.ok(doc.includes('136967000000014024'));
   assert.ok(doc.includes('136967000000074001'));
   assert.ok(doc.includes('https://project-rainfall-943998020.development.catalystserverless.com/server/vigor_api/'));
@@ -603,5 +692,9 @@ test('[PASS-STATIC] docs/35 records observed Catalyst failure, SHA-256 traceabil
   assert.ok(doc.includes('diagnose-vigor-api-zip.ps1'));
   assert.ok(doc.includes('AllowEmptyCollection'));
   assert.ok(doc.includes('node_modules/mime/.npmignore'));
+  assert.ok(doc.includes('-306674912'));
+  assert.ok(doc.includes('3988292384'));
+  assert.ok(doc.includes('4294967295'));
+  assert.ok(doc.includes('UInt64'));
   assert.ok(doc.includes('Zoho'));
 });

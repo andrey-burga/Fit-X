@@ -119,6 +119,29 @@ function Read-ZipFileBytes {
     return , $rawBytes
 }
 
+[uint64]$script:Crc32Mask = [uint64]4294967295
+[uint64]$script:Crc32Polynomial = [uint64]3988292384
+[uint64[]]$script:Crc32Table = $null
+
+function Initialize-Crc32Table {
+    [uint64[]]$table = New-Object uint64[] 256
+    for ($n = 0; $n -lt 256; $n++) {
+        [uint64]$c = [uint64]$n
+        for ($k = 0; $k -lt 8; $k++) {
+            [uint64]$lsb = $c -band [uint64]1
+            [uint64]$shifted = ($c -shr 1) -band [uint64]2147483647
+            if ($lsb -ne [uint64]0) {
+                $c = ($shifted -bxor $script:Crc32Polynomial) -band $script:Crc32Mask
+            }
+            else {
+                $c = $shifted -band $script:Crc32Mask
+            }
+        }
+        $table[$n] = $c -band $script:Crc32Mask
+    }
+    $script:Crc32Table = $table
+}
+
 function Compute-Crc32 {
     param(
         [Parameter(Mandatory = $true)]
@@ -127,22 +150,57 @@ function Compute-Crc32 {
     )
 
     if ($null -eq $Bytes -or $Bytes.Length -eq 0) {
-        return [uint32]0
+        return [System.Convert]::ToUInt32([uint64]0)
     }
 
-    [uint32]$crc = [uint32]::MaxValue
+    if ($null -eq $script:Crc32Table) {
+        Initialize-Crc32Table
+    }
+
+    [uint64]$mask = $script:Crc32Mask
+    [uint64]$crc = $mask
+    [uint64[]]$table = $script:Crc32Table
+
     foreach ($b in $Bytes) {
-        $crc = $crc -bxor [uint32]$b
-        for ($i = 0; $i -lt 8; $i++) {
-            if (($crc -band 1) -ne 0) {
-                $crc = (($crc -shr 1) -band 0x7FFFFFFF) -bxor [uint32]0xEDB88320
-            }
-            else {
-                $crc = ($crc -shr 1) -band 0x7FFFFFFF
-            }
+        [uint64]$byteVal = [uint64]$b
+        [int]$idx = [int](($crc -bxor $byteVal) -band [uint64]255)
+        [uint64]$shifted = ($crc -shr 8) -band [uint64]16777215
+        $crc = ($shifted -bxor $table[$idx]) -band $mask
+    }
+
+    [uint64]$final = ($crc -bxor $mask) -band $mask
+    if ($final -gt $mask) {
+        throw "CRC32 result exceeded 32-bit unsigned bounds: $final"
+    }
+    return [System.Convert]::ToUInt32($final)
+}
+
+function Test-Crc32SelfCheck {
+    $vectors = @(
+        @{ Label = 'empty'; Bytes = (New-Object byte[] 0); Expected = '00000000' },
+        @{ Label = 'ascii-123456789'; Bytes = ([System.Text.Encoding]::ASCII.GetBytes('123456789')); Expected = 'CBF43926' },
+        @{ Label = 'above-int32-max-a'; Bytes = ([System.Text.Encoding]::ASCII.GetBytes('a')); Expected = 'E8B7BE43' }
+    )
+
+    [byte[]]$all256 = New-Object byte[] 256
+    for ($i = 0; $i -lt 256; $i++) {
+        $all256[$i] = [byte]$i
+    }
+    $vectors += @{ Label = 'all-bytes-0-255'; Bytes = $all256; Expected = '29058C73' }
+
+    [byte[]]$largeBuf = New-Object byte[] 1048576
+    for ($i = 0; $i -lt 1048576; $i++) {
+        $largeBuf[$i] = [byte]((($i * 31) + 7) -band 255)
+    }
+    $vectors += @{ Label = 'large-1mib'; Bytes = $largeBuf; Expected = 'D424BDC1' }
+
+    foreach ($v in $vectors) {
+        [uint32]$actual = Compute-Crc32 -Bytes $v.Bytes
+        $actualHex = ('{0:X8}' -f $actual)
+        if ($actualHex -ne $v.Expected) {
+            throw ("CRC32 self-check failed for '{0}': expected {1}, got {2}." -f $v.Label, $v.Expected, $actualHex)
         }
     }
-    return ([uint32]($crc -bxor [uint32]::MaxValue))
 }
 
 function Inspect-ZipRawHeaders {
@@ -253,7 +311,7 @@ function Inspect-ZipRawHeaders {
             $findings.ExternalAttrsSample += ('0x{0:X8} ({1})' -f $extAttr, $rawName)
         }
 
-        if ($compSize -eq 0xFFFFFFFF -or $uncompSize -eq 0xFFFFFFFF -or $localOff -eq 0xFFFFFFFF) {
+        if ([uint64]$compSize -eq $script:Crc32Mask -or [uint64]$uncompSize -eq $script:Crc32Mask -or [uint64]$localOff -eq $script:Crc32Mask) {
             $findings.HasZip64 = $true
         }
 
@@ -291,8 +349,8 @@ function Inspect-ZipRawHeaders {
         if ($rawName.EndsWith('/') -or $rawName.EndsWith('\')) { $findings.EmptyDirEntries += $rawName }
 
         # POSIX symlink mode 0120000 stored in upper 16 bits of external attributes when create_system == 3
-        $posixMode = ($extAttr -shr 16) -band 0xF000
-        if ($createSys -eq 3 -and $posixMode -eq 0xA000) {
+        [uint64]$posixMode = (([uint64]$extAttr) -shr 16) -band [uint64]61440
+        if ($createSys -eq 3 -and $posixMode -eq [uint64]40960) {
             $findings.SymlinkEntries += $rawName
         }
 
@@ -411,6 +469,9 @@ Write-Host ("Local Node.js  : {0} (satisfies engines.node >=22; remote Catalyst 
 if (-not (Test-Path -LiteralPath $OriginalZipPath)) {
     throw "First-attempt archive missing: $OriginalZipPath"
 }
+
+Test-Crc32SelfCheck
+Write-Host 'CRC32 SelfTest : PASS (00000000, CBF43926, E8B7BE43, 29058C73, D424BDC1)'
 
 Write-Host '[1/4] Auditing existing vigor_api.zip (read-only, never overwritten)...'
 $origShaBefore = Get-FileSha256Hex -Path $OriginalZipPath
