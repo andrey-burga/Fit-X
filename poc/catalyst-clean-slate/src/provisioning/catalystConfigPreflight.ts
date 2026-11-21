@@ -70,12 +70,12 @@ export const CATALYST_ENV_VAR_CATALOG: readonly EnvVarAuditCatalogEntry[] = [
     usedBySdkOrRuntime: 'CatalystApp.config.projectSecretKey -> optional HTTP header x-zc-project-secret-key',
   },
   {
-    name: 'CATALYST_ENVIRONMENT',
-    classification: 'PUBLIC_PROJECT_IDENTIFIER',
+    name: 'VIGORCORE_DEPLOYMENT_ENVIRONMENT',
+    classification: 'RUNTIME_POLICY',
     secret: false,
     requiredInReadOnlyProvisioning: true,
     requiredInFullRuntime: true,
-    usedBySdkOrRuntime: "CatalystApp.config.environment ('Development' | 'Production') -> HTTP header X-Catalyst-Environment",
+    usedBySdkOrRuntime: "Custom app deployment selector ('Development' | 'Production'); avoids reserved Catalyst key CATALYST_ENVIRONMENT and pins x-zc-environment check",
   },
   {
     name: 'VIGOR_ENVIRONMENT',
@@ -639,20 +639,35 @@ export function runCatalystConfigPreflight(
     });
   }
 
-  // 3. Environments & strict separation
-  const rawCatEnv = (envMap.CATALYST_ENVIRONMENT || '').trim();
-  const catEnvValid = rawCatEnv === 'Development' || rawCatEnv === 'Production';
+  // 3. Deployment environment & strict separation (custom non-reserved VIGORCORE_DEPLOYMENT_ENVIRONMENT)
+  const rawReservedCatEnv = (envMap.CATALYST_ENVIRONMENT || '').trim();
+  if (rawReservedCatEnv) {
+    pushCheck({
+      id: 'PRE-RESERVED-CATALYST-ENV',
+      key: 'CATALYST_ENVIRONMENT',
+      classification: 'LEGACY_DEPRECATED',
+      passed: false,
+      severity: 'FAIL',
+      code: 'RESERVED_CATALYST_ENV_VAR',
+      message:
+        'CATALYST_ENVIRONMENT is rejected by Zoho Catalyst Console as a reserved keyword; remove it and configure VIGORCORE_DEPLOYMENT_ENVIRONMENT instead.',
+      redactedPreview: rawReservedCatEnv,
+    });
+  }
+
+  const rawDeployEnv = (envMap.VIGORCORE_DEPLOYMENT_ENVIRONMENT || '').trim();
+  const deployEnvValid = rawDeployEnv === 'Development' || rawDeployEnv === 'Production';
   pushCheck({
-    id: 'PRE-CATALYST-ENV',
-    key: 'CATALYST_ENVIRONMENT',
-    classification: 'PUBLIC_PROJECT_IDENTIFIER',
-    passed: catEnvValid,
-    severity: catEnvValid ? 'INFO' : 'FAIL',
-    code: catEnvValid ? 'OK' : 'INVALID_CATALYST_ENVIRONMENT',
-    message: catEnvValid
-      ? `CATALYST_ENVIRONMENT='${rawCatEnv}' validated.`
-      : `CATALYST_ENVIRONMENT must be strictly 'Development' or 'Production' (got '${rawCatEnv || 'UNSET'}').`,
-    ...(rawCatEnv ? { redactedPreview: rawCatEnv } : {}),
+    id: 'PRE-DEPLOYMENT-ENV',
+    key: 'VIGORCORE_DEPLOYMENT_ENVIRONMENT',
+    classification: 'RUNTIME_POLICY',
+    passed: deployEnvValid,
+    severity: deployEnvValid ? 'INFO' : 'FAIL',
+    code: deployEnvValid ? 'OK' : 'INVALID_DEPLOYMENT_ENVIRONMENT',
+    message: deployEnvValid
+      ? `VIGORCORE_DEPLOYMENT_ENVIRONMENT='${rawDeployEnv}' validated.`
+      : `VIGORCORE_DEPLOYMENT_ENVIRONMENT must be strictly 'Development' or 'Production' (got '${rawDeployEnv || 'UNSET'}').`,
+    ...(rawDeployEnv ? { redactedPreview: rawDeployEnv } : {}),
   });
 
   const rawVigorEnv = (envMap.VIGOR_ENVIRONMENT || '').trim().toLowerCase();
@@ -670,20 +685,20 @@ export function runCatalystConfigPreflight(
     ...(rawVigorEnv ? { redactedPreview: rawVigorEnv } : {}),
   });
 
-  if (catEnvValid && vigorEnvValid) {
-    const mismatchProd = rawVigorEnv === 'production' && rawCatEnv !== 'Production';
-    const mismatchNonProd = (rawVigorEnv === 'development' || rawVigorEnv === 'test') && rawCatEnv === 'Production';
+  if (deployEnvValid && vigorEnvValid) {
+    const mismatchProd = rawVigorEnv === 'production' && rawDeployEnv !== 'Production';
+    const mismatchNonProd = (rawVigorEnv === 'development' || rawVigorEnv === 'test') && rawDeployEnv === 'Production';
     const separationOk = !mismatchProd && !mismatchNonProd;
     pushCheck({
       id: 'PRE-ENV-SEPARATION',
-      key: 'VIGOR_ENVIRONMENT+CATALYST_ENVIRONMENT',
+      key: 'VIGOR_ENVIRONMENT+VIGORCORE_DEPLOYMENT_ENVIRONMENT',
       classification: 'CROSS_CONFIG',
       passed: separationOk,
       severity: separationOk ? 'INFO' : 'FAIL',
       code: separationOk ? 'OK' : 'ENVIRONMENT_SEPARATION_VIOLATION',
       message: separationOk
-        ? `Environment separation enforced (VIGOR_ENVIRONMENT='${rawVigorEnv}' <-> CATALYST_ENVIRONMENT='${rawCatEnv}').`
-        : `Cross-environment conflict: VIGOR_ENVIRONMENT='${rawVigorEnv}' cannot pair with CATALYST_ENVIRONMENT='${rawCatEnv}'.`,
+        ? `Environment separation enforced (VIGOR_ENVIRONMENT='${rawVigorEnv}' <-> VIGORCORE_DEPLOYMENT_ENVIRONMENT='${rawDeployEnv}').`
+        : `Cross-environment conflict: VIGOR_ENVIRONMENT='${rawVigorEnv}' cannot pair with VIGORCORE_DEPLOYMENT_ENVIRONMENT='${rawDeployEnv}'.`,
     });
   }
 
@@ -1055,7 +1070,7 @@ export function runCatalystConfigPreflight(
     authModeDetected,
     targetSummary: {
       projectId: rawProjectId && !isPlaceholderOrDummy(rawProjectId) ? rawProjectId : null,
-      catalystEnvironment: catEnvValid ? rawCatEnv : null,
+      catalystEnvironment: deployEnvValid ? rawDeployEnv : null,
       vigorEnvironment: vigorEnvValid ? rawVigorEnv : null,
       apiDomain: apiUrlRes.origin,
       accountsUrl: accUrlRes.origin,

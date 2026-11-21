@@ -159,7 +159,7 @@ export function buildAlternativeAConfig(
         environmentVariablesSchema: [
           'CATALYST_PROJECT_ID',
           'CATALYST_PROJECT_KEY',
-          'CATALYST_ENVIRONMENT',
+          'VIGORCORE_DEPLOYMENT_ENVIRONMENT',
           'VIGOR_ENVIRONMENT',
           'CATALYST_API_DOMAIN',
           'CATALYST_ACCOUNTS_URL',
@@ -652,12 +652,12 @@ export function getRequiredServerEnvSpecs(): ServerEnvVariableSpec[] {
       purpose: 'Catalyst Project Key sent in HTTP header PROJECT_ID by @zcatalyst/auth-admin (in hosted_native may be supplied by edge x-zc-project-key or pinned)',
     },
     {
-      name: 'CATALYST_ENVIRONMENT',
+      name: 'VIGORCORE_DEPLOYMENT_ENVIRONMENT',
       requiredInExternalOAuth: true,
       requiredInHostedNative: true,
       secret: false,
       exampleValue: 'Development',
-      purpose: 'Must be Development or Production and match VIGOR_ENVIRONMENT policy',
+      purpose: 'Custom VigorCore deployment selector (Development | Production); avoids Catalyst reserved keyword CATALYST_ENVIRONMENT and matches VIGOR_ENVIRONMENT + x-zc-environment policy',
     },
     {
       name: 'VIGOR_ENVIRONMENT',

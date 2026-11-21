@@ -514,7 +514,7 @@ test('Phase 5.0 [PASS-UNIT] Admin provider fails closed on missing creds, projec
       CatalystAdminAppProvider.fromEnvironment({
         CATALYST_PROJECT_ID: '',
         CATALYST_PROJECT_KEY: 'valid_proj_key',
-        CATALYST_ENVIRONMENT: 'Development',
+        VIGORCORE_DEPLOYMENT_ENVIRONMENT: 'Development',
       }),
     /MISSING_CATALYST_ADMIN_CONFIG/
   );
@@ -524,7 +524,7 @@ test('Phase 5.0 [PASS-UNIT] Admin provider fails closed on missing creds, projec
     () =>
       CatalystAdminAppProvider.fromEnvironment({
         CATALYST_PROJECT_ID: '123456',
-        CATALYST_ENVIRONMENT: 'Development',
+        VIGORCORE_DEPLOYMENT_ENVIRONMENT: 'Development',
         VIGOR_ENVIRONMENT: 'development',
         CATALYST_ADMIN_CLIENT_ID: '1000.abc',
         CATALYST_ADMIN_CLIENT_SECRET: 'real_secret_val',
@@ -539,7 +539,7 @@ test('Phase 5.0 [PASS-UNIT] Admin provider fails closed on missing creds, projec
       CatalystAdminAppProvider.fromEnvironment({
         CATALYST_PROJECT_ID: '123456',
         CATALYST_PROJECT_KEY: 'YOUR_PROJECT_KEY',
-        CATALYST_ENVIRONMENT: 'Development',
+        VIGORCORE_DEPLOYMENT_ENVIRONMENT: 'Development',
         VIGOR_ENVIRONMENT: 'development',
         CATALYST_ADMIN_CLIENT_ID: '1000.abc',
         CATALYST_ADMIN_CLIENT_SECRET: 'real_secret_val',
@@ -553,7 +553,7 @@ test('Phase 5.0 [PASS-UNIT] Admin provider fails closed on missing creds, projec
       CatalystAdminAppProvider.fromEnvironment({
         CATALYST_PROJECT_ID: '123456',
         CATALYST_PROJECT_KEY: 'valid_proj_key',
-        CATALYST_ENVIRONMENT: 'Development',
+        VIGORCORE_DEPLOYMENT_ENVIRONMENT: 'Development',
         VIGOR_ENVIRONMENT: 'development',
         CATALYST_ADMIN_CLIENT_ID: '1000.abc',
         CATALYST_ADMIN_CLIENT_SECRET: 'YOUR_CLIENT_SECRET',
@@ -567,7 +567,7 @@ test('Phase 5.0 [PASS-UNIT] Admin provider fails closed on missing creds, projec
       CatalystAdminAppProvider.fromEnvironment({
         CATALYST_PROJECT_ID: '123456',
         CATALYST_PROJECT_KEY: 'valid_proj_key',
-        CATALYST_ENVIRONMENT: 'Development',
+        VIGORCORE_DEPLOYMENT_ENVIRONMENT: 'Development',
         VIGOR_ENVIRONMENT: 'production',
         CATALYST_ADMIN_CLIENT_ID: '1000.abc',
         CATALYST_ADMIN_CLIENT_SECRET: 'real_secret_val',

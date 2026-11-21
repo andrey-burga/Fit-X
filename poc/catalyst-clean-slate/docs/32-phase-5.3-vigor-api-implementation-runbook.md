@@ -182,7 +182,7 @@ Se auditó el código real compilable en `poc/catalyst-clean-slate/` antes de em
 | **`VIGOR_CATALYST_AUTH_MODE`** | Política Auth | **REQUIRED** | **`hosted_native`** *(no cambiar a `external_oauth` sin prueba en vivo + autorización)* |
 | **`VIGOR_CORS_MODE`** | Política CORS | **REQUIRED** | **`platform_managed`** detrás de Authorized Domains *(alternativa local: `express_enforced`)* |
 | **`CATALYST_PROJECT_ID`** | Identificador público | **REQUIRED** | **`136967000000014024`** |
-| **`CATALYST_ENVIRONMENT`** | Identificador público | **REQUIRED** | **`Development`** *(estrictamente nunca `Production` aquí)* |
+| **`VIGORCORE_DEPLOYMENT_ENVIRONMENT`** | Identificador público | **REQUIRED** | **`Development`** *(estrictamente nunca `Production` aquí; evita keyword reservado CATALYST_ENVIRONMENT)* |
 | **`VIGOR_ENVIRONMENT`** | Política Entorno | **REQUIRED** | **`development`** |
 | **`CATALYST_API_DOMAIN`** | Identificador regional | **REQUIRED** | **`https://api.catalyst.zoho.com`** *(DC US)* |
 | **`CATALYST_ACCOUNTS_URL`** | Identificador regional | **REQUIRED** | **`https://accounts.zoho.com`** *(DC US)* |
@@ -363,7 +363,7 @@ finally {
 Push-Location poc/catalyst-clean-slate
 try {
   $env:CATALYST_PROJECT_ID = '136967000000014024'
-  $env:CATALYST_ENVIRONMENT = 'Development'
+  $env:VIGORCORE_DEPLOYMENT_ENVIRONMENT = 'Development'
   $env:VIGOR_ENVIRONMENT = 'development'
   $env:CATALYST_API_DOMAIN = 'https://api.catalyst.zoho.com'
   $env:CATALYST_ACCOUNTS_URL = 'https://accounts.zoho.com'
@@ -408,7 +408,7 @@ Copy-Item -Recurse -Force 'poc\catalyst-clean-slate\dist' (Join-Path $FnDir 'dis
 ```
 
 ### 7.4 Condiciones `STOP` (Abortar inmediatamente y no continuar)
-- `CATALYST_PROJECT_ID !== '136967000000014024'` o `CATALYST_ENVIRONMENT !== 'Development'`.
+- `CATALYST_PROJECT_ID !== '136967000000014024'` o `VIGORCORE_DEPLOYMENT_ENVIRONMENT !== 'Development'`.
 - Presencia de `Production` en variables o destino del comando `catalyst deploy`.
 - Cualquier intento de habilitar `API Gateway` o editar DNS/Domain Mapping de `api.vigorcore.lat` durante el despliegue inicial de `vigor_api`.
 - Ausencia de `VIGOR_SESSION_HMAC_SECRET` válido (>= 256 bits Base64URL) o presencia de `ZC_SECURE=override` / `VIGOR_ALLOW_RESET_WITHOUT_INT08=true`.

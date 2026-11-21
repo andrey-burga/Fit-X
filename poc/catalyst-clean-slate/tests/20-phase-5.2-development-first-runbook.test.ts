@@ -160,7 +160,7 @@ test('Phase 5.2 [PASS-UNIT] verify-clean-slate-provisioning.ts runs offline & Pr
       VIGOR_CATALYST_AUTH_MODE: 'external_oauth',
       CATALYST_PROJECT_ID: '136967000000014024',
       CATALYST_PROJECT_KEY: syntheticProjectKey,
-      CATALYST_ENVIRONMENT: 'Development',
+      VIGORCORE_DEPLOYMENT_ENVIRONMENT: 'Development',
       VIGOR_ENVIRONMENT: 'development',
       CATALYST_API_DOMAIN: 'https://api.catalyst.zoho.com',
       CATALYST_ACCOUNTS_URL: 'https://accounts.zoho.com',

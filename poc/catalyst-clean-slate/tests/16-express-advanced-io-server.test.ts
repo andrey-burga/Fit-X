@@ -37,7 +37,7 @@ function createBaseEnv(hmacSecret: string) {
   return {
     CATALYST_PROJECT_ID: 'proj_loopback_500',
     CATALYST_PROJECT_KEY: 'proj_key_loopback_secret',
-    CATALYST_ENVIRONMENT: 'Development',
+    VIGORCORE_DEPLOYMENT_ENVIRONMENT: 'Development',
     VIGOR_ENVIRONMENT: 'test',
     CATALYST_API_DOMAIN: 'http://127.0.0.1:19999',
     CATALYST_ACCOUNTS_URL: 'http://127.0.0.1:19998',

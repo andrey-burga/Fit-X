@@ -45,7 +45,7 @@ function buildValidEnv(overrides: Record<string, string | undefined> = {}): Reco
   return {
     CATALYST_PROJECT_ID: 'proj_51_dev_9001',
     CATALYST_PROJECT_KEY: 'projkey_secret_9001_alpha_bravo',
-    CATALYST_ENVIRONMENT: 'Development',
+    VIGORCORE_DEPLOYMENT_ENVIRONMENT: 'Development',
     VIGOR_ENVIRONMENT: 'development',
     CATALYST_API_DOMAIN: 'https://api.catalyst.zoho.com',
     CATALYST_ACCOUNTS_URL: 'https://accounts.zoho.com',
@@ -383,7 +383,7 @@ test('Phase 5.1 [PASS-UNIT] Preflight fails closed on missing, placeholder, mism
   const prodCrossEnv = runCatalystConfigPreflight(
     buildValidEnv({
       VIGOR_ENVIRONMENT: 'production',
-      CATALYST_ENVIRONMENT: 'Development',
+      VIGORCORE_DEPLOYMENT_ENVIRONMENT: 'Development',
     })
   );
   assert.equal(prodCrossEnv.verdict, 'FAIL');
@@ -408,7 +408,7 @@ test('Phase 5.1 [PASS-UNIT] Preflight fails closed on missing, placeholder, mism
   // 6. Ephemeral access token forbidden in prod full_server_runtime
   const prodAccessToken = runCatalystConfigPreflight(
     buildValidEnv({
-      CATALYST_ENVIRONMENT: 'Production',
+      VIGORCORE_DEPLOYMENT_ENVIRONMENT: 'Production',
       VIGOR_ENVIRONMENT: 'production',
       CATALYST_ADMIN_REFRESH_TOKEN: '',
       CATALYST_ADMIN_ACCESS_TOKEN: 'ephemeral_access_token_sample_12345',

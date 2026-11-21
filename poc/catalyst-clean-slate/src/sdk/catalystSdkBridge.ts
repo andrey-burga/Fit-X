@@ -28,7 +28,7 @@
  *    never trusting incoming `x-zc-admin-cred-*` or `x-zc-user-*` headers).
  * 3. FAIL-CLOSED CROSS-ENVIRONMENT & PLACEHOLDER VALIDATION:
  *    Rejects missing creds, placeholder values (`YOUR_*`, `<...>`), environment mismatches
- *    (`VIGOR_ENVIRONMENT=production` vs `CATALYST_ENVIRONMENT=Development`), and non-HTTPS
+ *    (`VIGOR_ENVIRONMENT=production` vs `VIGORCORE_DEPLOYMENT_ENVIRONMENT=Development`), and non-HTTPS
  *    Catalyst origins outside explicit loopback tests.
  * 4. STRICT SECRET REDACTION:
  *    `redactSecretsFromString()` and `redactSensitiveObject()` strip OAuth client secrets,
@@ -62,6 +62,53 @@ export const CATALYST_SDK_VERSIONS = {
 } as const;
 
 export const ADMIN_APP_NAME = 'vigorcore-admin';
+export const VIGORCORE_DEPLOYMENT_ENVIRONMENT_KEY = 'VIGORCORE_DEPLOYMENT_ENVIRONMENT';
+
+/**
+ * Resolves the server-side deployment environment exclusively from VigorCore's custom
+ * non-reserved environment variable `VIGORCORE_DEPLOYMENT_ENVIRONMENT` (`'Development' | 'Production'`).
+ *
+ * Catalyst Function Configuration rejects `CATALYST_ENVIRONMENT` as a reserved keyword
+ * (`environment_variables must not contain reserved keywords`), and `@zcatalyst/auth-admin`
+ * only reads `process.env['x-zc-environment']` with an unsafe silent `'Development'` fallback.
+ * Therefore VigorCore pins deployment intent explicitly via `VIGORCORE_DEPLOYMENT_ENVIRONMENT`,
+ * never trusts incoming client HTTP headers to establish environment, and cross-checks
+ * incoming `x-zc-environment` + `VIGOR_ENVIRONMENT` fail-closed.
+ */
+export function resolveDeploymentEnvironmentFromEnv(
+  envMap: Record<string, string | undefined>
+): 'Development' | 'Production' {
+  const rawPrimary = (envMap[VIGORCORE_DEPLOYMENT_ENVIRONMENT_KEY] || '').trim();
+  const rawReservedLegacy = (envMap.CATALYST_ENVIRONMENT || '').trim();
+
+  if (!rawPrimary) {
+    if (rawReservedLegacy) {
+      throw new Error(
+        `RESERVED_CATALYST_ENV_VAR: Catalyst rejects 'CATALYST_ENVIRONMENT' as a reserved keyword; configure '${VIGORCORE_DEPLOYMENT_ENVIRONMENT_KEY}'='Development' or 'Production' instead.`
+      );
+    }
+    throw new Error(
+      `INVALID_DEPLOYMENT_ENVIRONMENT: '${VIGORCORE_DEPLOYMENT_ENVIRONMENT_KEY}' must be strictly 'Development' or 'Production'.`
+    );
+  }
+
+  if (
+    isPlaceholderValue(rawPrimary) ||
+    (rawPrimary !== 'Development' && rawPrimary !== 'Production')
+  ) {
+    throw new Error(
+      `INVALID_DEPLOYMENT_ENVIRONMENT: '${VIGORCORE_DEPLOYMENT_ENVIRONMENT_KEY}' must be strictly 'Development' or 'Production' (got '${rawPrimary}').`
+    );
+  }
+
+  if (rawReservedLegacy && rawReservedLegacy !== rawPrimary) {
+    throw new Error(
+      `ENVIRONMENT_SEPARATION_VIOLATION: Reserved legacy CATALYST_ENVIRONMENT='${rawReservedLegacy}' conflicts with ${VIGORCORE_DEPLOYMENT_ENVIRONMENT_KEY}='${rawPrimary}'. Remove CATALYST_ENVIRONMENT.`
+    );
+  }
+
+  return rawPrimary;
+}
 
 export interface SdkCompatibilityFinding {
   id: string;
@@ -295,18 +342,18 @@ function buildValidatedAdminApp(
   const rawEnv = (cfg.catalystEnvironment || '').trim();
   if (rawEnv !== 'Development' && rawEnv !== 'Production') {
     throw new Error(
-      `INVALID_CATALYST_ENVIRONMENT: CATALYST_ENVIRONMENT must be 'Development' or 'Production'.`
+      `INVALID_DEPLOYMENT_ENVIRONMENT: ${VIGORCORE_DEPLOYMENT_ENVIRONMENT_KEY} must be 'Development' or 'Production'.`
     );
   }
   const vigorEnv = (cfg.vigorEnvironment || process.env.VIGOR_ENVIRONMENT || 'development').trim().toLowerCase();
   if (vigorEnv === 'production' && rawEnv !== 'Production') {
     throw new Error(
-      `ENVIRONMENT_SEPARATION_VIOLATION: VIGOR_ENVIRONMENT='production' cannot connect to CATALYST_ENVIRONMENT='${rawEnv}'.`
+      `ENVIRONMENT_SEPARATION_VIOLATION: VIGOR_ENVIRONMENT='production' cannot connect to ${VIGORCORE_DEPLOYMENT_ENVIRONMENT_KEY}='${rawEnv}'.`
     );
   }
   if ((vigorEnv === 'development' || vigorEnv === 'test') && rawEnv === 'Production') {
     throw new Error(
-      `ENVIRONMENT_SEPARATION_VIOLATION: Non-production VIGOR_ENVIRONMENT='${vigorEnv}' cannot connect to CATALYST_ENVIRONMENT='Production'.`
+      `ENVIRONMENT_SEPARATION_VIOLATION: Non-production VIGOR_ENVIRONMENT='${vigorEnv}' cannot connect to ${VIGORCORE_DEPLOYMENT_ENVIRONMENT_KEY}='Production'.`
     );
   }
 
@@ -410,9 +457,7 @@ export class CatalystAdminAppProvider {
     envMap: Record<string, string | undefined> = process.env,
     options: { allowInsecureLoopbackForTest?: boolean } = {}
   ): CatalystAdminAppProvider {
-    const rawCatEnv = (envMap.CATALYST_ENVIRONMENT || '').trim();
-    const normalizedCatEnv: 'Development' | 'Production' =
-      rawCatEnv === 'Production' ? 'Production' : rawCatEnv === 'Development' ? 'Development' : (rawCatEnv as any);
+    const normalizedCatEnv = resolveDeploymentEnvironmentFromEnv(envMap);
 
     const rawVigorEnv = (envMap.VIGOR_ENVIRONMENT || envMap.NODE_ENV || 'development')
       .trim()
@@ -848,7 +893,7 @@ export function validateHostedNativeConfig(
   const rawEnv = (cfg.catalystEnvironment || '').trim();
   if (rawEnv !== 'Development' && rawEnv !== 'Production') {
     throw new Error(
-      `INVALID_CATALYST_ENVIRONMENT: CATALYST_ENVIRONMENT must be 'Development' or 'Production'.`
+      `INVALID_DEPLOYMENT_ENVIRONMENT: ${VIGORCORE_DEPLOYMENT_ENVIRONMENT_KEY} must be 'Development' or 'Production'.`
     );
   }
   const vigorEnv = (cfg.vigorEnvironment || process.env.VIGOR_ENVIRONMENT || 'development')
@@ -856,12 +901,12 @@ export function validateHostedNativeConfig(
     .toLowerCase();
   if (vigorEnv === 'production' && rawEnv !== 'Production') {
     throw new Error(
-      `ENVIRONMENT_SEPARATION_VIOLATION: VIGOR_ENVIRONMENT='production' cannot connect to CATALYST_ENVIRONMENT='${rawEnv}'.`
+      `ENVIRONMENT_SEPARATION_VIOLATION: VIGOR_ENVIRONMENT='production' cannot connect to ${VIGORCORE_DEPLOYMENT_ENVIRONMENT_KEY}='${rawEnv}'.`
     );
   }
   if ((vigorEnv === 'development' || vigorEnv === 'test') && rawEnv === 'Production') {
     throw new Error(
-      `ENVIRONMENT_SEPARATION_VIOLATION: Non-production VIGOR_ENVIRONMENT='${vigorEnv}' cannot connect to CATALYST_ENVIRONMENT='Production'.`
+      `ENVIRONMENT_SEPARATION_VIOLATION: Non-production VIGOR_ENVIRONMENT='${vigorEnv}' cannot connect to ${VIGORCORE_DEPLOYMENT_ENVIRONMENT_KEY}='Production'.`
     );
   }
 
@@ -931,7 +976,7 @@ export function buildHostedAdminAppFromHeaders(
     throw new AuthGuardError(
       403,
       'PROJECT_CONTEXT_MISMATCH',
-      'Incoming x-zc-environment does not match configured CATALYST_ENVIRONMENT.'
+      `Incoming x-zc-environment does not match configured ${VIGORCORE_DEPLOYMENT_ENVIRONMENT_KEY}.`
     );
   }
 
@@ -1005,7 +1050,7 @@ export class HostedNativeCatalystAuthRuntime implements ICatalystAuthRuntime {
     envMap: Record<string, string | undefined> = process.env,
     options: { allowInsecureLoopbackForTest?: boolean } = {}
   ): HostedNativeCatalystAuthRuntime {
-    const rawCatEnv = (envMap.CATALYST_ENVIRONMENT || '').trim();
+    const deploymentEnv = resolveDeploymentEnvironmentFromEnv(envMap);
     const rawVigorEnv = (envMap.VIGOR_ENVIRONMENT || envMap.NODE_ENV || 'development')
       .trim()
       .toLowerCase();
@@ -1018,7 +1063,7 @@ export class HostedNativeCatalystAuthRuntime implements ICatalystAuthRuntime {
       config: {
         projectId: envMap.CATALYST_PROJECT_ID || '',
         projectKey: envMap.CATALYST_PROJECT_KEY,
-        catalystEnvironment: rawCatEnv as 'Development' | 'Production',
+        catalystEnvironment: deploymentEnv,
         vigorEnvironment,
         apiDomain: envMap.CATALYST_API_DOMAIN,
         accountsUrl: envMap.CATALYST_ACCOUNTS_URL,
@@ -1098,6 +1143,15 @@ export class HostedNativeCatalystAuthRuntime implements ICatalystAuthRuntime {
         403,
         'PROJECT_CONTEXT_MISMATCH',
         'Incoming x-zc-project-key does not match the configured server Catalyst project.'
+      );
+    }
+
+    const reqEnv = readHeaderCaseInsensitive(incomingHeaders, CONSTANTS.PROJECT_HEADER.environment);
+    if (reqEnv && reqEnv !== this.config.catalystEnvironment) {
+      throw new AuthGuardError(
+        403,
+        'PROJECT_CONTEXT_MISMATCH',
+        `Incoming x-zc-environment does not match configured ${VIGORCORE_DEPLOYMENT_ENVIRONMENT_KEY}.`
       );
     }
 

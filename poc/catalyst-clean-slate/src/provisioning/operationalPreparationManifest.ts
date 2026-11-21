@@ -303,6 +303,7 @@ export const CODEBASE_REFERENCED_ENV_VARS: readonly string[] = [
   'CATALYST_RESET_REDIRECT_URL',
   'NODE_ENV',
   'PORT',
+  'VIGORCORE_DEPLOYMENT_ENVIRONMENT',
   'VIGOR_ALLOWED_ORIGINS',
   'VIGOR_ALLOW_RESET_WITHOUT_INT08',
   'VIGOR_CATALYST_AUTH_MODE',
@@ -360,15 +361,28 @@ export const EXHAUSTIVE_ENV_VAR_MATRIX: readonly ExhaustiveEnvVarMatrixEntry[] =
     purposeAndValidationRule: 'Non-placeholder public project ID pinned for BaaS calls & x-zc-projectid anti-spoof verification.',
   },
   {
-    name: 'CATALYST_ENVIRONMENT',
-    category: 'CATALYST_IDENTIFIERS',
+    name: 'VIGORCORE_DEPLOYMENT_ENVIRONMENT',
+    category: 'AUTH_AND_CORS_POLICY',
     isSecret: false,
     secretConfigurationMarker: 'Development | Production',
     localExpress: 'REQUIRED',
     hostedNativeAdvancedIo: 'REQUIRED',
     externalOAuthAdvancedIo: 'REQUIRED',
     cliReadOnlyLive: 'REQUIRED',
-    purposeAndValidationRule: "Strictly 'Development' or 'Production'; must match VIGOR_ENVIRONMENT without dev/prod crossover.",
+    purposeAndValidationRule:
+      "Custom VigorCore deployment selector ('Development' | 'Production'); avoids reserved Catalyst key CATALYST_ENVIRONMENT and must match VIGOR_ENVIRONMENT + x-zc-environment.",
+  },
+  {
+    name: 'CATALYST_ENVIRONMENT',
+    category: 'LEGACY_DEPRECATED',
+    isSecret: false,
+    secretConfigurationMarker: 'DEPRECATED',
+    localExpress: 'FORBIDDEN',
+    hostedNativeAdvancedIo: 'FORBIDDEN',
+    externalOAuthAdvancedIo: 'FORBIDDEN',
+    cliReadOnlyLive: 'FORBIDDEN',
+    purposeAndValidationRule:
+      'Reserved by Zoho Catalyst Console (rejected with reserved keywords error); migrate exclusively to VIGORCORE_DEPLOYMENT_ENVIRONMENT.',
   },
   {
     name: 'VIGOR_ENVIRONMENT',
@@ -379,7 +393,8 @@ export const EXHAUSTIVE_ENV_VAR_MATRIX: readonly ExhaustiveEnvVarMatrixEntry[] =
     hostedNativeAdvancedIo: 'REQUIRED',
     externalOAuthAdvancedIo: 'REQUIRED',
     cliReadOnlyLive: 'REQUIRED',
-    purposeAndValidationRule: "Enforces HMAC/Catalyst environment pairing ('production' requires CATALYST_ENVIRONMENT='Production').",
+    purposeAndValidationRule:
+      "Enforces HMAC/Catalyst environment pairing ('production' requires VIGORCORE_DEPLOYMENT_ENVIRONMENT='Production').",
   },
   {
     name: 'CATALYST_API_DOMAIN',
@@ -688,7 +703,7 @@ export const EXHAUSTIVE_ENV_VAR_MATRIX: readonly ExhaustiveEnvVarMatrixEntry[] =
     hostedNativeAdvancedIo: 'FORBIDDEN',
     externalOAuthAdvancedIo: 'FORBIDDEN',
     cliReadOnlyLive: 'FORBIDDEN',
-    purposeAndValidationRule: 'Legacy unprefixed ZC_* env selector; migrate exclusively to CATALYST_ENVIRONMENT.',
+    purposeAndValidationRule: 'Legacy unprefixed ZC_* env selector; migrate exclusively to VIGORCORE_DEPLOYMENT_ENVIRONMENT.',
   },
 ] as const;
 
@@ -1448,7 +1463,7 @@ export function buildPhase512ClosureReport(): Phase512ClosureReport {
         dependencies: ['Etapa 1 (5 tablas NoSQL ONLINE)', 'Etapa 2 (Native Catalyst Auth activa y conteo usuarios=0 verificado directamente)'],
         prerequisitesBeforeRemoteWrite: [
           'Ejecutar localmente build, build:server (dist/server/catalystEntry.js) y suite completa de pruebas.',
-          'Configurar en Catalyst variables no-secretas (VIGOR_CATALYST_AUTH_MODE=hosted_native, VIGOR_CORS_MODE=platform_managed, CATALYST_PROJECT_ID=136967000000014024, CATALYST_ENVIRONMENT, VIGOR_ENVIRONMENT, CATALYST_API_DOMAIN=https://api.catalyst.zoho.com, CATALYST_ACCOUNTS_URL=https://accounts.zoho.com, VIGOR_ALLOWED_ORIGINS=https://app.vigorcore.lat) y secreto VIGOR_SESSION_HMAC_SECRET (CSPRNG >= 256 bits) + ZC_SECURE sin definir.',
+          'Configurar en Catalyst variables no-secretas (VIGOR_CATALYST_AUTH_MODE=hosted_native, VIGOR_CORS_MODE=platform_managed, CATALYST_PROJECT_ID=136967000000014024, VIGORCORE_DEPLOYMENT_ENVIRONMENT=Development, VIGOR_ENVIRONMENT=development, CATALYST_API_DOMAIN=https://api.catalyst.zoho.com, CATALYST_ACCOUNTS_URL=https://accounts.zoho.com, VIGOR_ALLOWED_ORIGINS=https://app.vigorcore.lat) y secreto VIGOR_SESSION_HMAC_SECRET (CSPRNG >= 256 bits) + ZC_SECURE sin definir.',
           'Mantener listas fuera del repo credenciales external_oauth como fallback operativo únicamente si NO_AUTHENTICATION no inyectara x-zc-admin-cred-token.',
         ],
         costAndQuotaConsiderations: [

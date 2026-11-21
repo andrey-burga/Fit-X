@@ -88,7 +88,7 @@ test('Phase 5.3 [PASS-LOOPBACK] Concurrent requests via HostedNativeCatalystAuth
   const hostedRuntime = HostedNativeCatalystAuthRuntime.fromEnvironment(
     {
       CATALYST_PROJECT_ID: '136967000000014024',
-      CATALYST_ENVIRONMENT: 'Development',
+      VIGORCORE_DEPLOYMENT_ENVIRONMENT: 'Development',
       VIGOR_ENVIRONMENT: 'development',
       CATALYST_API_DOMAIN: baasOrigin,
       CATALYST_ACCOUNTS_URL: baasOrigin,
@@ -167,7 +167,7 @@ test('Phase 5.3 [PASS-LOOPBACK] Concurrent requests via HostedNativeCatalystAuth
 test('Phase 5.3 [PASS-UNIT] Fail-closed handling for absent/invalid AsyncLocalStorage context and environment initialization errors', async () => {
   const hostedRuntime = HostedNativeCatalystAuthRuntime.fromEnvironment({
     CATALYST_PROJECT_ID: '136967000000014024',
-    CATALYST_ENVIRONMENT: 'Development',
+    VIGORCORE_DEPLOYMENT_ENVIRONMENT: 'Development',
     VIGOR_ENVIRONMENT: 'development',
     CATALYST_API_DOMAIN: 'https://api.catalyst.zoho.com',
     CATALYST_ACCOUNTS_URL: 'https://accounts.zoho.com',
@@ -204,7 +204,7 @@ test('Phase 5.3 [PASS-UNIT] Fail-closed handling for absent/invalid AsyncLocalSt
     () =>
       HostedNativeCatalystAuthRuntime.fromEnvironment({
         CATALYST_PROJECT_ID: '136967000000014024',
-        CATALYST_ENVIRONMENT: 'Development',
+        VIGORCORE_DEPLOYMENT_ENVIRONMENT: 'Development',
         VIGOR_ENVIRONMENT: 'production',
       }),
     /ENVIRONMENT_SEPARATION_VIOLATION/
@@ -253,7 +253,7 @@ test('Phase 5.3 [PASS-LOOPBACK] Admin NoSQL scope never substitutes sessionless/
       VIGOR_CATALYST_AUTH_MODE: 'hosted_native',
       VIGOR_CORS_MODE: 'platform_managed',
       CATALYST_PROJECT_ID: '136967000000014024',
-      CATALYST_ENVIRONMENT: 'Development',
+      VIGORCORE_DEPLOYMENT_ENVIRONMENT: 'Development',
       VIGOR_ENVIRONMENT: 'development',
       CATALYST_API_DOMAIN: 'https://api.catalyst.zoho.com',
       CATALYST_ACCOUNTS_URL: 'https://accounts.zoho.com',
