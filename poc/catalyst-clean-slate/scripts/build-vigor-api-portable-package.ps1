@@ -4,7 +4,7 @@
 
 .DESCRIPTION
     Builds a clean, isolated temporary production staging directory and generates the deterministic versioned ZIP:
-    `artifacts/vigor_api-reproducible-portable.zip`
+    `artifacts/vigor_api-vars-reconciled-portable.zip`
     strictly for Zoho Catalyst Advanced I/O (Node.js 22).
 
     Determinism & Safety Rules:
@@ -40,7 +40,7 @@ if (-not (Test-Path -LiteralPath $RootPackageJsonPath) -or -not (Test-Path -Lite
 
 $ArtifactsDir = Join-Path $PocRoot 'artifacts'
 if ([string]::IsNullOrWhiteSpace($OutputZipPath)) {
-    $VersionedZipPath = Join-Path $ArtifactsDir 'vigor_api-reproducible-portable.zip'
+    $VersionedZipPath = Join-Path $ArtifactsDir 'vigor_api-vars-reconciled-portable.zip'
 }
 else {
     $VersionedZipPath = $OutputZipPath

@@ -106,7 +106,7 @@ export const PHASE_5_2_STAGE_1_DEV_INVENTORY: Phase52Stage1NoSQLInventory = {
     ],
     localCodeValidations: [
       'Conciliación exacta 1:1 de las 5 tablas, 8 GSIs, 11 columnas de Users.GSI_Directory y reglas TTL contra TABLE_SCHEMA_REGISTRY.',
-      'Verificación de unicidad sin duplicaciones ni colisiones entre los 5 Table IDs, 8 Index IDs, CATALYST_PROJECT_ID (136967000000014024) y el ID DNS de Slate (16391000000005003).',
+      'Verificación de unicidad sin duplicaciones ni colisiones entre los 5 Table IDs, 8 Index IDs, VIGORCORE_CATALYST_PROJECT_ID (136967000000014024) y el ID DNS de Slate (16391000000005003).',
       'Compilación TypeScript/Vite y suite completa de pruebas locales sin llamadas remotas.',
     ],
     notExecutedInThisClosure: [
@@ -345,7 +345,7 @@ export function validatePhase52Stage1Inventory(
 ): Stage1InventoryValidationResult {
   const mismatches: string[] = [];
   const seenIds = new Map<string, string>([
-    [inventory.catalystProjectId, 'CATALYST_PROJECT_ID'],
+    [inventory.catalystProjectId, 'VIGORCORE_CATALYST_PROJECT_ID'],
     [inventory.slateDnsHostnameId, 'SLATE_DNS_ID'],
   ]);
 

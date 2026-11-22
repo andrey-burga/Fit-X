@@ -35,12 +35,12 @@ import { catalystAdvancedIoEntry, resetAdvancedIoRuntimeForTests } from '../src/
 
 function createBaseEnv(hmacSecret: string) {
   return {
-    CATALYST_PROJECT_ID: 'proj_loopback_500',
+    VIGORCORE_CATALYST_PROJECT_ID: 'proj_loopback_500',
     CATALYST_PROJECT_KEY: 'proj_key_loopback_secret',
     VIGORCORE_DEPLOYMENT_ENVIRONMENT: 'Development',
     VIGOR_ENVIRONMENT: 'test',
-    CATALYST_API_DOMAIN: 'http://127.0.0.1:19999',
-    CATALYST_ACCOUNTS_URL: 'http://127.0.0.1:19998',
+    VIGORCORE_CATALYST_API_DOMAIN: 'http://127.0.0.1:19999',
+    VIGORCORE_CATALYST_ACCOUNTS_URL: 'http://127.0.0.1:19998',
     CATALYST_ADMIN_CLIENT_ID: '1000.TEST_CLIENT',
     CATALYST_ADMIN_CLIENT_SECRET: 'client_secret_must_never_leak',
     CATALYST_ADMIN_REFRESH_TOKEN: 'refresh_token_must_never_leak',

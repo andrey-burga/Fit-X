@@ -14,8 +14,8 @@
  *   npx tsx scripts/verify-clean-slate-provisioning.ts --live --confirm-readonly [--allow-extra-tables] [--expected-project <id>] [--expected-region <region>]
  *     -> First runs zero-network config preflight, then connects strictly READ-ONLY through
  *        CatalystAdminAppProvider (SDK-01 mitigation) after manual Catalyst table provisioning.
- *     -> Consumes canonical server vars: CATALYST_PROJECT_ID, CATALYST_PROJECT_KEY,
- *        VIGORCORE_DEPLOYMENT_ENVIRONMENT, VIGOR_ENVIRONMENT, CATALYST_API_DOMAIN, CATALYST_ACCOUNTS_URL,
+ *     -> Consumes canonical server vars: VIGORCORE_CATALYST_PROJECT_ID, CATALYST_PROJECT_KEY,
+ *        VIGORCORE_DEPLOYMENT_ENVIRONMENT, VIGOR_ENVIRONMENT, VIGORCORE_CATALYST_API_DOMAIN, VIGORCORE_CATALYST_ACCOUNTS_URL,
  *        and CATALYST_ADMIN_CLIENT_ID/SECRET/REFRESH_TOKEN (or CATALYST_ADMIN_ACCESS_TOKEN).
  *     -> Strictly READ-ONLY: zero writes, zero test documents, zero user creation.
  */

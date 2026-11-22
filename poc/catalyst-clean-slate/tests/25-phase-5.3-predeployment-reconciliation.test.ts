@@ -87,11 +87,11 @@ test('Phase 5.3 [PASS-LOOPBACK] Concurrent requests via HostedNativeCatalystAuth
 
   const hostedRuntime = HostedNativeCatalystAuthRuntime.fromEnvironment(
     {
-      CATALYST_PROJECT_ID: '136967000000014024',
+      VIGORCORE_CATALYST_PROJECT_ID: '136967000000014024',
       VIGORCORE_DEPLOYMENT_ENVIRONMENT: 'Development',
       VIGOR_ENVIRONMENT: 'development',
-      CATALYST_API_DOMAIN: baasOrigin,
-      CATALYST_ACCOUNTS_URL: baasOrigin,
+      VIGORCORE_CATALYST_API_DOMAIN: baasOrigin,
+      VIGORCORE_CATALYST_ACCOUNTS_URL: baasOrigin,
     },
     { allowInsecureLoopbackForTest: true }
   );
@@ -166,11 +166,11 @@ test('Phase 5.3 [PASS-LOOPBACK] Concurrent requests via HostedNativeCatalystAuth
 
 test('Phase 5.3 [PASS-UNIT] Fail-closed handling for absent/invalid AsyncLocalStorage context and environment initialization errors', async () => {
   const hostedRuntime = HostedNativeCatalystAuthRuntime.fromEnvironment({
-    CATALYST_PROJECT_ID: '136967000000014024',
+    VIGORCORE_CATALYST_PROJECT_ID: '136967000000014024',
     VIGORCORE_DEPLOYMENT_ENVIRONMENT: 'Development',
     VIGOR_ENVIRONMENT: 'development',
-    CATALYST_API_DOMAIN: 'https://api.catalyst.zoho.com',
-    CATALYST_ACCOUNTS_URL: 'https://accounts.zoho.com',
+    VIGORCORE_CATALYST_API_DOMAIN: 'https://api.catalyst.zoho.com',
+    VIGORCORE_CATALYST_ACCOUNTS_URL: 'https://accounts.zoho.com',
   });
 
   // 1. Outside AsyncLocalStorage request lifecycle -> 503 HOSTED_PLATFORM_ADMIN_CONTEXT_UNAVAILABLE
@@ -203,7 +203,7 @@ test('Phase 5.3 [PASS-UNIT] Fail-closed handling for absent/invalid AsyncLocalSt
   assert.throws(
     () =>
       HostedNativeCatalystAuthRuntime.fromEnvironment({
-        CATALYST_PROJECT_ID: '136967000000014024',
+        VIGORCORE_CATALYST_PROJECT_ID: '136967000000014024',
         VIGORCORE_DEPLOYMENT_ENVIRONMENT: 'Development',
         VIGOR_ENVIRONMENT: 'production',
       }),
@@ -214,10 +214,10 @@ test('Phase 5.3 [PASS-UNIT] Fail-closed handling for absent/invalid AsyncLocalSt
   resetAdvancedIoRuntimeForTests();
   const prevSecret = process.env.VIGOR_SESSION_HMAC_SECRET;
   const prevAuthMode = process.env.VIGOR_CATALYST_AUTH_MODE;
-  const prevProj = process.env.CATALYST_PROJECT_ID;
+  const prevProj = process.env.VIGORCORE_CATALYST_PROJECT_ID;
   delete process.env.VIGOR_SESSION_HMAC_SECRET;
   process.env.VIGOR_CATALYST_AUTH_MODE = 'hosted_native';
-  process.env.CATALYST_PROJECT_ID = '136967000000014024';
+  process.env.VIGORCORE_CATALYST_PROJECT_ID = '136967000000014024';
 
   const srv = http.createServer(catalystAdvancedIoEntry);
   await new Promise<void>(resolve => srv.listen(0, '127.0.0.1', () => resolve()));
@@ -234,8 +234,8 @@ test('Phase 5.3 [PASS-UNIT] Fail-closed handling for absent/invalid AsyncLocalSt
     else process.env.VIGOR_SESSION_HMAC_SECRET = prevSecret;
     if (prevAuthMode === undefined) delete process.env.VIGOR_CATALYST_AUTH_MODE;
     else process.env.VIGOR_CATALYST_AUTH_MODE = prevAuthMode;
-    if (prevProj === undefined) delete process.env.CATALYST_PROJECT_ID;
-    else process.env.CATALYST_PROJECT_ID = prevProj;
+    if (prevProj === undefined) delete process.env.VIGORCORE_CATALYST_PROJECT_ID;
+    else process.env.VIGORCORE_CATALYST_PROJECT_ID = prevProj;
     resetAdvancedIoRuntimeForTests();
     await new Promise<void>(resolve => srv.close(() => resolve()));
   }
@@ -252,11 +252,11 @@ test('Phase 5.3 [PASS-LOOPBACK] Admin NoSQL scope never substitutes sessionless/
     {
       VIGOR_CATALYST_AUTH_MODE: 'hosted_native',
       VIGOR_CORS_MODE: 'platform_managed',
-      CATALYST_PROJECT_ID: '136967000000014024',
+      VIGORCORE_CATALYST_PROJECT_ID: '136967000000014024',
       VIGORCORE_DEPLOYMENT_ENVIRONMENT: 'Development',
       VIGOR_ENVIRONMENT: 'development',
-      CATALYST_API_DOMAIN: 'https://api.catalyst.zoho.com',
-      CATALYST_ACCOUNTS_URL: 'https://accounts.zoho.com',
+      VIGORCORE_CATALYST_API_DOMAIN: 'https://api.catalyst.zoho.com',
+      VIGORCORE_CATALYST_ACCOUNTS_URL: 'https://accounts.zoho.com',
       VIGOR_SESSION_HMAC_SECRET: hmacSecret,
       VIGOR_SESSION_ACTIVE_KID: 'k1',
       VIGOR_ALLOWED_ORIGINS: 'https://app.vigorcore.lat',

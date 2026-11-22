@@ -158,12 +158,12 @@ test('Phase 5.2 [PASS-UNIT] verify-clean-slate-provisioning.ts runs offline & Pr
     ],
     {
       VIGOR_CATALYST_AUTH_MODE: 'external_oauth',
-      CATALYST_PROJECT_ID: '136967000000014024',
+      VIGORCORE_CATALYST_PROJECT_ID: '136967000000014024',
       CATALYST_PROJECT_KEY: syntheticProjectKey,
       VIGORCORE_DEPLOYMENT_ENVIRONMENT: 'Development',
       VIGOR_ENVIRONMENT: 'development',
-      CATALYST_API_DOMAIN: 'https://api.catalyst.zoho.com',
-      CATALYST_ACCOUNTS_URL: 'https://accounts.zoho.com',
+      VIGORCORE_CATALYST_API_DOMAIN: 'https://api.catalyst.zoho.com',
+      VIGORCORE_CATALYST_ACCOUNTS_URL: 'https://accounts.zoho.com',
       CATALYST_ADMIN_ACCESS_TOKEN: syntheticEphemeralToken,
     }
   );
@@ -182,7 +182,7 @@ test('Phase 5.2 [PASS-UNIT] verify-clean-slate-provisioning.ts runs offline & Pr
         ['--live', '--confirm-readonly', '--auth-mode', 'hosted_native'],
         {
           VIGOR_CATALYST_AUTH_MODE: 'hosted_native',
-          CATALYST_PROJECT_ID: '136967000000014024',
+          VIGORCORE_CATALYST_PROJECT_ID: '136967000000014024',
         }
       ),
     (err: unknown) => err instanceof Error && err.message.includes('HOSTED_NATIVE_UNAVAILABLE_OUTSIDE_ADVANCED_IO')

@@ -62,11 +62,11 @@ test('Phase 5.3 [PASS-UNIT] resolveDeploymentEnvironmentFromEnv fails closed on 
 
 test('Phase 5.3 [PASS-UNIT] HostedNativeCatalystAuthRuntime enforces project and environment context checks', async () => {
   const runtime = HostedNativeCatalystAuthRuntime.fromEnvironment({
-    CATALYST_PROJECT_ID: '136967000000014024',
+    VIGORCORE_CATALYST_PROJECT_ID: '136967000000014024',
     VIGORCORE_DEPLOYMENT_ENVIRONMENT: 'Development',
     VIGOR_ENVIRONMENT: 'development',
-    CATALYST_API_DOMAIN: 'https://api.catalyst.zoho.com',
-    CATALYST_ACCOUNTS_URL: 'https://accounts.zoho.com',
+    VIGORCORE_CATALYST_API_DOMAIN: 'https://api.catalyst.zoho.com',
+    VIGORCORE_CATALYST_ACCOUNTS_URL: 'https://accounts.zoho.com',
   });
 
   // 1. Wrong project ID in request header -> 403 PROJECT_CONTEXT_MISMATCH
@@ -112,10 +112,10 @@ test('Phase 5.3 [PASS-UNIT] HostedNativeCatalystAuthRuntime enforces project and
 
 test('Phase 5.3 [PASS-UNIT] Config preflight requires VIGORCORE_DEPLOYMENT_ENVIRONMENT and rejects reserved CATALYST_ENVIRONMENT', () => {
   const preflightMissing = runCatalystConfigPreflight({
-    CATALYST_PROJECT_ID: '136967000000014024',
+    VIGORCORE_CATALYST_PROJECT_ID: '136967000000014024',
     VIGOR_ENVIRONMENT: 'development',
-    CATALYST_API_DOMAIN: 'https://api.catalyst.zoho.com',
-    CATALYST_ACCOUNTS_URL: 'https://accounts.zoho.com',
+    VIGORCORE_CATALYST_API_DOMAIN: 'https://api.catalyst.zoho.com',
+    VIGORCORE_CATALYST_ACCOUNTS_URL: 'https://accounts.zoho.com',
     VIGOR_SESSION_HMAC_SECRET: '1234567890123456789012345678901234567890123',
     VIGOR_ALLOWED_ORIGINS: 'https://app.vigorcore.lat',
   });
@@ -123,11 +123,11 @@ test('Phase 5.3 [PASS-UNIT] Config preflight requires VIGORCORE_DEPLOYMENT_ENVIR
   assert.ok(preflightMissing.failures.some(f => f.code === 'INVALID_DEPLOYMENT_ENVIRONMENT'));
 
   const preflightReserved = runCatalystConfigPreflight({
-    CATALYST_PROJECT_ID: '136967000000014024',
+    VIGORCORE_CATALYST_PROJECT_ID: '136967000000014024',
     CATALYST_ENVIRONMENT: 'Development',
     VIGOR_ENVIRONMENT: 'development',
-    CATALYST_API_DOMAIN: 'https://api.catalyst.zoho.com',
-    CATALYST_ACCOUNTS_URL: 'https://accounts.zoho.com',
+    VIGORCORE_CATALYST_API_DOMAIN: 'https://api.catalyst.zoho.com',
+    VIGORCORE_CATALYST_ACCOUNTS_URL: 'https://accounts.zoho.com',
     VIGOR_SESSION_HMAC_SECRET: '1234567890123456789012345678901234567890123',
     VIGOR_ALLOWED_ORIGINS: 'https://app.vigorcore.lat',
   });

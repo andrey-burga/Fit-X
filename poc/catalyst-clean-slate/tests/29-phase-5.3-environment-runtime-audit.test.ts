@@ -36,7 +36,7 @@ test('Phase 5.3 [PASS-UNIT] Runtime audit: VIGORCORE_DEPLOYMENT_ENVIRONMENT vs V
   assert.throws(
     () =>
       HostedNativeCatalystAuthRuntime.fromEnvironment({
-        CATALYST_PROJECT_ID: '136967000000014024',
+        VIGORCORE_CATALYST_PROJECT_ID: '136967000000014024',
         VIGORCORE_DEPLOYMENT_ENVIRONMENT: 'Development',
         VIGOR_ENVIRONMENT: 'production',
       }),
@@ -46,11 +46,11 @@ test('Phase 5.3 [PASS-UNIT] Runtime audit: VIGORCORE_DEPLOYMENT_ENVIRONMENT vs V
 
 test('Phase 5.3 [PASS-LOOPBACK] Trusted header audit: Spoofed or mismatched x-zc-environment fails closed 403 PROJECT_CONTEXT_MISMATCH', async () => {
   const runtime = HostedNativeCatalystAuthRuntime.fromEnvironment({
-    CATALYST_PROJECT_ID: '136967000000014024',
+    VIGORCORE_CATALYST_PROJECT_ID: '136967000000014024',
     VIGORCORE_DEPLOYMENT_ENVIRONMENT: 'Development',
     VIGOR_ENVIRONMENT: 'development',
-    CATALYST_API_DOMAIN: 'https://api.catalyst.zoho.com',
-    CATALYST_ACCOUNTS_URL: 'https://accounts.zoho.com',
+    VIGORCORE_CATALYST_API_DOMAIN: 'https://api.catalyst.zoho.com',
+    VIGORCORE_CATALYST_ACCOUNTS_URL: 'https://accounts.zoho.com',
   });
 
   // Spoofed header `x-zc-environment: Production` against server-pinned Development runtime

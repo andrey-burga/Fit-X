@@ -190,11 +190,11 @@ test('Phase 5.1.2 [PASS-UNIT] Preparation CLI executes inspect/preflight/plan of
   const hostedEnv: Record<string, string> = {
     VIGOR_CATALYST_AUTH_MODE: 'hosted_native',
     VIGOR_CORS_MODE: 'platform_managed',
-    CATALYST_PROJECT_ID: 'proj_prep_512',
+    VIGORCORE_CATALYST_PROJECT_ID: 'proj_prep_512',
     VIGORCORE_DEPLOYMENT_ENVIRONMENT: 'Development',
     VIGOR_ENVIRONMENT: 'development',
-    CATALYST_API_DOMAIN: 'https://api.catalyst.zoho.com',
-    CATALYST_ACCOUNTS_URL: 'https://accounts.zoho.com',
+    VIGORCORE_CATALYST_API_DOMAIN: 'https://api.catalyst.zoho.com',
+    VIGORCORE_CATALYST_ACCOUNTS_URL: 'https://accounts.zoho.com',
     VIGOR_SESSION_HMAC_SECRET: hmacSecret,
     VIGOR_ALLOWED_ORIGINS: 'https://app.vigorcore.lat',
   };
@@ -338,11 +338,11 @@ test('Phase 5.1.2 [PASS-UNIT] Reconciled Project-Rainfall (136967000000014024) c
     {
       VIGOR_CATALYST_AUTH_MODE: 'hosted_native',
       VIGOR_CORS_MODE: 'platform_managed',
-      CATALYST_PROJECT_ID: closure.projectObservedId,
+      VIGORCORE_CATALYST_PROJECT_ID: closure.projectObservedId,
       VIGORCORE_DEPLOYMENT_ENVIRONMENT: 'Development',
       VIGOR_ENVIRONMENT: 'development',
-      CATALYST_API_DOMAIN: 'https://api.catalyst.zoho.com',
-      CATALYST_ACCOUNTS_URL: 'https://accounts.zoho.com',
+      VIGORCORE_CATALYST_API_DOMAIN: 'https://api.catalyst.zoho.com',
+      VIGORCORE_CATALYST_ACCOUNTS_URL: 'https://accounts.zoho.com',
       VIGOR_SESSION_HMAC_SECRET: ServerSessionTokenManager.generateStrongSecret(32),
       VIGOR_ALLOWED_ORIGINS: 'https://app.vigorcore.lat',
     }

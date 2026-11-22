@@ -43,12 +43,12 @@ import { runVerifierCli } from '../scripts/verify-clean-slate-provisioning.js';
 
 function buildValidEnv(overrides: Record<string, string | undefined> = {}): Record<string, string | undefined> {
   return {
-    CATALYST_PROJECT_ID: 'proj_51_dev_9001',
+    VIGORCORE_CATALYST_PROJECT_ID: 'proj_51_dev_9001',
     CATALYST_PROJECT_KEY: 'projkey_secret_9001_alpha_bravo',
     VIGORCORE_DEPLOYMENT_ENVIRONMENT: 'Development',
     VIGOR_ENVIRONMENT: 'development',
-    CATALYST_API_DOMAIN: 'https://api.catalyst.zoho.com',
-    CATALYST_ACCOUNTS_URL: 'https://accounts.zoho.com',
+    VIGORCORE_CATALYST_API_DOMAIN: 'https://api.catalyst.zoho.com',
+    VIGORCORE_CATALYST_ACCOUNTS_URL: 'https://accounts.zoho.com',
     CATALYST_ADMIN_CLIENT_ID: '1000.TESTCLIENTID51',
     CATALYST_ADMIN_CLIENT_SECRET: 'secret_oauth_51_charlie_delta',
     CATALYST_ADMIN_REFRESH_TOKEN: '1000.refresh_51_echo_foxtrot_99',
@@ -349,14 +349,14 @@ test('Phase 5.1 [PASS-UNIT] Preflight fails closed on missing, placeholder, mism
   // 1. Placeholders / all-zeros rejected
   const placeholderRes = runCatalystConfigPreflight(
     buildValidEnv({
-      CATALYST_PROJECT_ID: '00000000000',
+      VIGORCORE_CATALYST_PROJECT_ID: '00000000000',
       CATALYST_PROJECT_KEY: '<CATALYST_PROJECT_KEY>',
       CATALYST_ADMIN_REFRESH_TOKEN: 'YOUR_REFRESH_TOKEN',
     }),
     { scope: 'provisioning_readonly' }
   );
   assert.equal(placeholderRes.verdict, 'FAIL');
-  assert.ok(placeholderRes.failures.some(f => f.key === 'CATALYST_PROJECT_ID'));
+  assert.ok(placeholderRes.failures.some(f => f.key === 'VIGORCORE_CATALYST_PROJECT_ID'));
   assert.ok(placeholderRes.failures.some(f => f.key === 'CATALYST_PROJECT_KEY'));
   assert.ok(placeholderRes.failures.some(f => f.key === 'CATALYST_ADMIN_REFRESH_TOKEN'));
 
@@ -372,8 +372,8 @@ test('Phase 5.1 [PASS-UNIT] Preflight fails closed on missing, placeholder, mism
   // 3. API domain / Accounts URL region mismatch
   const regionMismatch = runCatalystConfigPreflight(
     buildValidEnv({
-      CATALYST_API_DOMAIN: 'https://api.catalyst.zoho.eu',
-      CATALYST_ACCOUNTS_URL: 'https://accounts.zoho.com',
+      VIGORCORE_CATALYST_API_DOMAIN: 'https://api.catalyst.zoho.eu',
+      VIGORCORE_CATALYST_ACCOUNTS_URL: 'https://accounts.zoho.com',
     })
   );
   assert.equal(regionMismatch.verdict, 'FAIL');
@@ -393,7 +393,7 @@ test('Phase 5.1 [PASS-UNIT] Preflight fails closed on missing, placeholder, mism
   const insecureCfg = runCatalystConfigPreflight(
     buildValidEnv({
       ZC_SECURE: 'override',
-      CATALYST_API_DOMAIN: 'http://api.catalyst.zoho.com',
+      VIGORCORE_CATALYST_API_DOMAIN: 'http://api.catalyst.zoho.com',
       VIGOR_SESSION_HMAC_SECRET: 'too_short_not_base64url',
       VIGOR_ALLOWED_ORIGINS: '*',
     }),
@@ -426,9 +426,9 @@ test('Phase 5.1 [PASS-LOOPBACK] Real CatalystAdminAppProvider + NoSQL SDK read-o
 
   try {
     const envMap = buildValidEnv({
-      CATALYST_PROJECT_ID: projectId,
-      CATALYST_API_DOMAIN: baas.apiDomain,
-      CATALYST_ACCOUNTS_URL: baas.accountsUrl,
+      VIGORCORE_CATALYST_PROJECT_ID: projectId,
+      VIGORCORE_CATALYST_API_DOMAIN: baas.apiDomain,
+      VIGORCORE_CATALYST_ACCOUNTS_URL: baas.accountsUrl,
     });
 
     const adminProvider = CatalystAdminAppProvider.fromEnvironment(envMap, {
@@ -495,9 +495,9 @@ test('Phase 5.1 [PASS-LOOPBACK] Real CatalystAdminAppProvider + NoSQL SDK read-o
   try {
     const provider = CatalystAdminAppProvider.fromEnvironment(
       buildValidEnv({
-        CATALYST_PROJECT_ID: projectId,
-        CATALYST_API_DOMAIN: dirtyBaas.apiDomain,
-        CATALYST_ACCOUNTS_URL: dirtyBaas.accountsUrl,
+        VIGORCORE_CATALYST_PROJECT_ID: projectId,
+        VIGORCORE_CATALYST_API_DOMAIN: dirtyBaas.apiDomain,
+        VIGORCORE_CATALYST_ACCOUNTS_URL: dirtyBaas.accountsUrl,
       }),
       { allowInsecureLoopbackForTest: true }
     );
@@ -535,7 +535,7 @@ test('Phase 5.1 [PASS-LOOPBACK] CLI supports zero-network --preflight, aborts in
   }
 
   // 3. --preflight fail on placeholder config (0 network)
-  const preFail = await runVerifierCli(['--preflight'], { CATALYST_PROJECT_ID: '00000000000' });
+  const preFail = await runVerifierCli(['--preflight'], { VIGORCORE_CATALYST_PROJECT_ID: '00000000000' });
   assert.equal(preFail.verdict, 'FAIL');
 
   // 4. --live without --confirm-readonly fails closed
@@ -550,10 +550,10 @@ test('Phase 5.1 [PASS-LOOPBACK] CLI supports zero-network --preflight, aborts in
         runVerifierCli(
           ['--live', '--confirm-readonly', '--allow-loopback-test'],
           buildValidEnv({
-            CATALYST_PROJECT_ID: projectId,
+            VIGORCORE_CATALYST_PROJECT_ID: projectId,
             CATALYST_PROJECT_KEY: '<CATALYST_PROJECT_KEY>',
-            CATALYST_API_DOMAIN: baas.apiDomain,
-            CATALYST_ACCOUNTS_URL: baas.accountsUrl,
+            VIGORCORE_CATALYST_API_DOMAIN: baas.apiDomain,
+            VIGORCORE_CATALYST_ACCOUNTS_URL: baas.accountsUrl,
           })
         ),
       /PREFLIGHT_FAILED/
@@ -565,9 +565,9 @@ test('Phase 5.1 [PASS-LOOPBACK] CLI supports zero-network --preflight, aborts in
     const liveReport = await runVerifierCli(
       ['--live', '--confirm-readonly', '--allow-loopback-test', '--expected-project', projectId],
       buildValidEnv({
-        CATALYST_PROJECT_ID: projectId,
-        CATALYST_API_DOMAIN: baas.apiDomain,
-        CATALYST_ACCOUNTS_URL: baas.accountsUrl,
+        VIGORCORE_CATALYST_PROJECT_ID: projectId,
+        VIGORCORE_CATALYST_API_DOMAIN: baas.apiDomain,
+        VIGORCORE_CATALYST_ACCOUNTS_URL: baas.accountsUrl,
       })
     );
     assert.equal(liveReport.verdict, 'PASS_READONLY_CLEAN_SLATE');

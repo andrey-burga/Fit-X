@@ -512,7 +512,7 @@ test('Phase 5.0 [PASS-UNIT] Admin provider fails closed on missing creds, projec
   assert.throws(
     () =>
       CatalystAdminAppProvider.fromEnvironment({
-        CATALYST_PROJECT_ID: '',
+        VIGORCORE_CATALYST_PROJECT_ID: '',
         CATALYST_PROJECT_KEY: 'valid_proj_key',
         VIGORCORE_DEPLOYMENT_ENVIRONMENT: 'Development',
       }),
@@ -523,7 +523,7 @@ test('Phase 5.0 [PASS-UNIT] Admin provider fails closed on missing creds, projec
   assert.throws(
     () =>
       CatalystAdminAppProvider.fromEnvironment({
-        CATALYST_PROJECT_ID: '123456',
+        VIGORCORE_CATALYST_PROJECT_ID: '123456',
         VIGORCORE_DEPLOYMENT_ENVIRONMENT: 'Development',
         VIGOR_ENVIRONMENT: 'development',
         CATALYST_ADMIN_CLIENT_ID: '1000.abc',
@@ -537,7 +537,7 @@ test('Phase 5.0 [PASS-UNIT] Admin provider fails closed on missing creds, projec
   assert.throws(
     () =>
       CatalystAdminAppProvider.fromEnvironment({
-        CATALYST_PROJECT_ID: '123456',
+        VIGORCORE_CATALYST_PROJECT_ID: '123456',
         CATALYST_PROJECT_KEY: 'YOUR_PROJECT_KEY',
         VIGORCORE_DEPLOYMENT_ENVIRONMENT: 'Development',
         VIGOR_ENVIRONMENT: 'development',
@@ -551,7 +551,7 @@ test('Phase 5.0 [PASS-UNIT] Admin provider fails closed on missing creds, projec
   assert.throws(
     () =>
       CatalystAdminAppProvider.fromEnvironment({
-        CATALYST_PROJECT_ID: '123456',
+        VIGORCORE_CATALYST_PROJECT_ID: '123456',
         CATALYST_PROJECT_KEY: 'valid_proj_key',
         VIGORCORE_DEPLOYMENT_ENVIRONMENT: 'Development',
         VIGOR_ENVIRONMENT: 'development',
@@ -565,7 +565,7 @@ test('Phase 5.0 [PASS-UNIT] Admin provider fails closed on missing creds, projec
   assert.throws(
     () =>
       CatalystAdminAppProvider.fromEnvironment({
-        CATALYST_PROJECT_ID: '123456',
+        VIGORCORE_CATALYST_PROJECT_ID: '123456',
         CATALYST_PROJECT_KEY: 'valid_proj_key',
         VIGORCORE_DEPLOYMENT_ENVIRONMENT: 'Development',
         VIGOR_ENVIRONMENT: 'production',

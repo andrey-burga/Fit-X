@@ -46,12 +46,12 @@ export interface EnvVarAuditCatalogEntry {
 
 export const CATALYST_ENV_VAR_CATALOG: readonly EnvVarAuditCatalogEntry[] = [
   {
-    name: 'CATALYST_PROJECT_ID',
+    name: 'VIGORCORE_CATALYST_PROJECT_ID',
     classification: 'PUBLIC_PROJECT_IDENTIFIER',
     secret: false,
     requiredInReadOnlyProvisioning: true,
     requiredInFullRuntime: true,
-    usedBySdkOrRuntime: 'CatalystApp.config.projectId -> URL /baas/v1/project/:projectId & x-zc-projectid anti-spoof pin',
+    usedBySdkOrRuntime: 'CatalystApp.config.projectId -> URL /baas/v1/project/:projectId & x-zc-projectid anti-spoof pin (non-reserved replacement for CATALYST_PROJECT_ID)',
   },
   {
     name: 'CATALYST_PROJECT_KEY',
@@ -86,20 +86,20 @@ export const CATALYST_ENV_VAR_CATALOG: readonly EnvVarAuditCatalogEntry[] = [
     usedBySdkOrRuntime: 'CatalystAdminAppProvider & ServerSessionTokenManager environment isolation policy',
   },
   {
-    name: 'CATALYST_API_DOMAIN',
+    name: 'VIGORCORE_CATALYST_API_DOMAIN',
     classification: 'PUBLIC_PROJECT_IDENTIFIER',
     secret: false,
     requiredInReadOnlyProvisioning: true,
     requiredInFullRuntime: true,
-    usedBySdkOrRuntime: 'CatalystApp.config.apiDomain -> @zcatalyst/nosql & @zcatalyst/auth regional base host',
+    usedBySdkOrRuntime: 'CatalystApp.config.apiDomain -> @zcatalyst/nosql & @zcatalyst/auth regional base host (non-reserved replacement for CATALYST_API_DOMAIN)',
   },
   {
-    name: 'CATALYST_ACCOUNTS_URL',
+    name: 'VIGORCORE_CATALYST_ACCOUNTS_URL',
     classification: 'PUBLIC_PROJECT_IDENTIFIER',
     secret: false,
     requiredInReadOnlyProvisioning: true,
     requiredInFullRuntime: true,
-    usedBySdkOrRuntime: 'RefreshTokenCredential.accountsUrl -> Zoho OAuth /oauth/v2/token endpoint',
+    usedBySdkOrRuntime: 'RefreshTokenCredential.accountsUrl -> Zoho OAuth /oauth/v2/token & regional accounts origin (non-reserved replacement for CATALYST_ACCOUNTS_URL)',
   },
   {
     name: 'CATALYST_PROJECT_DOMAIN',
@@ -529,43 +529,64 @@ export function runCatalystConfigPreflight(
     });
   }
 
-  // 1. CATALYST_PROJECT_ID
-  const rawProjectId = (envMap.CATALYST_PROJECT_ID || '').trim();
+  // 1. Reserved legacy keys guard + VIGORCORE_CATALYST_PROJECT_ID
+  const reservedLegacyChecks: Array<{ legacy: string; replacement: string; id: string }> = [
+    { legacy: 'CATALYST_PROJECT_ID', replacement: 'VIGORCORE_CATALYST_PROJECT_ID', id: 'PRE-RESERVED-CATALYST-PROJECT-ID' },
+    { legacy: 'CATALYST_API_DOMAIN', replacement: 'VIGORCORE_CATALYST_API_DOMAIN', id: 'PRE-RESERVED-CATALYST-API-DOMAIN' },
+    { legacy: 'CATALYST_ACCOUNTS_URL', replacement: 'VIGORCORE_CATALYST_ACCOUNTS_URL', id: 'PRE-RESERVED-CATALYST-ACCOUNTS-URL' },
+  ];
+  for (const item of reservedLegacyChecks) {
+    const val = (envMap[item.legacy] || '').trim();
+    if (val) {
+      pushCheck({
+        id: item.id,
+        key: item.legacy,
+        classification: 'LEGACY_DEPRECATED',
+        passed: false,
+        severity: 'FAIL',
+        code: 'RESERVED_CATALYST_ENV_VAR',
+        message: `${item.legacy} is rejected by Zoho Catalyst Console as a reserved keyword; remove it and configure ${item.replacement} instead.`,
+        redactedPreview: val,
+      });
+    }
+  }
+
+  const rawProjectId = (envMap.VIGORCORE_CATALYST_PROJECT_ID || '').trim();
   if (!rawProjectId) {
     pushCheck({
       id: 'PRE-PROJECT-ID',
-      key: 'CATALYST_PROJECT_ID',
+      key: 'VIGORCORE_CATALYST_PROJECT_ID',
       classification: 'PUBLIC_PROJECT_IDENTIFIER',
       passed: false,
       severity: 'FAIL',
       code: 'MISSING_CATALYST_PROJECT_ID',
-      message: 'CATALYST_PROJECT_ID is missing.',
+      message: 'VIGORCORE_CATALYST_PROJECT_ID is missing.',
     });
   } else if (isPlaceholderOrDummy(rawProjectId) || !/^[A-Za-z0-9_-]{3,64}$/.test(rawProjectId)) {
     pushCheck({
       id: 'PRE-PROJECT-ID',
-      key: 'CATALYST_PROJECT_ID',
+      key: 'VIGORCORE_CATALYST_PROJECT_ID',
       classification: 'PUBLIC_PROJECT_IDENTIFIER',
       passed: false,
       severity: 'FAIL',
       code: isPlaceholderOrDummy(rawProjectId) ? 'PLACEHOLDER_CATALYST_PROJECT_ID' : 'INVALID_CATALYST_PROJECT_ID',
-      message: `CATALYST_PROJECT_ID '${rawProjectId}' is empty, placeholder, or malformed.`,
+      message: `VIGORCORE_CATALYST_PROJECT_ID '${rawProjectId}' is empty, placeholder, or malformed.`,
     });
   } else if (options.expectedProjectId && rawProjectId !== options.expectedProjectId) {
     pushCheck({
       id: 'PRE-PROJECT-ID',
-      key: 'CATALYST_PROJECT_ID',
+      key: 'VIGORCORE_CATALYST_PROJECT_ID',
       classification: 'PUBLIC_PROJECT_IDENTIFIER',
       passed: false,
       severity: 'FAIL',
       code: 'WRONG_PROJECT_TARGET',
-      message: `CATALYST_PROJECT_ID (${rawProjectId}) does not match expected project (${options.expectedProjectId}).`,
+      message: `VIGORCORE_CATALYST_PROJECT_ID (${rawProjectId}) does not match expected project (${options.expectedProjectId}).`,
       redactedPreview: rawProjectId,
     });
   } else {
     pushCheck({
       id: 'PRE-PROJECT-ID',
-      key: 'CATALYST_PROJECT_ID',
+      key: 'VIGORCORE_CATALYST_PROJECT_ID',
       classification: 'PUBLIC_PROJECT_IDENTIFIER',
       passed: true,
       severity: 'INFO',
@@ -702,57 +723,57 @@ export function runCatalystConfigPreflight(
     });
   }
 
-  // 4. API Domain & Accounts URL + Region coherence
+  // 4. API Domain & Accounts URL + Region coherence (VIGORCORE_CATALYST_API_DOMAIN + VIGORCORE_CATALYST_ACCOUNTS_URL)
   const apiUrlRes = validateOriginUrl(
-    envMap.CATALYST_API_DOMAIN || (allowLoopback ? undefined : CONSTANTS.CATALYST_ORIGIN),
-    'CATALYST_API_DOMAIN',
+    envMap.VIGORCORE_CATALYST_API_DOMAIN || (allowLoopback ? undefined : CONSTANTS.CATALYST_ORIGIN),
+    'VIGORCORE_CATALYST_API_DOMAIN',
     allowLoopback
   );
-  // Require explicit CATALYST_API_DOMAIN in preflight so operator never relies on silent US default unintentionally
-  const apiExplicit = Boolean((envMap.CATALYST_API_DOMAIN || '').trim());
+  // Require explicit VIGORCORE_CATALYST_API_DOMAIN in preflight so operator never relies on silent US default unintentionally
+  const apiExplicit = Boolean((envMap.VIGORCORE_CATALYST_API_DOMAIN || '').trim());
   pushCheck({
     id: 'PRE-API-DOMAIN',
-    key: 'CATALYST_API_DOMAIN',
+    key: 'VIGORCORE_CATALYST_API_DOMAIN',
     classification: 'PUBLIC_PROJECT_IDENTIFIER',
     passed: apiExplicit && apiUrlRes.ok,
     severity: apiExplicit && apiUrlRes.ok ? 'INFO' : 'FAIL',
     code: !apiExplicit ? 'MISSING_CATALYST_API_DOMAIN' : apiUrlRes.code,
     message: !apiExplicit
-      ? 'CATALYST_API_DOMAIN must be declared explicitly (e.g., https://api.catalyst.zoho.com) instead of relying on implicit defaults.'
+      ? 'VIGORCORE_CATALYST_API_DOMAIN must be declared explicitly (e.g., https://api.catalyst.zoho.com) instead of relying on implicit defaults.'
       : apiUrlRes.message,
     ...(apiUrlRes.origin ? { redactedPreview: apiUrlRes.origin } : {}),
   });
 
   const accUrlRes = validateOriginUrl(
-    envMap.CATALYST_ACCOUNTS_URL || (allowLoopback ? undefined : CONSTANTS.ACCOUNTS_ORIGIN),
-    'CATALYST_ACCOUNTS_URL',
+    envMap.VIGORCORE_CATALYST_ACCOUNTS_URL || (allowLoopback ? undefined : CONSTANTS.ACCOUNTS_ORIGIN),
+    'VIGORCORE_CATALYST_ACCOUNTS_URL',
     allowLoopback
   );
-  const accExplicit = Boolean((envMap.CATALYST_ACCOUNTS_URL || '').trim());
+  const accExplicit = Boolean((envMap.VIGORCORE_CATALYST_ACCOUNTS_URL || '').trim());
   pushCheck({
     id: 'PRE-ACCOUNTS-URL',
-    key: 'CATALYST_ACCOUNTS_URL',
+    key: 'VIGORCORE_CATALYST_ACCOUNTS_URL',
     classification: 'PUBLIC_PROJECT_IDENTIFIER',
     passed: accExplicit && accUrlRes.ok,
     severity: accExplicit && accUrlRes.ok ? 'INFO' : 'FAIL',
     code: !accExplicit ? 'MISSING_CATALYST_ACCOUNTS_URL' : accUrlRes.code,
     message: !accExplicit
-      ? 'CATALYST_ACCOUNTS_URL must be declared explicitly (e.g., https://accounts.zoho.com).'
+      ? 'VIGORCORE_CATALYST_ACCOUNTS_URL must be declared explicitly (e.g., https://accounts.zoho.com).'
       : accUrlRes.message,
     ...(accUrlRes.origin ? { redactedPreview: accUrlRes.origin } : {}),
   });
 
-  const inferredRegion = inferCatalystRegionFromApiDomain(envMap.CATALYST_API_DOMAIN);
+  const inferredRegion = inferCatalystRegionFromApiDomain(envMap.VIGORCORE_CATALYST_API_DOMAIN);
   if (apiExplicit && apiUrlRes.ok && !apiUrlRes.isLoopback) {
     if (options.expectedRegion && inferredRegion !== options.expectedRegion) {
       pushCheck({
         id: 'PRE-REGION-TARGET',
-        key: 'CATALYST_API_DOMAIN',
+        key: 'VIGORCORE_CATALYST_API_DOMAIN',
         classification: 'CROSS_CONFIG',
         passed: false,
         severity: 'FAIL',
         code: 'WRONG_CATALYST_REGION',
-        message: `CATALYST_API_DOMAIN resolved region '${inferredRegion}', expected '${options.expectedRegion}'.`,
+        message: `VIGORCORE_CATALYST_API_DOMAIN resolved region '${inferredRegion}', expected '${options.expectedRegion}'.`,
       });
     }
     if (inferredRegion !== 'CUSTOM_OR_UNKNOWN' && accExplicit && accUrlRes.ok && accUrlRes.origin) {
@@ -761,14 +782,14 @@ export function runCatalystConfigPreflight(
       const regionMatch = accHost.endsWith(expectedTld);
       pushCheck({
         id: 'PRE-REGION-COHERENCE',
-        key: 'CATALYST_API_DOMAIN+CATALYST_ACCOUNTS_URL',
+        key: 'VIGORCORE_CATALYST_API_DOMAIN+VIGORCORE_CATALYST_ACCOUNTS_URL',
         classification: 'CROSS_CONFIG',
         passed: regionMatch,
         severity: regionMatch ? 'INFO' : 'FAIL',
         code: regionMatch ? 'OK' : 'REGION_ACCOUNTS_MISMATCH',
         message: regionMatch
           ? `Catalyst region '${inferredRegion}' consistent between API domain and Zoho Accounts host (${accHost}).`
-          : `Region mismatch: CATALYST_API_DOMAIN maps to '${inferredRegion}' (expects Accounts '*${expectedTld}') but CATALYST_ACCOUNTS_URL is '${accHost}'.`,
+          : `Region mismatch: VIGORCORE_CATALYST_API_DOMAIN maps to '${inferredRegion}' (expects Accounts '*${expectedTld}') but VIGORCORE_CATALYST_ACCOUNTS_URL is '${accHost}'.`,
       });
     }
   }
@@ -917,8 +938,8 @@ export function runCatalystConfigPreflight(
       severity: pidMismatch ? 'FAIL' : 'WARN',
       code: pidMismatch ? 'LEGACY_ZC_PROJECT_MISMATCH' : 'LEGACY_ZC_VARS_PRESENT',
       message: pidMismatch
-        ? `Legacy ZC_PROJECT_ID conflicts with canonical CATALYST_PROJECT_ID.`
-        : `Legacy unprefixed ZC_* env variable(s) present (${legacyZcs.join(', ')}); CatalystAdminAppProvider consumes canonical CATALYST_* variables.`,
+        ? `Legacy ZC_PROJECT_ID conflicts with canonical VIGORCORE_CATALYST_PROJECT_ID.`
+        : `Legacy unprefixed ZC_* env variable(s) present (${legacyZcs.join(', ')}); CatalystAdminAppProvider consumes canonical VIGORCORE_CATALYST_* variables.`,
     });
   }
 

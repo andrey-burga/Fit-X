@@ -123,13 +123,13 @@ export function detectLocalSandboxCliAvailability(
     }
   }
 
-  const prefixes = ['CATALYST_', 'VIGOR_', 'ZC_', 'X_ZOHO_', 'ZAID'];
+  const prefixes = ['VIGORCORE_', 'CATALYST_', 'VIGOR_', 'ZC_', 'X_ZOHO_', 'ZAID'];
   const configuredEnvVarNamesOnly = Object.keys(envMap)
     .filter(k => prefixes.some(p => k === p || k.startsWith(p)) && Boolean((envMap[k] || '').trim()))
     .sort();
 
   const hasMinOAuth =
-    Boolean((envMap.CATALYST_PROJECT_ID || '').trim()) &&
+    Boolean((envMap.VIGORCORE_CATALYST_PROJECT_ID || '').trim()) &&
     Boolean((envMap.CATALYST_ADMIN_REFRESH_TOKEN || envMap.CATALYST_ADMIN_ACCESS_TOKEN || '').trim());
 
   return {

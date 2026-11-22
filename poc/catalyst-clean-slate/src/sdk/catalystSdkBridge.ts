@@ -63,6 +63,9 @@ export const CATALYST_SDK_VERSIONS = {
 
 export const ADMIN_APP_NAME = 'vigorcore-admin';
 export const VIGORCORE_DEPLOYMENT_ENVIRONMENT_KEY = 'VIGORCORE_DEPLOYMENT_ENVIRONMENT';
+export const VIGORCORE_CATALYST_PROJECT_ID_KEY = 'VIGORCORE_CATALYST_PROJECT_ID';
+export const VIGORCORE_CATALYST_API_DOMAIN_KEY = 'VIGORCORE_CATALYST_API_DOMAIN';
+export const VIGORCORE_CATALYST_ACCOUNTS_URL_KEY = 'VIGORCORE_CATALYST_ACCOUNTS_URL';
 
 /**
  * Resolves the server-side deployment environment exclusively from VigorCore's custom
@@ -108,6 +111,90 @@ export function resolveDeploymentEnvironmentFromEnv(
   }
 
   return rawPrimary;
+}
+
+/**
+ * Resolves the server-pinned Catalyst Project ID from custom non-reserved
+ * `VIGORCORE_CATALYST_PROJECT_ID` (`136967000000014024` in Development).
+ * Rejects reserved `CATALYST_PROJECT_ID` if configured instead or conflicting,
+ * and NEVER falls back to an unpinned ID or client HTTP headers (`x-zc-projectid`).
+ */
+export function resolveCatalystProjectIdFromEnv(
+  envMap: Record<string, string | undefined>
+): string {
+  const rawPrimary = (envMap[VIGORCORE_CATALYST_PROJECT_ID_KEY] || '').trim();
+  const rawReservedLegacy = (envMap.CATALYST_PROJECT_ID || '').trim();
+
+  if (!rawPrimary) {
+    if (rawReservedLegacy) {
+      throw new Error(
+        `RESERVED_CATALYST_ENV_VAR: Catalyst rejects 'CATALYST_PROJECT_ID' as a reserved keyword; configure '${VIGORCORE_CATALYST_PROJECT_ID_KEY}' instead.`
+      );
+    }
+    throw new Error(
+      `MISSING_CATALYST_ADMIN_CONFIG: Required server setting '${VIGORCORE_CATALYST_PROJECT_ID_KEY}' is missing.`
+    );
+  }
+
+  if (rawReservedLegacy && rawReservedLegacy !== rawPrimary) {
+    throw new Error(
+      `PROJECT_CONFIGURATION_CONFLICT: Reserved legacy CATALYST_PROJECT_ID='${rawReservedLegacy}' conflicts with ${VIGORCORE_CATALYST_PROJECT_ID_KEY}='${rawPrimary}'. Remove CATALYST_PROJECT_ID.`
+    );
+  }
+
+  return rawPrimary;
+}
+
+/**
+ * Resolves custom non-reserved `VIGORCORE_CATALYST_API_DOMAIN`, rejecting reserved
+ * `CATALYST_API_DOMAIN` if configured instead or conflicting. When omitted, returns
+ * undefined so callers may fall back to documented US SDK default (`CONSTANTS.CATALYST_ORIGIN`).
+ */
+export function resolveCatalystApiDomainFromEnv(
+  envMap: Record<string, string | undefined>
+): string | undefined {
+  const rawPrimary = (envMap[VIGORCORE_CATALYST_API_DOMAIN_KEY] || '').trim();
+  const rawReservedLegacy = (envMap.CATALYST_API_DOMAIN || '').trim();
+
+  if (!rawPrimary && rawReservedLegacy) {
+    throw new Error(
+      `RESERVED_CATALYST_ENV_VAR: Catalyst rejects 'CATALYST_API_DOMAIN' as a reserved keyword; configure '${VIGORCORE_CATALYST_API_DOMAIN_KEY}' instead.`
+    );
+  }
+
+  if (rawPrimary && rawReservedLegacy && rawReservedLegacy !== rawPrimary) {
+    throw new Error(
+      `ENVIRONMENT_CONFIGURATION_CONFLICT: Reserved legacy CATALYST_API_DOMAIN='${rawReservedLegacy}' conflicts with ${VIGORCORE_CATALYST_API_DOMAIN_KEY}='${rawPrimary}'. Remove CATALYST_API_DOMAIN.`
+    );
+  }
+
+  return rawPrimary || undefined;
+}
+
+/**
+ * Resolves custom non-reserved `VIGORCORE_CATALYST_ACCOUNTS_URL`, rejecting reserved
+ * `CATALYST_ACCOUNTS_URL` if configured instead or conflicting. When omitted, returns
+ * undefined so callers may fall back to documented US SDK default (`CONSTANTS.ACCOUNTS_ORIGIN`).
+ */
+export function resolveCatalystAccountsUrlFromEnv(
+  envMap: Record<string, string | undefined>
+): string | undefined {
+  const rawPrimary = (envMap[VIGORCORE_CATALYST_ACCOUNTS_URL_KEY] || '').trim();
+  const rawReservedLegacy = (envMap.CATALYST_ACCOUNTS_URL || '').trim();
+
+  if (!rawPrimary && rawReservedLegacy) {
+    throw new Error(
+      `RESERVED_CATALYST_ENV_VAR: Catalyst rejects 'CATALYST_ACCOUNTS_URL' as a reserved keyword; configure '${VIGORCORE_CATALYST_ACCOUNTS_URL_KEY}' instead.`
+    );
+  }
+
+  if (rawPrimary && rawReservedLegacy && rawReservedLegacy !== rawPrimary) {
+    throw new Error(
+      `ENVIRONMENT_CONFIGURATION_CONFLICT: Reserved legacy CATALYST_ACCOUNTS_URL='${rawReservedLegacy}' conflicts with ${VIGORCORE_CATALYST_ACCOUNTS_URL_KEY}='${rawPrimary}'. Remove CATALYST_ACCOUNTS_URL.`
+    );
+  }
+
+  return rawPrimary || undefined;
 }
 
 export interface SdkCompatibilityFinding {
@@ -334,9 +421,9 @@ function buildValidatedAdminApp(
   resetRedirectUrl: string;
 } {
   const allowLoopback = Boolean(cfg.allowInsecureLoopbackForTest);
-  const projectId = validateNonPlaceholder(cfg.projectId, 'CATALYST_PROJECT_ID');
+  const projectId = validateNonPlaceholder(cfg.projectId, VIGORCORE_CATALYST_PROJECT_ID_KEY);
   if (!/^[A-Za-z0-9_-]{3,64}$/.test(projectId)) {
-    throw new Error('INVALID_CATALYST_PROJECT_ID: CATALYST_PROJECT_ID contains invalid characters.');
+    throw new Error(`INVALID_CATALYST_PROJECT_ID: ${VIGORCORE_CATALYST_PROJECT_ID_KEY} contains invalid characters.`);
   }
 
   const rawEnv = (cfg.catalystEnvironment || '').trim();
@@ -359,12 +446,12 @@ function buildValidatedAdminApp(
 
   const apiDomain = assertValidHttpOrigin(
     cfg.apiDomain || CONSTANTS.CATALYST_ORIGIN,
-    'CATALYST_API_DOMAIN',
+    VIGORCORE_CATALYST_API_DOMAIN_KEY,
     allowLoopback
   );
   const accountsUrl = assertValidHttpOrigin(
     cfg.accountsUrl || CONSTANTS.ACCOUNTS_ORIGIN,
-    'CATALYST_ACCOUNTS_URL',
+    VIGORCORE_CATALYST_ACCOUNTS_URL_KEY,
     allowLoopback
   );
 
@@ -458,6 +545,9 @@ export class CatalystAdminAppProvider {
     options: { allowInsecureLoopbackForTest?: boolean } = {}
   ): CatalystAdminAppProvider {
     const normalizedCatEnv = resolveDeploymentEnvironmentFromEnv(envMap);
+    const projectId = resolveCatalystProjectIdFromEnv(envMap);
+    const apiDomain = resolveCatalystApiDomainFromEnv(envMap);
+    const accountsUrl = resolveCatalystAccountsUrlFromEnv(envMap);
 
     const rawVigorEnv = (envMap.VIGOR_ENVIRONMENT || envMap.NODE_ENV || 'development')
       .trim()
@@ -468,13 +558,13 @@ export class CatalystAdminAppProvider {
         : 'development';
 
     return new CatalystAdminAppProvider({
-      projectId: envMap.CATALYST_PROJECT_ID || '',
+      projectId,
       projectKey: envMap.CATALYST_PROJECT_KEY || '',
       projectSecretKey: envMap.CATALYST_PROJECT_SECRET_KEY,
       catalystEnvironment: normalizedCatEnv,
       vigorEnvironment,
-      apiDomain: envMap.CATALYST_API_DOMAIN,
-      accountsUrl: envMap.CATALYST_ACCOUNTS_URL,
+      apiDomain,
+      accountsUrl,
       projectDomain: envMap.CATALYST_PROJECT_DOMAIN,
       clientId: envMap.CATALYST_ADMIN_CLIENT_ID,
       clientSecret: envMap.CATALYST_ADMIN_CLIENT_SECRET,
@@ -880,9 +970,9 @@ export function validateHostedNativeConfig(
   cfg: HostedNativeConfigInput
 ): HostedNativeValidatedConfig {
   const allowLoopback = Boolean(cfg.allowInsecureLoopbackForTest);
-  const projectId = validateNonPlaceholder(cfg.projectId, 'CATALYST_PROJECT_ID');
+  const projectId = validateNonPlaceholder(cfg.projectId, VIGORCORE_CATALYST_PROJECT_ID_KEY);
   if (!/^[A-Za-z0-9_-]{3,64}$/.test(projectId)) {
-    throw new Error('INVALID_CATALYST_PROJECT_ID: CATALYST_PROJECT_ID contains invalid characters.');
+    throw new Error(`INVALID_CATALYST_PROJECT_ID: ${VIGORCORE_CATALYST_PROJECT_ID_KEY} contains invalid characters.`);
   }
 
   const projectKey = cfg.projectKey?.trim() || undefined;
@@ -912,12 +1002,12 @@ export function validateHostedNativeConfig(
 
   const apiDomain = assertValidHttpOrigin(
     cfg.apiDomain || CONSTANTS.CATALYST_ORIGIN,
-    'CATALYST_API_DOMAIN',
+    VIGORCORE_CATALYST_API_DOMAIN_KEY,
     allowLoopback
   );
   const accountsUrl = assertValidHttpOrigin(
     cfg.accountsUrl || CONSTANTS.ACCOUNTS_ORIGIN,
-    'CATALYST_ACCOUNTS_URL',
+    VIGORCORE_CATALYST_ACCOUNTS_URL_KEY,
     allowLoopback
   );
 
@@ -1051,6 +1141,9 @@ export class HostedNativeCatalystAuthRuntime implements ICatalystAuthRuntime {
     options: { allowInsecureLoopbackForTest?: boolean } = {}
   ): HostedNativeCatalystAuthRuntime {
     const deploymentEnv = resolveDeploymentEnvironmentFromEnv(envMap);
+    const projectId = resolveCatalystProjectIdFromEnv(envMap);
+    const apiDomain = resolveCatalystApiDomainFromEnv(envMap);
+    const accountsUrl = resolveCatalystAccountsUrlFromEnv(envMap);
     const rawVigorEnv = (envMap.VIGOR_ENVIRONMENT || envMap.NODE_ENV || 'development')
       .trim()
       .toLowerCase();
@@ -1061,12 +1154,12 @@ export class HostedNativeCatalystAuthRuntime implements ICatalystAuthRuntime {
 
     return new HostedNativeCatalystAuthRuntime({
       config: {
-        projectId: envMap.CATALYST_PROJECT_ID || '',
+        projectId,
         projectKey: envMap.CATALYST_PROJECT_KEY,
         catalystEnvironment: deploymentEnv,
         vigorEnvironment,
-        apiDomain: envMap.CATALYST_API_DOMAIN,
-        accountsUrl: envMap.CATALYST_ACCOUNTS_URL,
+        apiDomain,
+        accountsUrl,
         projectDomain: envMap.CATALYST_PROJECT_DOMAIN,
         resetRedirectUrl: envMap.CATALYST_RESET_REDIRECT_URL,
         allowInsecureLoopbackForTest: options.allowInsecureLoopbackForTest,

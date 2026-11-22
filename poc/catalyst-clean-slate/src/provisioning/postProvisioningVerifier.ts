@@ -14,7 +14,7 @@
  *    mitigation).
  * 3. EXPLICIT MATRICES & LIMITS: Emits explicit per-table (5) and per-index (8) verification
  *    matrices, cross-checks `project_details.id` when returned by Catalyst, derives target region
- *    from `CATALYST_API_DOMAIN`, and flags checks requiring visual Catalyst Console confirmation
+ *    from `VIGORCORE_CATALYST_API_DOMAIN`, and flags checks requiring visual Catalyst Console confirmation
  *    (such as `ttlEpochSec` column type = `Number`).
  */
 
@@ -148,7 +148,7 @@ export const SDK_KNOWN_LIMITATIONS: string[] = [
   'INoSQLTable.ttl_attribute (`@zcatalyst/nosql@1.0.0`) returns only the attribute name (`string | undefined`), NOT the column data type (`Number`). Operator MUST confirm `ttlEpochSec` type = `Number` in Catalyst Console.',
   'Catalyst NoSQL exposes NO full-table `SCAN` endpoint in `@zcatalyst/nosql@1.0.0`; emptiness outside `Users.GSI_Directory` shards (`USER_SEG#0..3`), `Users.GSI_RoleStatus`, `SystemControl` control keys, and current `AuditLogs` month/quarter partitions must be corroborated via table `metrics` (if populated) and Catalyst Console Data Browser.',
   'Catalyst NoSQL secondary indexes (`INoSQLIndex`) do NOT support UNIQUE constraints; `Users.GSI_Email` duplicate prevention relies on backend `consistent_read: true` checks and Catalyst Auth (`INT-03` pending).',
-  'INoSQLTable (`@zcatalyst/nosql@1.0.0`) exposes `project_details` (`id`, `project_name`, `project_type`) but does NOT return Catalyst cloud region or storage engine version directly; region must be verified via `CATALYST_API_DOMAIN` against `CATALYST_DATA_CENTERS` and Catalyst Console.',
+  'INoSQLTable (`@zcatalyst/nosql@1.0.0`) exposes `project_details` (`id`, `project_name`, `project_type`) but does NOT return Catalyst cloud region or storage engine version directly; region must be verified via `VIGORCORE_CATALYST_API_DOMAIN` against `CATALYST_DATA_CENTERS` and Catalyst Console.',
 ];
 
 export const MANDATORY_MANUAL_CONSOLE_CHECKS: string[] = [

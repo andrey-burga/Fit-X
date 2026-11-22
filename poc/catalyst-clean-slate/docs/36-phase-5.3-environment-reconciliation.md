@@ -7,7 +7,8 @@
 **Entorno objetivo:** **`Development`** *(**`Production` intacto y sin modificar**)*  
 **Función:** `vigor_api` · Function ID: **`136967000000074001`** · Advanced I/O Node 22  
 **Operaciones remotas ejecutadas:** **`0`**  
-**Dictamen:** **`PHASE_5_3_ENVIRONMENT_CONFIGURATION_RECONCILED_NOT_DEPLOYED`**
+**Dictamen histórico:** **`PHASE_5_3_ENVIRONMENT_CONFIGURATION_RECONCILED_NOT_DEPLOYED`**  
+**Dictamen vigente (tras reconciliación de nombres reservados):** **`PHASE_5_3_ENVIRONMENT_VARIABLE_NAMES_RECONCILED_NOT_DEPLOYED`**
 
 ---
 
@@ -54,9 +55,16 @@ La suite de pruebas incluye el nuevo archivo **`tests/28-phase-5.3-environment-r
 
 ---
 
-## 4. DICTAMEN FINAL
+## 4. EXTENSIÓN POR KEYWORDS RESERVADOS (`CATALYST_PROJECT_ID`, `CATALYST_API_DOMAIN`, `CATALYST_ACCOUNTS_URL`)
 
-**Dictamen:** **`PHASE_5_3_ENVIRONMENT_CONFIGURATION_RECONCILED_NOT_DEPLOYED`**
+Catalyst Console rechazó igualmente estas tres claves con `environment_variables must not contain reserved keywords` (mientras aceptó 6 variables con prefijo `VIGOR_` / `VIGORCORE_`). Todas fueron migradas de forma estricta a nombres propiedad de la aplicación (ver `docs/40-phase-5.3-reserved-env-vars-reconciliation.md`):
+- `CATALYST_PROJECT_ID` → **`VIGORCORE_CATALYST_PROJECT_ID`** (`136967000000014024`)
+- `CATALYST_API_DOMAIN` → **`VIGORCORE_CATALYST_API_DOMAIN`** (`https://api.catalyst.zoho.com`)
+- `CATALYST_ACCOUNTS_URL` → **`VIGORCORE_CATALYST_ACCOUNTS_URL`** (`https://accounts.zoho.com`)
+
+## 5. DICTAMEN FINAL
+
+**Dictamen:** **`PHASE_5_3_ENVIRONMENT_VARIABLE_NAMES_RECONCILED_NOT_DEPLOYED`**
 - Cero operaciones remotas ejecutadas.
 - Entorno `Production` intacto y sin modificar.
 - Código, manifiestos, documentación y pruebas actualizados y listos para validación local.

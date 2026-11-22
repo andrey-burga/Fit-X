@@ -183,7 +183,7 @@ export function validatePhase52Stage2Inventory(
     mismatches.push(`Expected project Project-Rainfall, got ${inventory.projectName}.`);
   }
   if (inventory.catalystProjectId !== '136967000000014024') {
-    mismatches.push(`Expected CATALYST_PROJECT_ID 136967000000014024, got ${inventory.catalystProjectId}.`);
+    mismatches.push(`Expected VIGORCORE_CATALYST_PROJECT_ID 136967000000014024, got ${inventory.catalystProjectId}.`);
   }
   if (inventory.catalystEnvironment !== 'Development') {
     mismatches.push(`Expected Development environment, got ${inventory.catalystEnvironment}.`);

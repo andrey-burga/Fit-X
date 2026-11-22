@@ -26,11 +26,11 @@ const EXPECTED_SHA256 = 'a7565d2c2c121e0f585e2c65daf5204e1645819737869c0d6edb0e3
 const REQUIRED_ENV_MANIFEST = {
   VIGORCORE_DEPLOYMENT_ENVIRONMENT: 'Development',
   VIGOR_ENVIRONMENT: 'development',
-  CATALYST_PROJECT_ID: '136967000000014024',
+  VIGORCORE_CATALYST_PROJECT_ID: '136967000000014024',
   VIGOR_CATALYST_AUTH_MODE: 'hosted_native',
   VIGOR_CORS_MODE: 'platform_managed',
-  CATALYST_API_DOMAIN: 'https://api.catalyst.zoho.com',
-  CATALYST_ACCOUNTS_URL: 'https://accounts.zoho.com',
+  VIGORCORE_CATALYST_API_DOMAIN: 'https://api.catalyst.zoho.com',
+  VIGORCORE_CATALYST_ACCOUNTS_URL: 'https://accounts.zoho.com',
   VIGOR_SESSION_ACTIVE_KID: 'k1',
   VIGOR_ALLOWED_ORIGINS: 'https://app.vigorcore.lat',
 };

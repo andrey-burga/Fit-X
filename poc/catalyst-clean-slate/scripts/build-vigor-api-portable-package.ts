@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  *
  * VigorCore Phase 5.3 — Deterministic & Reproducible Portable Package Builder
- * Generates `artifacts/vigor_api-reproducible-portable.zip` using an isolated
- * temporary staging directory so prior staging/ZIP artifacts remain untouched.
+ * Generates `artifacts/vigor_api-vars-reconciled-portable.zip` using an isolated
+ * temporary staging directory so all prior staging/ZIP artifacts remain untouched.
  *
  * Determinism Guarantees:
  *   1. Entry paths sorted strictly by ASCII / UTF-8 code-point ordinal order.
@@ -27,7 +27,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 export const POC_ROOT = path.resolve(__dirname, '..');
 export const ARTIFACTS_DIR = path.join(POC_ROOT, 'artifacts');
-export const DEFAULT_OUTPUT_ZIP_PATH = path.join(ARTIFACTS_DIR, 'vigor_api-reproducible-portable.zip');
+export const DEFAULT_OUTPUT_ZIP_PATH = path.join(ARTIFACTS_DIR, 'vigor_api-vars-reconciled-portable.zip');
 
 // Canonical DOS epoch 1980-01-01 00:00:00
 // Date bits: ((1980-1980) << 9) | (1 << 5) | 1 = 0x0021

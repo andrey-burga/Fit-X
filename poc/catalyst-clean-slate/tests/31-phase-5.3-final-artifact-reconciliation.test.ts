@@ -40,11 +40,13 @@ const __dirname = path.dirname(__filename);
 const POC_ROOT = path.resolve(__dirname, '..');
 const ARTIFACTS_DIR = path.join(POC_ROOT, 'artifacts');
 
+const VARS_RECONCILED_ZIP_PATH = path.join(ARTIFACTS_DIR, 'vigor_api-vars-reconciled-portable.zip');
 const REPRODUCIBLE_ZIP_PATH = path.join(ARTIFACTS_DIR, 'vigor_api-reproducible-portable.zip');
 const ENV_AUDIT_ZIP_PATH = path.join(ARTIFACTS_DIR, 'vigor_api-env-audit-portable.zip');
 const PORTABLE_ZIP_PATH = path.join(ARTIFACTS_DIR, 'vigor_api-portable.zip');
 const ORIGINAL_ZIP_PATH = path.join(ARTIFACTS_DIR, 'vigor_api.zip');
 
+const EXPECTED_VARS_RECONCILED_SHA256 = 'cf66836ded6a82297404d0161694d5fa3b1c71a182fb825dfe2376022611c3fc';
 const EXPECTED_REPRODUCIBLE_SHA256 = '31e9b71ea7af48a8483c903e206c625bbe823048bdab6db47567d8ce4cdd52fb';
 const EXPECTED_ENV_AUDIT_SHA256 = 'a7565d2c2c121e0f585e2c65daf5204e1645819737869c0d6edb0e35af3af7a0';
 const EXPECTED_PORTABLE_SHA256 = 'd009bcc01cb1afa77012f47bfc5307d91a1b75101231982bce4e045eda52b8d8';
@@ -77,35 +79,47 @@ test('Phase 5.3 [PASS-LOCAL] Two consecutive reproducible builds produce identic
 
     assert.equal(resA.zipSizeBytes, resB.zipSizeBytes);
     assert.equal(resA.sha256, resB.sha256);
-    assert.equal(resA.sha256, EXPECTED_REPRODUCIBLE_SHA256);
+    assert.equal(resA.sha256, EXPECTED_VARS_RECONCILED_SHA256);
     assert.equal(resA.entryCount, 905);
-    assert.equal(resA.totalUncompressedBytes, 3_751_004);
+    assert.equal(resA.totalUncompressedBytes, 3_754_947);
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 
+  assert.equal(sha256File(VARS_RECONCILED_ZIP_PATH), EXPECTED_VARS_RECONCILED_SHA256);
   assert.equal(sha256File(REPRODUCIBLE_ZIP_PATH), EXPECTED_REPRODUCIBLE_SHA256);
   assert.equal(sha256File(ENV_AUDIT_ZIP_PATH), EXPECTED_ENV_AUDIT_SHA256);
   assert.equal(sha256File(PORTABLE_ZIP_PATH), EXPECTED_PORTABLE_SHA256);
   assert.equal(sha256File(ORIGINAL_ZIP_PATH), EXPECTED_ORIGINAL_SHA256);
 });
 
-test('Phase 5.3 [PASS-LOCAL] Canonical sorted content manifest matches prior audit artifact (zero missing, unexpected, or changed contents)', () => {
-  const priorManifest = extractCanonicalContentManifest(ENV_AUDIT_ZIP_PATH);
-  const newManifest = extractCanonicalContentManifest(REPRODUCIBLE_ZIP_PATH);
-  const diff = compareContentManifests(priorManifest, newManifest);
+test('Phase 5.3 [PASS-LOCAL] Canonical sorted content manifest matches prior audit artifact and isolates reserved-var delta to catalystSdkBridge.js', () => {
+  const priorAuditManifest = extractCanonicalContentManifest(ENV_AUDIT_ZIP_PATH);
+  const priorReproManifest = extractCanonicalContentManifest(REPRODUCIBLE_ZIP_PATH);
+  const historicDiff = compareContentManifests(priorAuditManifest, priorReproManifest);
 
-  assert.equal(priorManifest.length, 905);
-  assert.equal(newManifest.length, 905);
-  assert.deepEqual(diff.missing, []);
-  assert.deepEqual(diff.unexpected, []);
-  assert.deepEqual(diff.changed, []);
-  assert.equal(diff.expectedTotalUncompressedBytes, 3_751_004);
-  assert.equal(diff.actualTotalUncompressedBytes, 3_751_004);
+  assert.equal(priorAuditManifest.length, 905);
+  assert.equal(priorReproManifest.length, 905);
+  assert.deepEqual(historicDiff.missing, []);
+  assert.deepEqual(historicDiff.unexpected, []);
+  assert.deepEqual(historicDiff.changed, []);
+  assert.equal(historicDiff.expectedTotalUncompressedBytes, 3_751_004);
+  assert.equal(historicDiff.actualTotalUncompressedBytes, 3_751_004);
+
+  const varsReconciledManifest = extractCanonicalContentManifest(VARS_RECONCILED_ZIP_PATH);
+  const delta = compareContentManifests(priorReproManifest, varsReconciledManifest);
+  assert.equal(varsReconciledManifest.length, 905);
+  assert.deepEqual(delta.missing, []);
+  assert.deepEqual(delta.unexpected, []);
+  assert.deepEqual(
+    delta.changed.map(c => c.path),
+    ['dist/sdk/catalystSdkBridge.js'],
+  );
+  assert.equal(delta.actualTotalUncompressedBytes, 3_754_947);
 });
 
 test('Phase 5.3 [PASS-LOCAL] Reproducible ZIP enforces code-point ordering, DOS 1980-01-01 timestamps, forward slashes, and clean metadata', () => {
-  const entries = parseZipEntries(REPRODUCIBLE_ZIP_PATH);
+  const entries = parseZipEntries(VARS_RECONCILED_ZIP_PATH);
   assert.equal(entries.length, 905);
 
   for (let i = 0; i < entries.length; i++) {
@@ -139,7 +153,7 @@ test('Phase 5.3 [PASS-LOCAL] Reproducible ZIP enforces code-point ordering, DOS 
 });
 
 test('Phase 5.3 [PASS-LOCAL] Reproducible ZIP root package.json, catalyst-config.json, zero secrets, and zero devDependencies', () => {
-  const pkgJson = JSON.parse(readZipFileUtf8(REPRODUCIBLE_ZIP_PATH, 'package.json')) as {
+  const pkgJson = JSON.parse(readZipFileUtf8(VARS_RECONCILED_ZIP_PATH, 'package.json')) as {
     name: string;
     type: string;
     main: string;
@@ -155,7 +169,7 @@ test('Phase 5.3 [PASS-LOCAL] Reproducible ZIP root package.json, catalyst-config
   assert.equal(pkgJson.devDependencies, undefined);
   assert.deepEqual(Object.keys(pkgJson.dependencies ?? {}).sort(), [...RUNTIME_PACKAGES].sort());
 
-  const cfg = JSON.parse(readZipFileUtf8(REPRODUCIBLE_ZIP_PATH, 'catalyst-config.json')) as {
+  const cfg = JSON.parse(readZipFileUtf8(VARS_RECONCILED_ZIP_PATH, 'catalyst-config.json')) as {
     deployment?: { name?: string; type?: string; stack?: string };
     execution?: { main?: string };
   };
@@ -164,7 +178,7 @@ test('Phase 5.3 [PASS-LOCAL] Reproducible ZIP root package.json, catalyst-config
   assert.equal(cfg.deployment?.stack, 'node22');
   assert.equal(cfg.execution?.main, 'dist/server/catalystEntry.js');
 
-  const manifest = extractCanonicalContentManifest(REPRODUCIBLE_ZIP_PATH);
+  const manifest = extractCanonicalContentManifest(VARS_RECONCILED_ZIP_PATH);
   const paths = manifest.map(m => m.path);
   assert.equal(paths.some(p => p.startsWith('.env') || p.includes('/.env')), false);
   assert.equal(paths.some(p => p.startsWith('tests/') || p.startsWith('docs/') || p.startsWith('scripts/')), false);
@@ -173,10 +187,10 @@ test('Phase 5.3 [PASS-LOCAL] Reproducible ZIP root package.json, catalyst-config
 });
 
 test('Phase 5.3 [PASS-LOCAL] Linux unzip verification and Node 22 ESM entrypoint import succeed fail-closed (503)', async () => {
-  execSync(`unzip -tq ${JSON.stringify(REPRODUCIBLE_ZIP_PATH)}`, { stdio: 'ignore' });
+  execSync(`unzip -tq ${JSON.stringify(VARS_RECONCILED_ZIP_PATH)}`, { stdio: 'ignore' });
   const extDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vigor-repro-unzip-'));
   try {
-    execSync(`unzip -oq ${JSON.stringify(REPRODUCIBLE_ZIP_PATH)} -d ${JSON.stringify(extDir)}`, { stdio: 'ignore' });
+    execSync(`unzip -oq ${JSON.stringify(VARS_RECONCILED_ZIP_PATH)} -d ${JSON.stringify(extDir)}`, { stdio: 'ignore' });
     const entryPath = path.join(extDir, 'dist', 'server', 'catalystEntry.js');
     assert.equal(fs.existsSync(entryPath), true);
 
@@ -210,8 +224,8 @@ test('Phase 5.3 [PASS-STATIC] Deployment and reconciliation docs reflect final S
   const doc37 = fs.readFileSync(path.join(POC_ROOT, 'docs', '37-phase-5.3-final-deployment-package.md'), 'utf8');
   const doc38 = fs.readFileSync(path.join(POC_ROOT, 'docs', '38-phase-5.3-final-artifact-reconciliation.md'), 'utf8');
 
-  assert.ok(doc37.includes('vigor_api-reproducible-portable.zip'));
-  assert.ok(doc37.includes(EXPECTED_REPRODUCIBLE_SHA256));
+  assert.ok(doc37.includes('vigor_api-vars-reconciled-portable.zip'));
+  assert.ok(doc37.includes(EXPECTED_VARS_RECONCILED_SHA256));
   assert.ok(doc37.includes('PHASE_5_3_FINAL_ARTIFACT_RECONCILED_NOT_DEPLOYED'));
 
   assert.ok(doc38.includes(EXPECTED_ENV_AUDIT_SHA256));

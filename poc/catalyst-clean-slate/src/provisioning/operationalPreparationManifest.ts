@@ -303,6 +303,9 @@ export const CODEBASE_REFERENCED_ENV_VARS: readonly string[] = [
   'CATALYST_RESET_REDIRECT_URL',
   'NODE_ENV',
   'PORT',
+  'VIGORCORE_CATALYST_ACCOUNTS_URL',
+  'VIGORCORE_CATALYST_API_DOMAIN',
+  'VIGORCORE_CATALYST_PROJECT_ID',
   'VIGORCORE_DEPLOYMENT_ENVIRONMENT',
   'VIGOR_ALLOWED_ORIGINS',
   'VIGOR_ALLOW_RESET_WITHOUT_INT08',
@@ -350,15 +353,28 @@ export const EXHAUSTIVE_ENV_VAR_MATRIX: readonly ExhaustiveEnvVarMatrixEntry[] =
       "Must be 'platform_managed' behind CloudScale Authorized Domains (prevents duplicate Access-Control-* headers) or 'express_enforced'.",
   },
   {
-    name: 'CATALYST_PROJECT_ID',
+    name: 'VIGORCORE_CATALYST_PROJECT_ID',
     category: 'CATALYST_IDENTIFIERS',
     isSecret: false,
-    secretConfigurationMarker: '[CONFIGURAR_EN_CATALYST]',
+    secretConfigurationMarker: '136967000000014024',
     localExpress: 'REQUIRED',
     hostedNativeAdvancedIo: 'REQUIRED',
     externalOAuthAdvancedIo: 'REQUIRED',
     cliReadOnlyLive: 'REQUIRED',
-    purposeAndValidationRule: 'Non-placeholder public project ID pinned for BaaS calls & x-zc-projectid anti-spoof verification.',
+    purposeAndValidationRule:
+      'Non-placeholder public project ID pinned for BaaS calls & x-zc-projectid anti-spoof verification; avoids Catalyst reserved key CATALYST_PROJECT_ID.',
+  },
+  {
+    name: 'CATALYST_PROJECT_ID',
+    category: 'LEGACY_DEPRECATED',
+    isSecret: false,
+    secretConfigurationMarker: 'DEPRECATED',
+    localExpress: 'FORBIDDEN',
+    hostedNativeAdvancedIo: 'FORBIDDEN',
+    externalOAuthAdvancedIo: 'FORBIDDEN',
+    cliReadOnlyLive: 'FORBIDDEN',
+    purposeAndValidationRule:
+      'Reserved by Zoho Catalyst Console (rejected with reserved keywords error); migrate exclusively to VIGORCORE_CATALYST_PROJECT_ID.',
   },
   {
     name: 'VIGORCORE_DEPLOYMENT_ENVIRONMENT',
@@ -397,7 +413,7 @@ export const EXHAUSTIVE_ENV_VAR_MATRIX: readonly ExhaustiveEnvVarMatrixEntry[] =
       "Enforces HMAC/Catalyst environment pairing ('production' requires VIGORCORE_DEPLOYMENT_ENVIRONMENT='Production').",
   },
   {
-    name: 'CATALYST_API_DOMAIN',
+    name: 'VIGORCORE_CATALYST_API_DOMAIN',
     category: 'CATALYST_IDENTIFIERS',
     isSecret: false,
     secretConfigurationMarker: 'https://api.catalyst.zoho.com',
@@ -405,10 +421,23 @@ export const EXHAUSTIVE_ENV_VAR_MATRIX: readonly ExhaustiveEnvVarMatrixEntry[] =
     hostedNativeAdvancedIo: 'REQUIRED',
     externalOAuthAdvancedIo: 'REQUIRED',
     cliReadOnlyLive: 'REQUIRED',
-    purposeAndValidationRule: 'Explicit regional HTTPS origin; prevents zc-api-domain header injection against SSRF/redirect abuse.',
+    purposeAndValidationRule:
+      'Explicit regional HTTPS origin; prevents zc-api-domain header injection against SSRF/redirect abuse and avoids Catalyst reserved key CATALYST_API_DOMAIN.',
   },
   {
-    name: 'CATALYST_ACCOUNTS_URL',
+    name: 'CATALYST_API_DOMAIN',
+    category: 'LEGACY_DEPRECATED',
+    isSecret: false,
+    secretConfigurationMarker: 'DEPRECATED',
+    localExpress: 'FORBIDDEN',
+    hostedNativeAdvancedIo: 'FORBIDDEN',
+    externalOAuthAdvancedIo: 'FORBIDDEN',
+    cliReadOnlyLive: 'FORBIDDEN',
+    purposeAndValidationRule:
+      'Reserved by Zoho Catalyst Console (rejected with reserved keywords error); migrate exclusively to VIGORCORE_CATALYST_API_DOMAIN.',
+  },
+  {
+    name: 'VIGORCORE_CATALYST_ACCOUNTS_URL',
     category: 'CATALYST_IDENTIFIERS',
     isSecret: false,
     secretConfigurationMarker: 'https://accounts.zoho.com',
@@ -416,7 +445,20 @@ export const EXHAUSTIVE_ENV_VAR_MATRIX: readonly ExhaustiveEnvVarMatrixEntry[] =
     hostedNativeAdvancedIo: 'REQUIRED',
     externalOAuthAdvancedIo: 'REQUIRED',
     cliReadOnlyLive: 'REQUIRED',
-    purposeAndValidationRule: 'Explicit Zoho Accounts regional HTTPS host matching CATALYST_API_DOMAIN DC TLD.',
+    purposeAndValidationRule:
+      'Explicit Zoho Accounts regional HTTPS host matching VIGORCORE_CATALYST_API_DOMAIN DC TLD; avoids Catalyst reserved key CATALYST_ACCOUNTS_URL.',
+  },
+  {
+    name: 'CATALYST_ACCOUNTS_URL',
+    category: 'LEGACY_DEPRECATED',
+    isSecret: false,
+    secretConfigurationMarker: 'DEPRECATED',
+    localExpress: 'FORBIDDEN',
+    hostedNativeAdvancedIo: 'FORBIDDEN',
+    externalOAuthAdvancedIo: 'FORBIDDEN',
+    cliReadOnlyLive: 'FORBIDDEN',
+    purposeAndValidationRule:
+      'Reserved by Zoho Catalyst Console (rejected with reserved keywords error); migrate exclusively to VIGORCORE_CATALYST_ACCOUNTS_URL.',
   },
   {
     name: 'CATALYST_PROJECT_DOMAIN',
@@ -648,7 +690,7 @@ export const EXHAUSTIVE_ENV_VAR_MATRIX: readonly ExhaustiveEnvVarMatrixEntry[] =
     hostedNativeAdvancedIo: 'FORBIDDEN',
     externalOAuthAdvancedIo: 'FORBIDDEN',
     cliReadOnlyLive: 'FORBIDDEN',
-    purposeAndValidationRule: 'Legacy unprefixed ZC_* env var; preflight warns or fails if conflicting with CATALYST_PROJECT_ID.',
+    purposeAndValidationRule: 'Legacy unprefixed ZC_* env var; preflight warns or fails if conflicting with VIGORCORE_CATALYST_PROJECT_ID.',
   },
   {
     name: 'ZC_PROJECT_KEY',
@@ -1244,7 +1286,7 @@ export const PROJECT_RAINFALL_RECONCILED_INVENTORY: readonly ReconciledInventory
     area: 'Data Center / Region',
     status: 'VERIFIED_REMOTE',
     observedEvidence: 'US confirmado mediante accounts.zoho.com; coherente con DNS Slate *-us.nimbuspop.com.',
-    phase511And512Impact: 'Valida CATALYST_API_DOMAIN=https://api.catalyst.zoho.com y CATALYST_ACCOUNTS_URL=https://accounts.zoho.com.',
+    phase511And512Impact: 'Valida VIGORCORE_CATALYST_API_DOMAIN=https://api.catalyst.zoho.com y VIGORCORE_CATALYST_ACCOUNTS_URL=https://accounts.zoho.com.',
     pendingBeforeNextOperation: 'Ninguno.',
   },
   {
@@ -1254,7 +1296,7 @@ export const PROJECT_RAINFALL_RECONCILED_INVENTORY: readonly ReconciledInventory
     observedEvidence:
       'Proyecto identificado: Project-Rainfall, Catalyst Project ID confirmado: 136967000000014024 (sin contradicción con placeholders ni con el ID Slate DNS 16391000000005003).',
     phase511And512Impact:
-      'Fija CATALYST_PROJECT_ID=136967000000014024 para preflight, verificación --live y futuro pinning x-zc-projectid sin tocar producción.',
+      'Fija VIGORCORE_CATALYST_PROJECT_ID=136967000000014024 para preflight, verificación --live y futuro pinning x-zc-projectid sin tocar producción.',
     pendingBeforeNextOperation:
       'Confirmar entornos disponibles (Development / Production) y X_ZOHO_CATALYST_ORG_ID (si aplica) antes de crear tablas o ejecutar --live.',
   },
@@ -1350,7 +1392,7 @@ export function buildPhase512ClosureReport(): Phase512ClosureReport {
     closureVerdict: 'PHASE_5_1_2_CLOSED_READY_FOR_PHASE_5_2',
     apiDomainCutoverGate: 'BLOCKED_PENDING_ZOHO_CLARIFICATION',
     projectIdNonContradictionNote:
-      'CATALYST_PROJECT_ID=136967000000014024 (Project-Rainfall) no contradice ningún archivo del POC (que solo usaba placeholders <CATALYST_PROJECT_ID> e IDs sintéticos de test) ni al ID 16391000000005003 del CNAME de hospedaje Slate (slate-16391000000005003-us.nimbuspop.com).',
+      'VIGORCORE_CATALYST_PROJECT_ID=136967000000014024 (Project-Rainfall) no contradice ningún archivo del POC (que solo usaba placeholders <CATALYST_PROJECT_ID> e IDs sintéticos de test) ni al ID 16391000000005003 del CNAME de hospedaje Slate (slate-16391000000005003-us.nimbuspop.com).',
     authEvidenceVsInference: {
       directObservedEvidence:
         'Native Catalyst Authentication y Third-party Authentication muestran "Set Up" en Project-Rainfall (136967000000014024).',
@@ -1416,7 +1458,7 @@ export function buildPhase512ClosureReport(): Phase512ClosureReport {
         dependencies: ['Project-Rainfall (136967000000014024) confirmado vacío (Create your first table)'],
         prerequisitesBeforeRemoteWrite: [
           'Autorización explícita del operador para Fase 5.2.',
-          'Usar CATALYST_PROJECT_ID=136967000000014024, anotar X_ZOHO_CATALYST_ORG_ID (si aplica) y confirmar entorno objetivo (Development / Production).',
+          'Usar VIGORCORE_CATALYST_PROJECT_ID=136967000000014024, anotar X_ZOHO_CATALYST_ORG_ID (si aplica) y confirmar entorno objetivo (Development / Production).',
           'Confirmar manualmente el orden Users -> UserData -> AdminInvitations -> AuditLogs -> SystemControl y la inmutabilidad de claves/GSIs.',
         ],
         costAndQuotaConsiderations: [
@@ -1463,7 +1505,7 @@ export function buildPhase512ClosureReport(): Phase512ClosureReport {
         dependencies: ['Etapa 1 (5 tablas NoSQL ONLINE)', 'Etapa 2 (Native Catalyst Auth activa y conteo usuarios=0 verificado directamente)'],
         prerequisitesBeforeRemoteWrite: [
           'Ejecutar localmente build, build:server (dist/server/catalystEntry.js) y suite completa de pruebas.',
-          'Configurar en Catalyst variables no-secretas (VIGOR_CATALYST_AUTH_MODE=hosted_native, VIGOR_CORS_MODE=platform_managed, CATALYST_PROJECT_ID=136967000000014024, VIGORCORE_DEPLOYMENT_ENVIRONMENT=Development, VIGOR_ENVIRONMENT=development, CATALYST_API_DOMAIN=https://api.catalyst.zoho.com, CATALYST_ACCOUNTS_URL=https://accounts.zoho.com, VIGOR_ALLOWED_ORIGINS=https://app.vigorcore.lat) y secreto VIGOR_SESSION_HMAC_SECRET (CSPRNG >= 256 bits) + ZC_SECURE sin definir.',
+          'Configurar en Catalyst variables no-secretas (VIGOR_CATALYST_AUTH_MODE=hosted_native, VIGOR_CORS_MODE=platform_managed, VIGORCORE_CATALYST_PROJECT_ID=136967000000014024, VIGORCORE_DEPLOYMENT_ENVIRONMENT=Development, VIGOR_ENVIRONMENT=development, VIGORCORE_CATALYST_API_DOMAIN=https://api.catalyst.zoho.com, VIGORCORE_CATALYST_ACCOUNTS_URL=https://accounts.zoho.com, VIGOR_SESSION_ACTIVE_KID=k1, VIGOR_ALLOWED_ORIGINS=https://app.vigorcore.lat) y secreto VIGOR_SESSION_HMAC_SECRET (CSPRNG >= 256 bits) + ZC_SECURE sin definir.',
           'Mantener listas fuera del repo credenciales external_oauth como fallback operativo únicamente si NO_AUTHENTICATION no inyectara x-zc-admin-cred-token.',
         ],
         costAndQuotaConsiderations: [
