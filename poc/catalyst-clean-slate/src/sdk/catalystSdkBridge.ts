@@ -22,15 +22,29 @@
  *    `CatalystAdminAppProvider` bypasses that bug safely by constructing `CatalystApp`
  *    directly with unwrapped `RefreshTokenCredential` or `AccessTokenCredential`, NEVER
  *    mutating caller config objects and NEVER emitting `Authorization`-less admin requests.
- * 2. REQUEST-INDEPENDENT ADMIN CREDENTIAL PROVIDER:
- *    Backend `NoSQL` and `UserManagementAdmin` operations ALWAYS use `CatalystAdminAppProvider`
- *    sourced from validated server environment variables (never `zcAuth.init(req, { scope: 'admin' })`,
- *    never trusting incoming `x-zc-admin-cred-*` or `x-zc-user-*` headers).
- * 3. FAIL-CLOSED CROSS-ENVIRONMENT & PLACEHOLDER VALIDATION:
+ * 2. MODE-SPECIFIC ADMIN CREDENTIAL ISOLATION (`external_oauth` vs `hosted_native`):
+ *    - `external_oauth` (`CatalystAdminAppProvider`): Backend `NoSQL` and `UserManagementAdmin`
+ *      operations use request-independent OAuth credentials sourced from validated server
+ *      environment variables (never incoming `req.headers`).
+ *    - `hosted_native` (`HostedNativeCatalystAuthRuntime`, mandatory on Catalyst Advanced I/O):
+ *      Per-request `AsyncLocalStorage` binds an isolated `scope: 'admin'` `CatalystApp` via
+ *      `new ZCAuth().init({ headers: sanitizedAdminHeaders }, { type: 'advancedio', scope: 'admin' })`
+ *      using Catalyst Edge `x-zc-admin-cred-*` + `x-zc-project-key` with `projectId`, `environment`,
+ *      `apiDomain`, and `accountsUrl` strictly pinned from server config (NEVER trusting `x-zc-user-*`
+ *      for admin elevation).
+ * 3. CATALYST PLATFORM ADMIN CONTEXT & COOKIE ISOLATION:
+ *    - When no Catalyst project end-user is authenticated, Catalyst Advanced I/O legitimately runs
+ *      with platform `x-zc-user-type=admin` execution context and zero user credentials; user-scope
+ *      auth resolves as anonymous (`null` -> `401 UNAUTHENTICATED`, `0` NoSQL hits).
+ *    - Contradictory `x-zc-user-type=admin` paired with genuine Catalyst user credentials still
+ *      fails closed (`403 CATALYST_ADMIN_HEADER_SPOOFED`).
+ *    - `x-zc-cookie` is strictly sanitized to Catalyst project-user auth cookies; `__Host-vigor_session`,
+ *      `X-Vigor-CSRF`, raw `Cookie` headers, and unrelated Zoho Console cookies never reach `ZCAuth`.
+ * 4. FAIL-CLOSED CROSS-ENVIRONMENT & PLACEHOLDER VALIDATION:
  *    Rejects missing creds, placeholder values (`YOUR_*`, `<...>`), environment mismatches
  *    (`VIGOR_ENVIRONMENT=production` vs `VIGORCORE_DEPLOYMENT_ENVIRONMENT=Development`), and non-HTTPS
  *    Catalyst origins outside explicit loopback tests.
- * 4. STRICT SECRET REDACTION:
+ * 5. STRICT SECRET REDACTION:
  *    `redactSecretsFromString()` and `redactSensitiveObject()` strip OAuth client secrets,
  *    refresh/access tokens, `Authorization` headers, cookies, HMAC keys, and project keys
  *    before errors or diagnostic summaries leave the process.
@@ -268,7 +282,7 @@ export function inspectInstalledCatalystSdkCompatibility(): InstalledSdkCompatib
         summary:
           "CatalystCredential(..., 'user') requires x-zc-admin-cred-type/token in constructor even when only user credentials are used, and trusts request project headers if unsanitized.",
         mitigation:
-          'CatalystSeparatedAuthRuntime verifies x-zc-projectid against server config, rejects x-zc-user-type: admin, pins server project/domain headers, and isolates scope: user.',
+          'CatalystSeparatedAuthRuntime and HostedNativeCatalystAuthRuntime verify x-zc-projectid against server config, treat unauthenticated platform x-zc-user-type=admin as anonymous (null), reject x-zc-user-type=admin when paired with user credentials (403 CATALYST_ADMIN_HEADER_SPOOFED), sanitize x-zc-cookie, and isolate scope: user.',
       },
     ],
   };
@@ -343,6 +357,116 @@ function readHeaderCaseInsensitive(
     }
   }
   return undefined;
+}
+
+const CATALYST_USER_AUTH_SESSION_COOKIE_NAMES = new Set([
+  'jwt_auth',
+  'user_cred',
+  'zccpn',
+]);
+
+function isRecognizedCatalystUserSessionCookieName(cookieName: string): boolean {
+  const lower = cookieName.toLowerCase();
+  if (CATALYST_USER_AUTH_SESSION_COOKIE_NAMES.has(lower)) {
+    return true;
+  }
+  return (
+    /^_?iam[ab]dt(?:_[a-z0-9._-]+)?$/i.test(lower) ||
+    /^_?zohoportal_[a-z0-9._-]+$/i.test(lower)
+  );
+}
+
+function isStrictlyProhibitedVigorOrNonAuthCookie(cookieName: string): boolean {
+  const lower = cookieName.toLowerCase();
+  return (
+    lower === '__host-vigor_session' ||
+    lower.startsWith('__host-vigor_') ||
+    lower.startsWith('__secure-vigor_') ||
+    lower.startsWith('vigor_') ||
+    lower.startsWith('x-vigor-') ||
+    lower === 'stratus_jwt' ||
+    lower === 'jwt_expires_at'
+  );
+}
+
+/**
+ * Extracts ONLY recognized Catalyst project-user authentication cookies from `x-zc-cookie`.
+ * - Never inspects raw `Cookie` (`req.headers.cookie`), preventing `__Host-vigor_session` or
+ *   arbitrary browser/Zoho Console cookies (`_zcsr_tmp`, `zalb_*`, `JSESSIONID`, etc.) from
+ *   being treated as Catalyst credentials or forwarded to `ZCAuth`.
+ * - Includes `ZD_CSRF_TOKEN` (`CONSTANTS.CSRF_TOKEN_NAME`, required by `@zcatalyst/auth-admin`
+ *   `CookieCredential.getZCSRFHeader()`) ONLY when accompanied by at least one recognized
+ *   Catalyst project-user session cookie.
+ */
+export function extractSanitizedCatalystUserCookie(
+  rawZcCookie: string | undefined
+): string | undefined {
+  if (!rawZcCookie) return undefined;
+
+  const authPairs: string[] = [];
+  let zdCsrfPair: string | undefined;
+  let hasRecognizedSessionCookie = false;
+
+  for (const segment of rawZcCookie.split(';')) {
+    const eqIdx = segment.indexOf('=');
+    if (eqIdx <= 0) continue;
+    const name = segment.slice(0, eqIdx).trim();
+    const value = segment.slice(eqIdx + 1).trim();
+    if (!name || !value) continue;
+    if (/[\r\n\0;]/.test(name) || /[\r\n\0;]/.test(value)) continue;
+    if (isStrictlyProhibitedVigorOrNonAuthCookie(name)) continue;
+
+    if (name === CONSTANTS.CSRF_TOKEN_NAME) {
+      zdCsrfPair = `${name}=${value}`;
+      continue;
+    }
+
+    if (isRecognizedCatalystUserSessionCookieName(name)) {
+      hasRecognizedSessionCookie = true;
+      authPairs.push(`${name}=${value}`);
+    }
+  }
+
+  if (!hasRecognizedSessionCookie || authPairs.length === 0) {
+    return undefined;
+  }
+
+  if (zdCsrfPair) {
+    authPairs.push(zdCsrfPair);
+  }
+  return authPairs.join('; ');
+}
+
+export interface ExtractedCatalystUserCredentials {
+  userCredType: string;
+  userCredToken?: string;
+  sanitizedZcCookie?: string;
+  hasUserCredential: boolean;
+}
+
+export function extractCatalystUserCredentialsFromHeaders(
+  headers: Record<string, string | undefined> | undefined
+): ExtractedCatalystUserCredentials {
+  const rawToken = readHeaderCaseInsensitive(headers, CONSTANTS.CREDENTIAL_HEADER.user_token);
+  if (rawToken && /[\r\n\0]/.test(rawToken)) {
+    throw new AuthGuardError(
+      401,
+      'AUTH_SESSION_INVALID',
+      'Malformed x-zc-user-cred-token header.'
+    );
+  }
+  const userCredType =
+    readHeaderCaseInsensitive(headers, CONSTANTS.CREDENTIAL_HEADER.user_cred_type) ||
+    CONSTANTS.CREDENTIAL_TYPE.token;
+  const rawZcCookie = readHeaderCaseInsensitive(headers, CONSTANTS.CREDENTIAL_HEADER.cookie);
+  const sanitizedZcCookie = extractSanitizedCatalystUserCookie(rawZcCookie);
+
+  return {
+    userCredType,
+    ...(rawToken ? { userCredToken: rawToken } : {}),
+    ...(sanitizedZcCookie ? { sanitizedZcCookie } : {}),
+    hasUserCredential: Boolean(rawToken || sanitizedZcCookie),
+  };
 }
 
 function assertValidHttpOrigin(
@@ -697,12 +821,23 @@ export class CatalystSeparatedAuthRuntime implements ICatalystAuthRuntime {
     this.userScopeResolver = options.userScopeResolver;
   }
 
+  hasRequestCatalystUserCredential(req: IncomingHttpRequest): boolean {
+    try {
+      return extractCatalystUserCredentialsFromHeaders(req.headers).hasUserCredential;
+    } catch {
+      return true;
+    }
+  }
+
   /**
    * Verifies caller's Catalyst user session strictly in `scope: 'user'`.
-   * - Returns `null` immediately on routine HMAC cookie-only requests lacking Catalyst user tokens/cookies.
-   * - Rejects `x-zc-user-type: admin` spoofing.
-   * - Rejects `x-zc-projectid` mismatches against server `CATALYST_PROJECT_ID` (`403 PROJECT_CONTEXT_MISMATCH`).
-   * - NEVER reads request headers to elevate privileges or connect to NoSQL.
+   * - Validates pinned `x-zc-projectid` and `x-zc-project-key` (`403 PROJECT_CONTEXT_MISMATCH`).
+   * - Extracts genuine Catalyst end-user credentials (`x-zc-user-cred-token` or sanitized
+   *   Catalyst project-user cookies in `x-zc-cookie`, NEVER raw `Cookie` / `__Host-vigor_session`).
+   * - If NO genuine Catalyst user credential is present, returns `null` cleanly (even when
+   *   `x-zc-user-type: admin` is present as Catalyst's unauthenticated execution marker).
+   * - If genuine Catalyst user credentials ARE paired with `x-zc-user-type: admin`,
+   *   fails closed (`403 CATALYST_ADMIN_HEADER_SPOOFED`).
    */
   async getCurrentUserFromRequest(req: IncomingHttpRequest): Promise<CatalystIdentitySnapshot | null> {
     const incomingHeaders = req.headers ?? {};
@@ -727,6 +862,13 @@ export class CatalystSeparatedAuthRuntime implements ICatalystAuthRuntime {
       );
     }
 
+    const { userCredToken, userCredType, sanitizedZcCookie, hasUserCredential } =
+      extractCatalystUserCredentialsFromHeaders(incomingHeaders);
+
+    if (!hasUserCredential) {
+      return null;
+    }
+
     const reqUserType = readHeaderCaseInsensitive(incomingHeaders, CONSTANTS.CREDENTIAL_HEADER.user);
     if (reqUserType && reqUserType.toLowerCase() === CONSTANTS.CREDENTIAL_USER.admin) {
       throw new AuthGuardError(
@@ -734,15 +876,6 @@ export class CatalystSeparatedAuthRuntime implements ICatalystAuthRuntime {
         'CATALYST_ADMIN_HEADER_SPOOFED',
         'Incoming x-zc-user-type=admin is strictly prohibited on user authentication endpoints.'
       );
-    }
-
-    const userCredToken = readHeaderCaseInsensitive(incomingHeaders, CONSTANTS.CREDENTIAL_HEADER.user_token);
-    const userCredType =
-      readHeaderCaseInsensitive(incomingHeaders, CONSTANTS.CREDENTIAL_HEADER.user_cred_type) || 'token';
-    const zcCookie = readHeaderCaseInsensitive(incomingHeaders, CONSTANTS.CREDENTIAL_HEADER.cookie);
-
-    if (!userCredToken && !zcCookie) {
-      return null;
     }
 
     if (this.userScopeResolver) {
@@ -779,8 +912,8 @@ export class CatalystSeparatedAuthRuntime implements ICatalystAuthRuntime {
         sanitizedHeaders[CONSTANTS.CREDENTIAL_HEADER.user_cred_type] = userCredType;
         sanitizedHeaders[CONSTANTS.CREDENTIAL_HEADER.user_token] = userCredToken;
       }
-      if (zcCookie) {
-        sanitizedHeaders[CONSTANTS.CREDENTIAL_HEADER.cookie] = zcCookie;
+      if (sanitizedZcCookie) {
+        sanitizedHeaders[CONSTANTS.CREDENTIAL_HEADER.cookie] = sanitizedZcCookie;
       }
 
       const zcAuthLocal = new ZCAuth();
@@ -1213,10 +1346,27 @@ export class HostedNativeCatalystAuthRuntime implements ICatalystAuthRuntime {
     return new NoSQL(this.getActiveRequestAdminApp());
   }
 
+  hasRequestCatalystUserCredential(req: IncomingHttpRequest): boolean {
+    try {
+      return extractCatalystUserCredentialsFromHeaders(req.headers).hasUserCredential;
+    } catch {
+      return true;
+    }
+  }
+
   /**
    * Resolves caller identity strictly under `scope: 'user'` using Catalyst Advanced I/O
    * native `ZCAuth.init({ headers }, { type: 'advancedio', scope: 'user' })`.
-   * Rejects `x-zc-user-type: admin` and mismatched `x-zc-projectid` / `x-zc-project-key` fail-closed.
+   *
+   * Ordering & security contract:
+   * 1. Pin and validate `x-zc-projectid`, `x-zc-project-key`, `x-zc-environment` (`403 PROJECT_CONTEXT_MISMATCH`).
+   * 2. Extract genuine Catalyst end-user credentials (`x-zc-user-cred-token` or sanitized Catalyst
+   *    project-user cookies in `x-zc-cookie`; never raw `Cookie` / `__Host-vigor_session`).
+   * 3. If NO genuine Catalyst user credential is present, return `null` cleanly (including when
+   *    Catalyst Edge supplies `x-zc-user-type: admin` for unauthenticated callers) so the guard fails
+   *    closed with `401 UNAUTHENTICATED` and `0` NoSQL hits.
+   * 4. If genuine Catalyst user credentials ARE present alongside contradictory `x-zc-user-type: admin`,
+   *    fail closed (`403 CATALYST_ADMIN_HEADER_SPOOFED`).
    */
   async getCurrentUserFromRequest(req: IncomingHttpRequest): Promise<CatalystIdentitySnapshot | null> {
     const incomingHeaders = req.headers ?? {};
@@ -1248,6 +1398,13 @@ export class HostedNativeCatalystAuthRuntime implements ICatalystAuthRuntime {
       );
     }
 
+    const { userCredToken, userCredType, sanitizedZcCookie, hasUserCredential } =
+      extractCatalystUserCredentialsFromHeaders(incomingHeaders);
+
+    if (!hasUserCredential) {
+      return null;
+    }
+
     const reqUserType = readHeaderCaseInsensitive(incomingHeaders, CONSTANTS.CREDENTIAL_HEADER.user);
     if (reqUserType && reqUserType.toLowerCase() === CONSTANTS.CREDENTIAL_USER.admin) {
       throw new AuthGuardError(
@@ -1255,15 +1412,6 @@ export class HostedNativeCatalystAuthRuntime implements ICatalystAuthRuntime {
         'CATALYST_ADMIN_HEADER_SPOOFED',
         'Incoming x-zc-user-type=admin is strictly prohibited on user authentication endpoints.'
       );
-    }
-
-    const userCredToken = readHeaderCaseInsensitive(incomingHeaders, CONSTANTS.CREDENTIAL_HEADER.user_token);
-    const userCredType =
-      readHeaderCaseInsensitive(incomingHeaders, CONSTANTS.CREDENTIAL_HEADER.user_cred_type) || 'token';
-    const zcCookie = readHeaderCaseInsensitive(incomingHeaders, CONSTANTS.CREDENTIAL_HEADER.cookie);
-
-    if (!userCredToken && !zcCookie) {
-      return null;
     }
 
     const adminCredType = readHeaderCaseInsensitive(
@@ -1300,8 +1448,8 @@ export class HostedNativeCatalystAuthRuntime implements ICatalystAuthRuntime {
       sanitizedUserHeaders[CONSTANTS.CREDENTIAL_HEADER.user_cred_type] = userCredType;
       sanitizedUserHeaders[CONSTANTS.CREDENTIAL_HEADER.user_token] = userCredToken;
     }
-    if (zcCookie) {
-      sanitizedUserHeaders[CONSTANTS.CREDENTIAL_HEADER.cookie] = zcCookie;
+    if (sanitizedZcCookie) {
+      sanitizedUserHeaders[CONSTANTS.CREDENTIAL_HEADER.cookie] = sanitizedZcCookie;
     }
 
     const zcAuthLocal = new ZCAuth();

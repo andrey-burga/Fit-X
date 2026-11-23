@@ -528,6 +528,12 @@ export class ServerSessionTokenManager {
 
 export interface ICatalystAuthRuntime {
   /**
+   * Optional pre-check distinguishing requests carrying independently recognized
+   * Catalyst end-user credentials (`x-zc-user-cred-token` or sanitized Catalyst
+   * project-user cookies in `x-zc-cookie`) from HMAC-only requests.
+   */
+  hasRequestCatalystUserCredential?(req: IncomingHttpRequest): boolean;
+  /**
    * Live SDK integration:
    *   const catalystApp = zcAuth.init(req);
    *   return await catalystApp.userManagement().getCurrentUser();
@@ -1086,30 +1092,43 @@ export class CleanSlateAuthGuard {
     // Path 3: `__Host-vigor_session` cookie present -> verify cryptographically FIRST (works in cookie-only browser requests)
     const claims = this.sessionTokens.verifyToken(signedCookie);
 
-    // Optional subject cross-check if Catalyst auth context also happens to be present on the request
+    // Cross-check Catalyst identity ONLY when using a test double without pre-check
+    // OR when an independently recognized Catalyst end-user credential is present.
+    // On HMAC-only requests (even with Catalyst Edge `x-zc-user-type=admin` or Zoho Console cookies),
+    // UserManagement.getCurrentUser() is NEVER called.
+    const shouldInspectOptionalCatalystUser =
+      typeof this.authRuntime.hasRequestCatalystUserCredential === 'function'
+        ? this.authRuntime.hasRequestCatalystUserCredential(req)
+        : true;
+
     let optionalCatalystUser: CatalystIdentitySnapshot | null = null;
-    try {
-      optionalCatalystUser = await this.authRuntime.getCurrentUserFromRequest(req);
-    } catch (err) {
-      throw new AuthGuardError(
-        401,
-        'AUTH_SESSION_INVALID',
-        err instanceof Error ? err.message : 'Catalyst Auth verification failed.'
-      );
-    }
-    if (optionalCatalystUser && optionalCatalystUser.user_id) {
-      if (optionalCatalystUser.user_id !== claims.sub) {
+    if (shouldInspectOptionalCatalystUser) {
+      try {
+        optionalCatalystUser = await this.authRuntime.getCurrentUserFromRequest(req);
+      } catch (err) {
+        if (err instanceof AuthGuardError) {
+          throw err;
+        }
         throw new AuthGuardError(
           401,
-          'INVALID_SIGNED_SESSION',
-          'Session subject does not match active Catalyst identity.'
+          'AUTH_SESSION_INVALID',
+          err instanceof Error ? err.message : 'Catalyst Auth verification failed.'
         );
       }
-      this.assertValidCatalystSnapshot(
-        optionalCatalystUser,
-        'UNAUTHENTICATED',
-        this.sessionTokens.buildLogoutClearCookieHeader()
-      );
+      if (optionalCatalystUser && optionalCatalystUser.user_id) {
+        if (optionalCatalystUser.user_id !== claims.sub) {
+          throw new AuthGuardError(
+            401,
+            'INVALID_SIGNED_SESSION',
+            'Session subject does not match active Catalyst identity.'
+          );
+        }
+        this.assertValidCatalystSnapshot(
+          optionalCatalystUser,
+          'UNAUTHENTICATED',
+          this.sessionTokens.buildLogoutClearCookieHeader()
+        );
+      }
     }
 
     const userPk = KeyBuilders.userPk(claims.sub);

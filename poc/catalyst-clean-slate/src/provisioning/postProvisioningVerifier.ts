@@ -37,6 +37,7 @@ import {
   type TableSchemaSpec,
 } from '../types/cleanSlate.js';
 import { inferCatalystRegionFromApiDomain } from './catalystConfigPreflight.js';
+import { PHASE_5_2_STAGE_1_DEV_INVENTORY } from './phase52Stage1Inventory.js';
 
 export type RealNoSQLTableMeta = ReturnType<NoSQLTable['toJSON']>;
 export type RealNoSQLIndexMeta = RealNoSQLTableMeta['global_index'][number];
@@ -84,6 +85,9 @@ export interface VerificationCheckEntry {
 
 export interface TableVerificationMatrixEntry {
   tableName: TableName;
+  tableId: string | null;
+  expectedTableId?: string | null;
+  tableIdMatch: boolean | 'NOT_CHECKED';
   exists: boolean;
   status: string | null;
   partitionKeyOk: boolean;
@@ -143,6 +147,14 @@ export const EXPECTED_TABLES_ORDERED: TableName[] = [
   'AuditLogs',
   'SystemControl',
 ];
+
+export function getStage1ExpectedDevelopmentTableIds(): Record<TableName, string> {
+  const map = {} as Record<TableName, string>;
+  for (const tbl of PHASE_5_2_STAGE_1_DEV_INVENTORY.tables) {
+    map[tbl.tableName] = tbl.tableId;
+  }
+  return map;
+}
 
 export const SDK_KNOWN_LIMITATIONS: string[] = [
   'INoSQLTable.ttl_attribute (`@zcatalyst/nosql@1.0.0`) returns only the attribute name (`string | undefined`), NOT the column data type (`Number`). Operator MUST confirm `ttlEpochSec` type = `Number` in Catalyst Console.',
@@ -254,7 +266,11 @@ function inspectTableMetricsForNonZeroCount(meta: RealNoSQLTableMeta): string | 
 
 export function verifySchemaAgainstRegistry(
   tablesMeta: RealNoSQLTableMeta[],
-  options: { failOnExtraTables?: boolean; expectedProjectId?: string } = {}
+  options: {
+    failOnExtraTables?: boolean;
+    expectedProjectId?: string;
+    expectedTableIds?: Partial<Record<TableName, string>>;
+  } = {}
 ): {
   checks: VerificationCheckEntry[];
   discrepancies: string[];
@@ -301,6 +317,7 @@ export function verifySchemaAgainstRegistry(
   for (const tableName of EXPECTED_TABLES_ORDERED) {
     const spec: TableSchemaSpec = TABLE_SCHEMA_REGISTRY[tableName];
     const meta = byName.get(tableName);
+    const expectedTableId = options.expectedTableIds?.[tableName];
     const tableDiscrepancies: string[] = [];
 
     if (!meta) {
@@ -317,6 +334,9 @@ export function verifySchemaAgainstRegistry(
 
       tableMatrix.push({
         tableName,
+        tableId: null,
+        ...(expectedTableId ? { expectedTableId } : {}),
+        tableIdMatch: expectedTableId ? false : 'NOT_CHECKED',
         exists: false,
         status: null,
         partitionKeyOk: false,
@@ -360,6 +380,25 @@ export function verifySchemaAgainstRegistry(
       passed: statusOk,
       detail: `Table '${tableName}' status=${meta.status}`,
     });
+
+    // Optional physical Table ID verification (e.g., Stage 1 Development table IDs)
+    const reportedTableId = meta.id ? String(meta.id) : null;
+    let tableIdMatch: boolean | 'NOT_CHECKED' = 'NOT_CHECKED';
+    if (expectedTableId) {
+      tableIdMatch = reportedTableId === expectedTableId;
+      if (!tableIdMatch) {
+        const msg = `Table '${tableName}' physical table ID '${reportedTableId ?? 'OMITTED'}' mismatches expected '${expectedTableId}'.`;
+        discrepancies.push(msg);
+        tableDiscrepancies.push(msg);
+      }
+      checks.push({
+        id: `TABLE-ID-${tableName}`,
+        table: tableName,
+        category: 'PROJECT_CONTEXT',
+        passed: tableIdMatch,
+        detail: `Table '${tableName}' physical id=${reportedTableId ?? 'OMITTED'} (expected=${expectedTableId})`,
+      });
+    }
 
     // Optional remote project_details.id verification against expectedProjectId
     let projectDetailsMatch: boolean | 'NOT_REPORTED' = 'NOT_REPORTED';
@@ -453,6 +492,9 @@ export function verifySchemaAgainstRegistry(
 
     tableMatrix.push({
       tableName,
+      tableId: reportedTableId,
+      ...(expectedTableId ? { expectedTableId } : {}),
+      tableIdMatch,
       exists: true,
       status: meta.status ?? null,
       partitionKeyOk: pkOk,
@@ -632,6 +674,8 @@ export function runOfflineSelfCheck(): PostProvisioningVerificationReport {
 
     tableMatrix.push({
       tableName,
+      tableId: null,
+      tableIdMatch: 'NOT_CHECKED',
       exists: true,
       status: 'LOCAL_CONTRACT_ONLY',
       partitionKeyOk: adapterOk,
@@ -715,6 +759,7 @@ export async function probeCleanSlateEmptyAndContracts(
     now?: Date;
     failOnExtraTables?: boolean;
     expectedProjectId?: string;
+    expectedTableIds?: Partial<Record<TableName, string>>;
     catalystEnvironment?: string;
     apiDomain?: string;
   } = {}
@@ -730,6 +775,7 @@ export async function probeCleanSlateEmptyAndContracts(
   const schemaResult = verifySchemaAgainstRegistry(tablesMeta, {
     failOnExtraTables: options.failOnExtraTables ?? true,
     expectedProjectId: options.expectedProjectId,
+    expectedTableIds: options.expectedTableIds,
   });
   const checks: VerificationCheckEntry[] = [...schemaResult.checks];
   const discrepancies: string[] = [...schemaResult.discrepancies];

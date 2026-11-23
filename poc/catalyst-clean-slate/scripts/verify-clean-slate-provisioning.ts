@@ -27,6 +27,7 @@ import {
 } from '../src/provisioning/catalystConfigPreflight.js';
 import {
   createReadOnlyEnvironmentFromProvider,
+  getStage1ExpectedDevelopmentTableIds,
   probeCleanSlateEmptyAndContracts,
   runOfflineSelfCheck,
   type PostProvisioningVerificationReport,
@@ -43,6 +44,7 @@ export interface ParsedCliArgs {
   confirmReadonly: boolean;
   allowExtraTables: boolean;
   allowLoopbackTest: boolean;
+  verifyDevTableIds: boolean;
   authMode?: 'external_oauth' | 'hosted_native';
   expectedProjectId?: string;
   expectedRegion?: CatalystRegion;
@@ -76,6 +78,7 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
     confirmReadonly: argv.includes('--confirm-readonly'),
     allowExtraTables: argv.includes('--allow-extra-tables'),
     allowLoopbackTest: argv.includes('--allow-loopback-test'),
+    verifyDevTableIds: argv.includes('--verify-dev-table-ids'),
     authMode,
     expectedProjectId: readFlagValue(argv, '--expected-project'),
     expectedRegion: readFlagValue(argv, '--expected-region') as CatalystRegion | undefined,
@@ -135,11 +138,17 @@ export async function runVerifierCli(
   const adminProvider = CatalystAdminAppProvider.fromEnvironment(envMap, {
     allowInsecureLoopbackForTest: args.allowLoopbackTest,
   });
+  if (args.verifyDevTableIds && adminProvider.getEnvironment() !== 'Development') {
+    throw new Error(
+      `DEV_TABLE_IDS_REQUIRE_DEVELOPMENT_ENV: '--verify-dev-table-ids' may only run against Catalyst Development (got '${adminProvider.getEnvironment()}').`
+    );
+  }
   const env = createReadOnlyEnvironmentFromProvider(adminProvider);
 
   return probeCleanSlateEmptyAndContracts(env, {
     failOnExtraTables: !args.allowExtraTables,
     expectedProjectId: args.expectedProjectId ?? adminProvider.getProjectId(),
+    ...(args.verifyDevTableIds ? { expectedTableIds: getStage1ExpectedDevelopmentTableIds() } : {}),
     catalystEnvironment: adminProvider.getEnvironment(),
     apiDomain: adminProvider.getApiDomain(),
   });
