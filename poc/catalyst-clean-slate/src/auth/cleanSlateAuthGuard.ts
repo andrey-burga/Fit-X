@@ -50,6 +50,8 @@ export { USER_STATUS };
 export const SIGNED_SESSION_COOKIE_NAME = '__Host-vigor_session';
 
 export interface IncomingHttpRequest {
+  method?: string;
+  route?: string;
   headers?: Record<string, string | undefined>;
   cookies?: Record<string, string | undefined>;
   query?: Record<string, unknown>;

@@ -39,6 +39,7 @@ import {
   CatalystSeparatedAuthRuntime,
   HostedNativeCatalystAuthRuntime,
   redactSecretsFromString,
+  type AdminSpoofDiagnosticEvent,
   type CatalystRuntimeAuthMode,
 } from '../sdk/catalystSdkBridge.js';
 import {
@@ -262,6 +263,8 @@ export function createVigorCoreExpressApp(
     const cookies = parseCookieHeader(headers.cookie);
 
     const incomingReq: IncomingHttpRequest = {
+      method: upperMethod,
+      route: normalizedPath,
       headers,
       cookies,
       query: req.query as Record<string, unknown>,
@@ -448,6 +451,7 @@ export function createVigorCoreProductionRuntimeFromEnv(
     nowMsProvider?: () => number;
     nowSecProvider?: () => number;
     logger?: (entry: RedactedRequestLogEntry) => void;
+    diagnosticLogger?: (entry: AdminSpoofDiagnosticEvent) => void;
     liveAtomicityVerifiedForSuperadminMutations?: boolean;
   } = {}
 ): VigorCoreRuntimeBundle {
@@ -466,6 +470,7 @@ export function createVigorCoreProductionRuntimeFromEnv(
       overrides.hostedAuthRuntimeOverride ??
       HostedNativeCatalystAuthRuntime.fromEnvironment(envMap, {
         allowInsecureLoopbackForTest: allowLoopback,
+        diagnosticLogger: overrides.diagnosticLogger,
       });
     providers = overrides.adapterOverride
       ? createTableProviders(overrides.adapterOverride)
@@ -484,6 +489,7 @@ export function createVigorCoreProductionRuntimeFromEnv(
         adminProvider,
         requireLiveInt08ForPasswordReset:
           envMap.VIGOR_ALLOW_RESET_WITHOUT_INT08 !== 'true',
+        diagnosticLogger: overrides.diagnosticLogger,
       });
   }
 

@@ -359,21 +359,103 @@ function readHeaderCaseInsensitive(
   return undefined;
 }
 
-const CATALYST_USER_AUTH_SESSION_COOKIE_NAMES = new Set([
-  'jwt_auth',
-  'user_cred',
-  'zccpn',
-]);
-
-function isRecognizedCatalystUserSessionCookieName(cookieName: string): boolean {
-  const lower = cookieName.toLowerCase();
-  if (CATALYST_USER_AUTH_SESSION_COOKIE_NAMES.has(lower)) {
-    return true;
+function readRawHeaderCaseInsensitive(
+  headers: Record<string, string | undefined> | undefined,
+  target: string
+): string | undefined {
+  if (!headers) return undefined;
+  const lower = target.toLowerCase();
+  for (const [k, v] of Object.entries(headers)) {
+    if (k.toLowerCase() === lower && typeof v === 'string') {
+      return v;
+    }
   }
-  return (
-    /^_?iam[ab]dt(?:_[a-z0-9._-]+)?$/i.test(lower) ||
-    /^_?zohoportal_[a-z0-9._-]+$/i.test(lower)
-  );
+  return undefined;
+}
+
+export type UserCredentialTokenClass =
+  | 'absent'
+  | 'empty'
+  | 'whitespace_only'
+  | 'literal_null'
+  | 'literal_undefined'
+  | 'literal_false'
+  | 'literal_zero'
+  | 'nonempty_opaque'
+  | 'malformed_control_characters';
+
+export function classifyUserCredentialTokenHeader(
+  rawHeaderValue: string | undefined
+): UserCredentialTokenClass {
+  if (rawHeaderValue === undefined) {
+    return 'absent';
+  }
+  if (/[\r\n\0]/.test(rawHeaderValue)) {
+    return 'malformed_control_characters';
+  }
+  if (rawHeaderValue.length === 0) {
+    return 'empty';
+  }
+  const trimmed = rawHeaderValue.trim();
+  if (trimmed.length === 0) {
+    return 'whitespace_only';
+  }
+  const normalized = trimmed.toLowerCase();
+  if (normalized === 'null') {
+    return 'literal_null';
+  }
+  if (normalized === 'undefined') {
+    return 'literal_undefined';
+  }
+  if (normalized === 'false') {
+    return 'literal_false';
+  }
+  if (normalized === '0') {
+    return 'literal_zero';
+  }
+  return 'nonempty_opaque';
+}
+
+export const VIGORCORE_DIAGNOSTIC_BUILD_ID = 'phase-5.3-403-forensic-diag-v2';
+
+export interface AdminSpoofDiagnosticEvent {
+  event: 'CATALYST_ADMIN_HEADER_SPOOFED_DIAGNOSTIC';
+  buildId: string;
+  authRuntimeMode: CatalystRuntimeAuthMode;
+  method: string;
+  route: string;
+  xZcUserTypeIsAdmin: boolean;
+  hasXZcUserCredToken: boolean;
+  userCredentialTokenClass: UserCredentialTokenClass;
+  hasXZcCookie: boolean;
+  recognizedCookieNames: string[];
+  matchedCookieRules: string[];
+  hasSanitizedZcCookieCredential: boolean;
+  hasUserCredential: boolean;
+}
+
+/**
+ * Audit against installed `@zcatalyst/*` sources (`dist-es/`):
+ * - `JWT_AUTH`: verified in `@zcatalyst/auth-client` (`JWT_COOKIE_PREFIX`) and `@zcatalyst/auth` (`JwtTokenProtocol`).
+ * - `user_cred`: verified in `@zcatalyst/auth` (`JwtTokenProtocol` signOut cookie clearing).
+ * - `zccpn`: removed because zero references exist in any `@zcatalyst/*` package or test.
+ * - `_iamadt*` / `_iambdt*` / `_zohoportal_*`: opaque Zoho Accounts Portal cookies forwarded to `CookieCredential` (`https://accounts.zohoportal.com`).
+ */
+function matchCatalystUserSessionCookieRule(cookieName: string): string | null {
+  const lower = cookieName.toLowerCase();
+  if (lower === 'jwt_auth') {
+    return 'exact:JWT_AUTH';
+  }
+  if (lower === 'user_cred') {
+    return 'exact:user_cred';
+  }
+  if (/^_?iam[ab]dt(?:_[a-z0-9._-]+)?$/i.test(lower)) {
+    return 'regex:^_?iam[ab]dt';
+  }
+  if (/^_?zohoportal_[a-z0-9._-]+$/i.test(lower)) {
+    return 'regex:^_?zohoportal_';
+  }
+  return null;
 }
 
 function isStrictlyProhibitedVigorOrNonAuthCookie(cookieName: string): boolean {
@@ -389,23 +471,31 @@ function isStrictlyProhibitedVigorOrNonAuthCookie(cookieName: string): boolean {
   );
 }
 
-/**
- * Extracts ONLY recognized Catalyst project-user authentication cookies from `x-zc-cookie`.
- * - Never inspects raw `Cookie` (`req.headers.cookie`), preventing `__Host-vigor_session` or
- *   arbitrary browser/Zoho Console cookies (`_zcsr_tmp`, `zalb_*`, `JSESSIONID`, etc.) from
- *   being treated as Catalyst credentials or forwarded to `ZCAuth`.
- * - Includes `ZD_CSRF_TOKEN` (`CONSTANTS.CSRF_TOKEN_NAME`, required by `@zcatalyst/auth-admin`
- *   `CookieCredential.getZCSRFHeader()`) ONLY when accompanied by at least one recognized
- *   Catalyst project-user session cookie.
- */
-export function extractSanitizedCatalystUserCookie(
+export interface SanitizedCatalystCookieExtractionResult {
+  sanitizedZcCookie?: string;
+  recognizedCookieNames: string[];
+  matchedCookieRules: string[];
+}
+
+export function extractSanitizedCatalystUserCookieWithDetails(
   rawZcCookie: string | undefined
-): string | undefined {
-  if (!rawZcCookie) return undefined;
+): SanitizedCatalystCookieExtractionResult {
+  if (!rawZcCookie) {
+    return {
+      recognizedCookieNames: [],
+      matchedCookieRules: [],
+    };
+  }
 
   const authPairs: string[] = [];
+  const recognizedCookieNames: string[] = [];
+  const matchedCookieRules: string[] = [];
   let zdCsrfPair: string | undefined;
   let hasRecognizedSessionCookie = false;
+
+  const pushUnique = (target: string[], val: string) => {
+    if (!target.includes(val)) target.push(val);
+  };
 
   for (const segment of rawZcCookie.split(';')) {
     const eqIdx = segment.indexOf('=');
@@ -421,32 +511,67 @@ export function extractSanitizedCatalystUserCookie(
       continue;
     }
 
-    if (isRecognizedCatalystUserSessionCookieName(name)) {
+    const matchedRule = matchCatalystUserSessionCookieRule(name);
+    if (matchedRule) {
       hasRecognizedSessionCookie = true;
       authPairs.push(`${name}=${value}`);
+      pushUnique(recognizedCookieNames, name);
+      pushUnique(matchedCookieRules, matchedRule);
     }
   }
 
   if (!hasRecognizedSessionCookie || authPairs.length === 0) {
-    return undefined;
+    return {
+      recognizedCookieNames: [],
+      matchedCookieRules: [],
+    };
   }
 
   if (zdCsrfPair) {
     authPairs.push(zdCsrfPair);
+    pushUnique(recognizedCookieNames, CONSTANTS.CSRF_TOKEN_NAME);
+    pushUnique(matchedCookieRules, `csrf_paired:${CONSTANTS.CSRF_TOKEN_NAME}`);
   }
-  return authPairs.join('; ');
+  return {
+    sanitizedZcCookie: authPairs.join('; '),
+    recognizedCookieNames,
+    matchedCookieRules,
+  };
+}
+
+/**
+ * Extracts ONLY recognized Catalyst project-user authentication cookies from `x-zc-cookie`.
+ * - Never inspects raw `Cookie` (`req.headers.cookie`), preventing `__Host-vigor_session` or
+ *   arbitrary browser/Zoho Console cookies (`_zcsr_tmp`, `zalb_*`, `JSESSIONID`, etc.) from
+ *   being treated as Catalyst credentials or forwarded to `ZCAuth`.
+ * - Includes `ZD_CSRF_TOKEN` (`CONSTANTS.CSRF_TOKEN_NAME`, required by `@zcatalyst/auth-admin`
+ *   `CookieCredential.getZCSRFHeader()`) ONLY when accompanied by at least one recognized
+ *   Catalyst project-user session cookie.
+ */
+export function extractSanitizedCatalystUserCookie(
+  rawZcCookie: string | undefined
+): string | undefined {
+  return extractSanitizedCatalystUserCookieWithDetails(rawZcCookie).sanitizedZcCookie;
 }
 
 export interface ExtractedCatalystUserCredentials {
   userCredType: string;
   userCredToken?: string;
   sanitizedZcCookie?: string;
+  hasUserCredToken: boolean;
+  userCredentialTokenClass: UserCredentialTokenClass;
+  hasZcCookie: boolean;
+  recognizedCookieNames: string[];
+  matchedCookieRules: string[];
+  hasSanitizedZcCookieCredential: boolean;
   hasUserCredential: boolean;
 }
 
 export function extractCatalystUserCredentialsFromHeaders(
   headers: Record<string, string | undefined> | undefined
 ): ExtractedCatalystUserCredentials {
+  const rawUnTrimmedToken = readRawHeaderCaseInsensitive(headers, CONSTANTS.CREDENTIAL_HEADER.user_token);
+  const userCredentialTokenClass = classifyUserCredentialTokenHeader(rawUnTrimmedToken);
   const rawToken = readHeaderCaseInsensitive(headers, CONSTANTS.CREDENTIAL_HEADER.user_token);
   if (rawToken && /[\r\n\0]/.test(rawToken)) {
     throw new AuthGuardError(
@@ -459,14 +584,68 @@ export function extractCatalystUserCredentialsFromHeaders(
     readHeaderCaseInsensitive(headers, CONSTANTS.CREDENTIAL_HEADER.user_cred_type) ||
     CONSTANTS.CREDENTIAL_TYPE.token;
   const rawZcCookie = readHeaderCaseInsensitive(headers, CONSTANTS.CREDENTIAL_HEADER.cookie);
-  const sanitizedZcCookie = extractSanitizedCatalystUserCookie(rawZcCookie);
+  const cookieDetails = extractSanitizedCatalystUserCookieWithDetails(rawZcCookie);
+  const hasSanitizedZcCookieCredential = Boolean(cookieDetails.sanitizedZcCookie);
 
   return {
     userCredType,
     ...(rawToken ? { userCredToken: rawToken } : {}),
-    ...(sanitizedZcCookie ? { sanitizedZcCookie } : {}),
-    hasUserCredential: Boolean(rawToken || sanitizedZcCookie),
+    ...(cookieDetails.sanitizedZcCookie ? { sanitizedZcCookie: cookieDetails.sanitizedZcCookie } : {}),
+    hasUserCredToken: Boolean(rawToken),
+    userCredentialTokenClass,
+    hasZcCookie: Boolean(rawZcCookie),
+    recognizedCookieNames: cookieDetails.recognizedCookieNames,
+    matchedCookieRules: cookieDetails.matchedCookieRules,
+    hasSanitizedZcCookieCredential,
+    hasUserCredential: Boolean(rawToken || cookieDetails.sanitizedZcCookie),
   };
+}
+
+function emitAdminSpoofDiagnosticEvent(
+  diagnosticLogger: ((entry: AdminSpoofDiagnosticEvent) => void) | undefined,
+  params: {
+    authRuntimeMode: CatalystRuntimeAuthMode;
+    req: IncomingHttpRequest;
+    xZcUserTypeIsAdmin: boolean;
+    extracted: ExtractedCatalystUserCredentials;
+  }
+): void {
+  try {
+    const extraSecrets: string[] = [];
+    if (params.extracted.userCredToken) {
+      extraSecrets.push(params.extracted.userCredToken);
+    }
+    if (params.extracted.sanitizedZcCookie) {
+      extraSecrets.push(params.extracted.sanitizedZcCookie);
+    }
+    const scrub = (val: string): string => redactSecretsFromString(val, extraSecrets);
+
+    const safeEvent: AdminSpoofDiagnosticEvent = {
+      event: 'CATALYST_ADMIN_HEADER_SPOOFED_DIAGNOSTIC',
+      buildId: VIGORCORE_DIAGNOSTIC_BUILD_ID,
+      authRuntimeMode: params.authRuntimeMode,
+      method: scrub((params.req.method || 'UNKNOWN').toUpperCase()),
+      route: scrub(params.req.route || '[UNSPECIFIED_ROUTE]'),
+      xZcUserTypeIsAdmin: Boolean(params.xZcUserTypeIsAdmin),
+      hasXZcUserCredToken: Boolean(params.extracted.hasUserCredToken),
+      userCredentialTokenClass: params.extracted.userCredentialTokenClass,
+      hasXZcCookie: Boolean(params.extracted.hasZcCookie),
+      recognizedCookieNames: params.extracted.recognizedCookieNames.map(scrub),
+      matchedCookieRules:
+        params.extracted.matchedCookieRules.length > 0
+          ? params.extracted.matchedCookieRules.map(scrub)
+          : ['none'],
+      hasSanitizedZcCookieCredential: Boolean(params.extracted.hasSanitizedZcCookieCredential),
+      hasUserCredential: Boolean(params.extracted.hasUserCredential),
+    };
+    if (diagnosticLogger) {
+      diagnosticLogger(safeEvent);
+    } else {
+      console.warn(JSON.stringify(safeEvent));
+    }
+  } catch {
+    // Diagnostic emission must never affect request status codes or leak data.
+  }
 }
 
 function assertValidHttpOrigin(
@@ -804,6 +983,7 @@ export interface CatalystSeparatedAuthRuntimeOptions {
    * defaults to `@zcatalyst/auth-admin` `ZCAuth` + `@zcatalyst/auth` `UserManagement`.
    */
   userScopeResolver?: (req: IncomingHttpRequest) => Promise<CatalystIdentitySnapshot | null>;
+  diagnosticLogger?: (entry: AdminSpoofDiagnosticEvent) => void;
 }
 
 /**
@@ -814,11 +994,13 @@ export class CatalystSeparatedAuthRuntime implements ICatalystAuthRuntime {
   private readonly adminProvider: CatalystAdminAppProvider;
   private readonly requireLiveInt08ForPasswordReset: boolean;
   private readonly userScopeResolver?: (req: IncomingHttpRequest) => Promise<CatalystIdentitySnapshot | null>;
+  private readonly diagnosticLogger?: (entry: AdminSpoofDiagnosticEvent) => void;
 
   constructor(options: CatalystSeparatedAuthRuntimeOptions) {
     this.adminProvider = options.adminProvider;
     this.requireLiveInt08ForPasswordReset = options.requireLiveInt08ForPasswordReset ?? true;
     this.userScopeResolver = options.userScopeResolver;
+    this.diagnosticLogger = options.diagnosticLogger;
   }
 
   hasRequestCatalystUserCredential(req: IncomingHttpRequest): boolean {
@@ -862,15 +1044,24 @@ export class CatalystSeparatedAuthRuntime implements ICatalystAuthRuntime {
       );
     }
 
-    const { userCredToken, userCredType, sanitizedZcCookie, hasUserCredential } =
-      extractCatalystUserCredentialsFromHeaders(incomingHeaders);
+    const extracted = extractCatalystUserCredentialsFromHeaders(incomingHeaders);
+    const { userCredToken, userCredType, sanitizedZcCookie, hasUserCredential } = extracted;
 
     if (!hasUserCredential) {
       return null;
     }
 
     const reqUserType = readHeaderCaseInsensitive(incomingHeaders, CONSTANTS.CREDENTIAL_HEADER.user);
-    if (reqUserType && reqUserType.toLowerCase() === CONSTANTS.CREDENTIAL_USER.admin) {
+    const xZcUserTypeIsAdmin = Boolean(
+      reqUserType && reqUserType.toLowerCase() === CONSTANTS.CREDENTIAL_USER.admin
+    );
+    if (xZcUserTypeIsAdmin) {
+      emitAdminSpoofDiagnosticEvent(this.diagnosticLogger, {
+        authRuntimeMode: 'external_oauth',
+        req,
+        xZcUserTypeIsAdmin,
+        extracted,
+      });
       throw new AuthGuardError(
         403,
         'CATALYST_ADMIN_HEADER_SPOOFED',
@@ -1259,19 +1450,25 @@ export class HostedNativeCatalystAuthRuntime implements ICatalystAuthRuntime {
   private readonly requireLiveInt08ForPasswordReset: boolean;
   private readonly adminStorage = new AsyncLocalStorage<CatalystApp>();
   private readonly knownSecrets: string[];
+  private readonly diagnosticLogger?: (entry: AdminSpoofDiagnosticEvent) => void;
 
   constructor(options: {
     config: HostedNativeConfigInput;
     requireLiveInt08ForPasswordReset?: boolean;
+    diagnosticLogger?: (entry: AdminSpoofDiagnosticEvent) => void;
   }) {
     this.config = validateHostedNativeConfig(options.config);
     this.requireLiveInt08ForPasswordReset = options.requireLiveInt08ForPasswordReset ?? true;
     this.knownSecrets = this.config.projectKey ? [this.config.projectKey] : [];
+    this.diagnosticLogger = options.diagnosticLogger;
   }
 
   static fromEnvironment(
     envMap: Record<string, string | undefined> = process.env,
-    options: { allowInsecureLoopbackForTest?: boolean } = {}
+    options: {
+      allowInsecureLoopbackForTest?: boolean;
+      diagnosticLogger?: (entry: AdminSpoofDiagnosticEvent) => void;
+    } = {}
   ): HostedNativeCatalystAuthRuntime {
     const deploymentEnv = resolveDeploymentEnvironmentFromEnv(envMap);
     const projectId = resolveCatalystProjectIdFromEnv(envMap);
@@ -1299,6 +1496,7 @@ export class HostedNativeCatalystAuthRuntime implements ICatalystAuthRuntime {
       },
       requireLiveInt08ForPasswordReset:
         envMap.VIGOR_ALLOW_RESET_WITHOUT_INT08 !== 'true',
+      diagnosticLogger: options.diagnosticLogger,
     });
   }
 
@@ -1398,15 +1596,24 @@ export class HostedNativeCatalystAuthRuntime implements ICatalystAuthRuntime {
       );
     }
 
-    const { userCredToken, userCredType, sanitizedZcCookie, hasUserCredential } =
-      extractCatalystUserCredentialsFromHeaders(incomingHeaders);
+    const extracted = extractCatalystUserCredentialsFromHeaders(incomingHeaders);
+    const { userCredToken, userCredType, sanitizedZcCookie, hasUserCredential } = extracted;
 
     if (!hasUserCredential) {
       return null;
     }
 
     const reqUserType = readHeaderCaseInsensitive(incomingHeaders, CONSTANTS.CREDENTIAL_HEADER.user);
-    if (reqUserType && reqUserType.toLowerCase() === CONSTANTS.CREDENTIAL_USER.admin) {
+    const xZcUserTypeIsAdmin = Boolean(
+      reqUserType && reqUserType.toLowerCase() === CONSTANTS.CREDENTIAL_USER.admin
+    );
+    if (xZcUserTypeIsAdmin) {
+      emitAdminSpoofDiagnosticEvent(this.diagnosticLogger, {
+        authRuntimeMode: 'hosted_native',
+        req,
+        xZcUserTypeIsAdmin,
+        extracted,
+      });
       throw new AuthGuardError(
         403,
         'CATALYST_ADMIN_HEADER_SPOOFED',
