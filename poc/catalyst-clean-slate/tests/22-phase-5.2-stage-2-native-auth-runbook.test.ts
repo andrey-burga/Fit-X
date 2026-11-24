@@ -575,7 +575,7 @@ test('Phase 5.2 Stage 2 [PASS-LOOPBACK] Public Signup disabled onboarding: uncon
     });
     assert.equal(redeemedRow?.status, 'redeemed');
 
-    // 5. Anti-spoofing: real HostedNativeCatalystAuthRuntime rejects x-zc-user-type: admin with 403 CATALYST_ADMIN_HEADER_SPOOFED
+    // 5. Platform admin execution context: real HostedNativeCatalystAuthRuntime returns null and never calls ZCAuth user scope when x-zc-user-type: admin
     const hostedRuntime = HostedNativeCatalystAuthRuntime.fromEnvironment(
       {
         ...createLoopbackEnv(hmacSecret),
@@ -591,28 +591,22 @@ test('Phase 5.2 Stage 2 [PASS-LOOPBACK] Public Signup disabled onboarding: uncon
         'x-zc-admin-cred-token': 'adm_edge_tok_stage2',
         'x-zc-user-type': 'admin',
         'x-zc-user-cred-type': 'token',
-        'x-zc-user-cred-token': 'user_tok_spoof',
+        'x-zc-user-cred-token': 'platform_opaque_tok_stage2',
       },
       async () => {
-        await assert.rejects(
-          () =>
-            hostedRuntime.getCurrentUserFromRequest({
-              headers: {
-                'x-zc-projectid': '136967000000014024',
-                'x-zc-project-key': 'proj_key_loopback_stage2_test',
-                'x-zc-admin-cred-type': 'token',
-                'x-zc-admin-cred-token': 'adm_edge_tok_stage2',
-                'x-zc-user-type': 'admin',
-                'x-zc-user-cred-type': 'token',
-                'x-zc-user-cred-token': 'user_tok_spoof',
-              },
-            }),
-          (err: unknown) =>
-            err instanceof Error &&
-            'code' in err &&
-            (err as { code: string; statusCode?: number }).code === 'CATALYST_ADMIN_HEADER_SPOOFED' &&
-            (err as { statusCode?: number }).statusCode === 403
-        );
+        const reqWithAdminType = {
+          headers: {
+            'x-zc-projectid': '136967000000014024',
+            'x-zc-project-key': 'proj_key_loopback_stage2_test',
+            'x-zc-admin-cred-type': 'token',
+            'x-zc-admin-cred-token': 'adm_edge_tok_stage2',
+            'x-zc-user-type': 'admin',
+            'x-zc-user-cred-type': 'token',
+            'x-zc-user-cred-token': 'platform_opaque_tok_stage2',
+          },
+        };
+        assert.equal(hostedRuntime.hasRequestCatalystUserCredential(reqWithAdminType), false);
+        assert.equal(await hostedRuntime.getCurrentUserFromRequest(reqWithAdminType), null);
       }
     );
   } finally {

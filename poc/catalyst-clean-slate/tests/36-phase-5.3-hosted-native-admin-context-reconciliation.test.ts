@@ -230,7 +230,7 @@ test('Phase 5.3 [PASS-LOOPBACK] Scenarios 1-5 & 9-10: Anonymous x-zc-user-type=a
     assert.equal(((await s3Exchange.json()) as any).error, 'UNAUTHENTICATED');
     assert.equal(nosqlFetchCalls, 0);
 
-    // Scenario 4: Contradictory `x-zc-user-type=admin` WITH genuine Catalyst user credential -> 403 CATALYST_ADMIN_HEADER_SPOOFED
+    // Scenario 4 (reconciled hosted_native SDK contract): `x-zc-user-type=admin` WITH platform token or cookie -> 401 UNAUTHENTICATED, 0 BaaS, 0 NoSQL
     const s4Token = await fetch(`${baseUrl}/server/vigor_api/api/v1/auth/session/exchange`, {
       method: 'POST',
       headers: {
@@ -241,13 +241,13 @@ test('Phase 5.3 [PASS-LOOPBACK] Scenarios 1-5 & 9-10: Anonymous x-zc-user-type=a
         ...hostedEdgeAdminHeaders({
           'x-zc-user-type': 'admin',
           'x-zc-user-cred-type': 'token',
-          'x-zc-user-cred-token': 'valid_user_token_must_fail_when_admin_marked',
+          'x-zc-user-cred-token': 'platform_opaque_token_in_admin_ctx',
         }),
       },
       body: JSON.stringify({}),
     });
-    assert.equal(s4Token.status, 403);
-    assert.equal(((await s4Token.json()) as any).error, 'CATALYST_ADMIN_HEADER_SPOOFED');
+    assert.equal(s4Token.status, 401);
+    assert.equal(((await s4Token.json()) as any).error, 'UNAUTHENTICATED');
 
     const s4Cookie = await fetch(`${baseUrl}/server/vigor_api/api/v1/athlete/workspace`, {
       headers: {
@@ -258,8 +258,8 @@ test('Phase 5.3 [PASS-LOOPBACK] Scenarios 1-5 & 9-10: Anonymous x-zc-user-type=a
         }),
       },
     });
-    assert.equal(s4Cookie.status, 403);
-    assert.equal(((await s4Cookie.json()) as any).error, 'CATALYST_ADMIN_HEADER_SPOOFED');
+    assert.equal(s4Cookie.status, 401);
+    assert.equal(((await s4Cookie.json()) as any).error, 'UNAUTHENTICATED');
     assert.equal(baas.userCurrentCalls.length, 0);
     assert.equal(nosqlFetchCalls, 0);
 

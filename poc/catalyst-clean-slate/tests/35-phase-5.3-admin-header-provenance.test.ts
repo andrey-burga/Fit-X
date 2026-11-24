@@ -39,7 +39,7 @@ function buildHostedNativeDevEnv(): Record<string, string> {
   };
 }
 
-test('Phase 5.3 [PASS-LOOPBACK] Reconciled provenance path: anonymous edge x-zc-user-type=admin resolves null -> 401 UNAUTHENTICATED (0 NoSQL hits), while contradictory user-cred + x-zc-user-type=admin fails 403 CATALYST_ADMIN_HEADER_SPOOFED', async () => {
+test('Phase 5.3 [PASS-LOOPBACK] Reconciled provenance path: hosted_native edge x-zc-user-type=admin (with or without opaque platform token) resolves null -> 401 UNAUTHENTICATED (0 NoSQL hits)', async () => {
   const secretEdgeAdminToken = 'edge_admin_token_must_never_leak_in_403_output';
   const secretEdgeProjKey = 'edge_project_key_must_never_leak_in_403_output';
 
@@ -98,8 +98,8 @@ test('Phase 5.3 [PASS-LOOPBACK] Reconciled provenance path: anonymous edge x-zc-
       '2:getCurrentUserFromRequest',
     ]);
 
-    // 2. Contradictory x-zc-user-type=admin + genuine user token -> 403 CATALYST_ADMIN_HEADER_SPOOFED
-    const spoofRes = await fetch(`${baseUrl}/server/vigor_api/api/v1/athlete/workspace`, {
+    // 2. Live Catalyst Development payload: x-zc-user-type=admin + nonempty opaque platform token -> 401 UNAUTHENTICATED, 0 NoSQL, 0 token leaks
+    const platformOpaqueRes = await fetch(`${baseUrl}/server/vigor_api/api/v1/athlete/workspace`, {
       headers: {
         'sec-fetch-site': 'none',
         'x-zc-projectid': '136967000000014024',
@@ -109,20 +109,17 @@ test('Phase 5.3 [PASS-LOOPBACK] Reconciled provenance path: anonymous edge x-zc-
         'x-zc-admin-cred-token': secretEdgeAdminToken,
         'x-zc-user-type': 'admin',
         'x-zc-user-cred-type': 'token',
-        'x-zc-user-cred-token': 'spoofed_combo_user_token',
+        'x-zc-user-cred-token': 'platform_opaque_token_never_leak',
       },
     });
-    assert.equal(spoofRes.status, 403);
-    const spoofText = await spoofRes.text();
-    const spoofBody = JSON.parse(spoofText) as Record<string, unknown>;
-    assert.equal(spoofBody.success, false);
-    assert.equal(spoofBody.error, 'CATALYST_ADMIN_HEADER_SPOOFED');
-    assert.equal(
-      spoofBody.message,
-      'Incoming x-zc-user-type=admin is strictly prohibited on user authentication endpoints.'
-    );
-    assert.equal(spoofText.includes(secretEdgeAdminToken), false);
-    assert.equal(spoofText.includes(secretEdgeProjKey), false);
+    assert.equal(platformOpaqueRes.status, 401);
+    const platformOpaqueText = await platformOpaqueRes.text();
+    const platformOpaqueBody = JSON.parse(platformOpaqueText) as Record<string, unknown>;
+    assert.equal(platformOpaqueBody.success, false);
+    assert.equal(platformOpaqueBody.error, 'UNAUTHENTICATED');
+    assert.equal(platformOpaqueText.includes(secretEdgeAdminToken), false);
+    assert.equal(platformOpaqueText.includes(secretEdgeProjKey), false);
+    assert.equal(platformOpaqueText.includes('platform_opaque_token_never_leak'), false);
     assert.equal(nosqlAccessCount, 0);
   } finally {
     await new Promise<void>(resolve => server.close(() => resolve()));

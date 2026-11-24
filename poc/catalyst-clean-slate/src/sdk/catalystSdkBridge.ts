@@ -33,11 +33,16 @@
  *      `apiDomain`, and `accountsUrl` strictly pinned from server config (NEVER trusting `x-zc-user-*`
  *      for admin elevation).
  * 3. CATALYST PLATFORM ADMIN CONTEXT & COOKIE ISOLATION:
- *    - When no Catalyst project end-user is authenticated, Catalyst Advanced I/O legitimately runs
- *      with platform `x-zc-user-type=admin` execution context and zero user credentials; user-scope
- *      auth resolves as anonymous (`null` -> `401 UNAUTHENTICATED`, `0` NoSQL hits).
- *    - Contradictory `x-zc-user-type=admin` paired with genuine Catalyst user credentials still
- *      fails closed (`403 CATALYST_ADMIN_HEADER_SPOOFED`).
+ *    - In `hosted_native` mode (`HostedNativeCatalystAuthRuntime`), when validated Catalyst Edge
+ *      context sends `x-zc-user-type=admin` (Catalyst's official Advanced I/O execution context
+ *      when no Catalyst project end-user is signed in, verified in `@zcatalyst/auth-admin`
+ *      `credential.js:253-264`), the request is treated strictly as having NO Catalyst end-user
+ *      identity (`getCurrentUserFromRequest()` returns `null`, `hasRequestCatalystUserCredential()`
+ *      returns `false`), even if Catalyst Edge also populates a nonempty opaque platform token in
+ *      `x-zc-user-cred-token` or cookies. Path 1 & 2 fail closed (`401 UNAUTHENTICATED`, 0 BaaS/NoSQL),
+ *      while Path 3 (`__Host-vigor_session`) verifies HMAC + consistent `Users`/`SystemControl`.
+ *    - In `external_oauth` mode (`CatalystSeparatedAuthRuntime`), contradictory `x-zc-user-type=admin`
+ *      paired with user credentials still fails closed (`403 CATALYST_ADMIN_HEADER_SPOOFED`).
  *    - `x-zc-cookie` is strictly sanitized to Catalyst project-user auth cookies; `__Host-vigor_session`,
  *      `X-Vigor-CSRF`, raw `Cookie` headers, and unrelated Zoho Console cookies never reach `ZCAuth`.
  * 4. FAIL-CLOSED CROSS-ENVIRONMENT & PLACEHOLDER VALIDATION:
@@ -280,9 +285,9 @@ export function inspectInstalledCatalystSdkCompatibility(): InstalledSdkCompatib
         package: '@zcatalyst/auth-admin',
         severity: 'INFO',
         summary:
-          "CatalystCredential(..., 'user') requires x-zc-admin-cred-type/token in constructor even when only user credentials are used, and trusts request project headers if unsanitized.",
+          "CatalystCredential(..., 'user') treats x-zc-user-type='admin' as 'User not authenticated' before checking userToken/cookieStr, requires x-zc-admin-cred-type/token in constructor, and trusts request project headers if unsanitized.",
         mitigation:
-          'CatalystSeparatedAuthRuntime and HostedNativeCatalystAuthRuntime verify x-zc-projectid against server config, treat unauthenticated platform x-zc-user-type=admin as anonymous (null), reject x-zc-user-type=admin when paired with user credentials (403 CATALYST_ADMIN_HEADER_SPOOFED), sanitize x-zc-cookie, and isolate scope: user.',
+          'HostedNativeCatalystAuthRuntime and CatalystSeparatedAuthRuntime verify x-zc-projectid against server config and sanitize x-zc-cookie. HostedNativeCatalystAuthRuntime treats x-zc-user-type=admin as no Catalyst end-user (null -> 401 UNAUTHENTICATED on Path 1/2, Path 3 HMAC allowed with 0 BaaS calls); CatalystSeparatedAuthRuntime (external_oauth) rejects contradictory x-zc-user-type=admin + user creds (403 CATALYST_ADMIN_HEADER_SPOOFED).',
       },
     ],
   };
@@ -1545,6 +1550,14 @@ export class HostedNativeCatalystAuthRuntime implements ICatalystAuthRuntime {
   }
 
   hasRequestCatalystUserCredential(req: IncomingHttpRequest): boolean {
+    // Under Catalyst Advanced I/O hosted_native execution, Catalyst Edge sets x-zc-user-type=admin
+    // when no Catalyst project user is authenticated, and may also populate an opaque platform token in
+    // x-zc-user-cred-token. Treat x-zc-user-type=admin strictly as no Catalyst end-user credential so
+    // Path 3 (__Host-vigor_session) skips UserManagement.getCurrentUser() and verifies HMAC + NoSQL.
+    const reqUserType = readHeaderCaseInsensitive(req.headers, CONSTANTS.CREDENTIAL_HEADER.user);
+    if (reqUserType && reqUserType.toLowerCase() === CONSTANTS.CREDENTIAL_USER.admin) {
+      return false;
+    }
     try {
       return extractCatalystUserCredentialsFromHeaders(req.headers).hasUserCredential;
     } catch {
@@ -1558,13 +1571,16 @@ export class HostedNativeCatalystAuthRuntime implements ICatalystAuthRuntime {
    *
    * Ordering & security contract:
    * 1. Pin and validate `x-zc-projectid`, `x-zc-project-key`, `x-zc-environment` (`403 PROJECT_CONTEXT_MISMATCH`).
-   * 2. Extract genuine Catalyst end-user credentials (`x-zc-user-cred-token` or sanitized Catalyst
-   *    project-user cookies in `x-zc-cookie`; never raw `Cookie` / `__Host-vigor_session`).
-   * 3. If NO genuine Catalyst user credential is present, return `null` cleanly (including when
-   *    Catalyst Edge supplies `x-zc-user-type: admin` for unauthenticated callers) so the guard fails
-   *    closed with `401 UNAUTHENTICATED` and `0` NoSQL hits.
-   * 4. If genuine Catalyst user credentials ARE present alongside contradictory `x-zc-user-type: admin`,
-   *    fail closed (`403 CATALYST_ADMIN_HEADER_SPOOFED`).
+   * 2. If `x-zc-user-type` is `'admin'` (case-insensitive), return `null` immediately without passing
+   *    platform tokens/cookies to `ZCAuth` (`scope: 'user'`) or calling `UserManagement.getCurrentUser()`.
+   *    Per `@zcatalyst/auth-admin/dist-es/credential.js:253-264`, Catalyst Advanced I/O marks
+   *    unauthenticated invocations with `userType === 'admin'`, and `scope: 'user'` defines that
+   *    execution state as unauthenticated regardless of `x-zc-user-cred-token`. Returning `null` is
+   *    strictly fail-closed (`401 UNAUTHENTICATED` on Path 1/2 with `0` NoSQL hits, and NEVER elevates role).
+   * 3. Otherwise extract recognized Catalyst end-user credentials (`x-zc-user-cred-token` or sanitized
+   *    Catalyst project-user cookies in `x-zc-cookie`; never raw `Cookie` / `__Host-vigor_session`).
+   * 4. If no genuine Catalyst user credential is present, return `null`; if present, verify strictly
+   *    under `scope: 'user'`.
    */
   async getCurrentUserFromRequest(req: IncomingHttpRequest): Promise<CatalystIdentitySnapshot | null> {
     const incomingHeaders = req.headers ?? {};
@@ -1596,29 +1612,16 @@ export class HostedNativeCatalystAuthRuntime implements ICatalystAuthRuntime {
       );
     }
 
+    const reqUserType = readHeaderCaseInsensitive(incomingHeaders, CONSTANTS.CREDENTIAL_HEADER.user);
+    if (reqUserType && reqUserType.toLowerCase() === CONSTANTS.CREDENTIAL_USER.admin) {
+      return null;
+    }
+
     const extracted = extractCatalystUserCredentialsFromHeaders(incomingHeaders);
     const { userCredToken, userCredType, sanitizedZcCookie, hasUserCredential } = extracted;
 
     if (!hasUserCredential) {
       return null;
-    }
-
-    const reqUserType = readHeaderCaseInsensitive(incomingHeaders, CONSTANTS.CREDENTIAL_HEADER.user);
-    const xZcUserTypeIsAdmin = Boolean(
-      reqUserType && reqUserType.toLowerCase() === CONSTANTS.CREDENTIAL_USER.admin
-    );
-    if (xZcUserTypeIsAdmin) {
-      emitAdminSpoofDiagnosticEvent(this.diagnosticLogger, {
-        authRuntimeMode: 'hosted_native',
-        req,
-        xZcUserTypeIsAdmin,
-        extracted,
-      });
-      throw new AuthGuardError(
-        403,
-        'CATALYST_ADMIN_HEADER_SPOOFED',
-        'Incoming x-zc-user-type=admin is strictly prohibited on user authentication endpoints.'
-      );
     }
 
     const adminCredType = readHeaderCaseInsensitive(

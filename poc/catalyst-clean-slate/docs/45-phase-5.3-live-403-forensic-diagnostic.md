@@ -115,3 +115,5 @@ Moving the 403 contradiction check until *after* `UserManagement.getCurrentUser(
   *(Note: `src/auth/cleanSlateAuthGuard.ts` added TypeScript-only optional fields `method?: string; route?: string;` on `IncomingHttpRequest`, which erase at compile time so `dist/auth/cleanSlateAuthGuard.js` remains byte-identical.)*
 
 **Final Status:** **`FORENSIC_DIAGNOSTIC_CANDIDATE_READY_PENDING_EXPLICIT_OPERATOR_AUTHORIZATION`**
+
+> **Subsequent Forensic Outcome:** Live log capture confirmed `xZcUserTypeIsAdmin: true` + `userCredentialTokenClass: "nonempty_opaque"` on anonymous calls; remediation is documented in [`46-phase-5.3-hosted-native-admin-context-remediation.md`](./46-phase-5.3-hosted-native-admin-context-remediation.md).

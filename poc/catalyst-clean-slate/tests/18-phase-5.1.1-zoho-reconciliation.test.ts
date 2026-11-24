@@ -387,7 +387,7 @@ test('Phase 5.1.1 [PASS-LOOPBACK] HostedNativeCatalystAuthRuntime + Express runs
     assert.equal(mismatchRes.status, 403);
     assert.equal(((await mismatchRes.json()) as any).error, 'PROJECT_CONTEXT_MISMATCH');
 
-    // 4. Spoofed x-zc-user-type: admin on bootstrap-profile fails closed 403 CATALYST_ADMIN_HEADER_SPOOFED
+    // 4. Hosted-native x-zc-user-type: admin on bootstrap-profile resolves unauthenticated -> 401 UNAUTHENTICATED
     const spoofRes = await fetch(`${apiUrl}/server/vigor_api/api/v1/auth/session/bootstrap-profile`, {
       method: 'POST',
       headers: {
@@ -405,8 +405,8 @@ test('Phase 5.1.1 [PASS-LOOPBACK] HostedNativeCatalystAuthRuntime + Express runs
       },
       body: JSON.stringify({ displayName: 'Spoofed User' }),
     });
-    assert.equal(spoofRes.status, 403);
-    assert.equal(((await spoofRes.json()) as any).error, 'CATALYST_ADMIN_HEADER_SPOOFED');
+    assert.equal(spoofRes.status, 401);
+    assert.equal(((await spoofRes.json()) as any).error, 'UNAUTHENTICATED');
 
     // 5. Real bootstrap-profile through API Gateway rewritten path `/server/vigor_api/api/v1/...`
     //    Even if client injects forged `zc-api-domain`, runtime pins configured CATALYST_API_DOMAIN.
