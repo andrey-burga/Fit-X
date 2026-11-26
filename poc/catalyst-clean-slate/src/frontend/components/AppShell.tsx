@@ -117,6 +117,7 @@ export const AppShell: React.FC<{ children: React.ReactNode }> = ({ children }) 
     isLocalDevMock,
     repositoryModeLabel,
     logoutSession,
+    navigateToAuthLogin,
   } = useWorkspace();
 
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -348,6 +349,8 @@ export const AppShell: React.FC<{ children: React.ReactNode }> = ({ children }) 
               description={loadError ?? 'No se pudo obtener respuesta del repositorio.'}
               actionLabel="Reintentar carga"
               onAction={() => void reloadWorkspace()}
+              secondaryActionLabel={!isLocalDevMock ? 'Ir a Iniciar Sesión' : undefined}
+              onSecondaryAction={!isLocalDevMock ? navigateToAuthLogin : undefined}
             />
           )}
 

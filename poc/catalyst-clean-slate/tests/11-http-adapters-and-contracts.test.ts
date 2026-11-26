@@ -64,11 +64,11 @@ const ALLOWED_SLATE_ORIGIN = 'https://fit-x-bhnatsxl.onslate.com';
 
 // ==================== SUITE A: RECONCILIATION & FETCH-MOCK CONTRACT TESTS ====================
 
-test('CONTRACT RECONCILIATION: Single-source ROUTE_CONTRACT_SPECS, ROUTE_DEFINITIONS, CLEAN_SLATE_ENDPOINT_CATALOG, and UI map have 41/41 canonical parity', () => {
-  assert.equal(ROUTE_CONTRACT_SPECS.length, 41);
-  assert.equal(ROUTE_DEFINITIONS.length, 41);
-  assert.equal(CLEAN_SLATE_ENDPOINT_CATALOG.length, 41);
-  assert.equal(CLEAN_SLATE_UI_ENDPOINT_MAP.length, 41);
+test('CONTRACT RECONCILIATION: Single-source ROUTE_CONTRACT_SPECS, ROUTE_DEFINITIONS, CLEAN_SLATE_ENDPOINT_CATALOG, and UI map have 53/53 canonical parity', () => {
+  assert.equal(ROUTE_CONTRACT_SPECS.length, 53);
+  assert.equal(ROUTE_DEFINITIONS.length, 53);
+  assert.equal(CLEAN_SLATE_ENDPOINT_CATALOG.length, 53);
+  assert.equal(CLEAN_SLATE_UI_ENDPOINT_MAP.length, 53);
 
   const catalogKeys = CLEAN_SLATE_ENDPOINT_CATALOG.map(e => `${e.method} ${e.path}`);
   const defKeys = ROUTE_DEFINITIONS.map(e => `${e.method} ${e.path}`);
@@ -86,7 +86,7 @@ test('CONTRACT RECONCILIATION: Single-source ROUTE_CONTRACT_SPECS, ROUTE_DEFINIT
     ),
   };
 
-  assert.equal(byStatus.wired_match.length, 41);
+  assert.equal(byStatus.wired_match.length, 53);
   assert.equal(byStatus.wired_path_mismatch.length, 0);
   assert.equal(byStatus.service_ready_not_wired_in_dispatcher.length, 0);
 });
@@ -696,14 +696,8 @@ test('ADMIN HTTP REPO: Targets exclusively canonical parameterized paths and req
   assert.equal(urlsHit[2], 'https://api.example.test/api/v1/admin/users/usr_99/role');
   assert.equal(urlsHit[3], 'https://api.example.test/api/v1/admin/users/usr_99/password-reset');
 
-  await assert.rejects(
-    () => canonicalAdmin.listInvitations('admin_1'),
-    (err: unknown) =>
-      err instanceof CleanSlateRepositoryError &&
-      err.code === 'UNSUPPORTED_CONTRACT_ENDPOINT' &&
-      err.statusCode === 501 &&
-      err.origin === 'client_synthetic'
-  );
+  await canonicalAdmin.listInvitations('admin_1', { status: 'pending', limit: 25 });
+  assert.equal(urlsHit[4], 'https://api.example.test/api/v1/admin/invitations?status=pending&limit=25');
 });
 
 // ==================== SUITE B: REAL LOCAL EXPRESS + CleanSlateApiDispatcher LOOPBACK HTTP ====================
@@ -721,7 +715,7 @@ function parseCookieHeader(rawCookieHeader: string | undefined): Record<string, 
   return cookies;
 }
 
-test('LOCAL EXPRESS LOOPBACK HTTP: Full Athlete & Admin repositories + ServerCsrfTokenProvider end-to-end against real CleanSlateApiDispatcher (41-route parity)', async () => {
+test('LOCAL EXPRESS LOOPBACK HTTP: Full Athlete & Admin repositories + ServerCsrfTokenProvider end-to-end against real CleanSlateApiDispatcher (53-route parity)', async () => {
   const nowSec = 1_760_100_000;
   const db = new CleanSlateInMemoryNoSQLAdapter(() => nowSec);
   const authRuntime = new MockCatalystAuthRuntime();

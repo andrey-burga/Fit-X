@@ -106,18 +106,18 @@ export const DailyLogView: React.FC = () => {
           <div className="flex flex-col gap-space-xs">
             <div className="flex items-center gap-space-sm">
               <span className="font-label-sm text-label-sm tracking-wider uppercase text-primary font-semibold">
-                Auditoría Temporal Telemetría
+                Seguimiento Cronológico
               </span>
               <span className="w-1.5 h-1.5 rounded-full bg-outline-variant" />
               <span className="font-label-sm text-label-sm text-secondary font-medium">
-                Protocolo 180 Días (26 Semanas)
+                Vista de referencia semanal y registro del día
               </span>
             </div>
             <h1 className="font-headline-lg text-headline-lg text-on-surface font-semibold tracking-tight">
               Registro Diario
             </h1>
             <p className="font-body-md text-body-md text-on-surface-variant max-w-3xl">
-              Línea temporal y auditoría cronológica del protocolo de 180 días (26 semanas). Distinción estricta de calidad del dato sin sesgar los promedios con ceros ficticios.
+              Control cronológico de adherencia diaria. Los días sin registro se mantienen vacíos (NULL) para no sesgar los promedios calóricos con ceros artificiales.
             </p>
           </div>
 
@@ -213,7 +213,29 @@ export const DailyLogView: React.FC = () => {
             </div>
             <div className="h-8 w-px bg-surface-container" />
             <button
-              onClick={() => showToast('Descargando archivo CSV de 180 días...')}
+              onClick={() => {
+                const headers = ['fecha', 'momento', 'titulo', 'porcion', 'calorias', 'proteina_g', 'carbos_g', 'grasas_g', 'fuente'];
+                const rows = mealLogs.map(m => [
+                  m.dateTime,
+                  m.moment,
+                  `"${(m.title || '').replace(/"/g, '""')}"`,
+                  `"${(m.portion || '').replace(/"/g, '""')}"`,
+                  m.calories,
+                  m.protein,
+                  m.carbs,
+                  m.fats,
+                  m.source,
+                ].join(','));
+                const csv = [headers.join(','), ...rows].join('\n');
+                const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `vigorcore_registro_diario_${new Date().toISOString().slice(0, 10)}.csv`;
+                a.click();
+                URL.revokeObjectURL(url);
+                showToast(`CSV exportado (${mealLogs.length} registros)`);
+              }}
               className="bg-surface-container-low hover:bg-surface-container text-on-surface font-label-md text-label-md px-space-md py-2 rounded-lg flex items-center gap-1.5 transition-colors shadow-xs cursor-pointer"
               type="button"
             >
@@ -231,7 +253,7 @@ export const DailyLogView: React.FC = () => {
             <span className="material-symbols-outlined text-primary text-xl">verified_user</span>
             <div className="flex flex-col">
               <span className="font-label-md text-label-md text-on-surface font-semibold">Control de Calidad de Datos</span>
-              <span className="font-label-sm text-label-sm text-on-surface-variant">Lógica Supabase &amp; Rigor Estadístico</span>
+              <span className="font-label-sm text-label-sm text-on-surface-variant">Integridad estadística sin ceros ficticios</span>
             </div>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-space-sm w-full">
@@ -678,27 +700,20 @@ export const DailyLogView: React.FC = () => {
                 . La función de agregación excluye registros vacíos para evitar la caída artificial del TDEE estimado.
               </p>
 
-              <div className="bg-inverse-surface rounded-xl p-space-md text-inverse-on-surface flex flex-col gap-2 font-mono text-xs overflow-x-auto shadow-inner">
-                <div className="flex items-center justify-between text-outline-variant">
-                  <span>sql/weekly_rolling_average.sql</span>
-                  <span className="material-symbols-outlined text-xs">code</span>
+              <div className="bg-surface-container-low rounded-xl p-space-md text-on-surface flex flex-col gap-2 border border-surface-container text-xs">
+                <div className="flex items-center justify-between text-on-surface-variant">
+                  <span className="font-semibold">Regla de Promedio Móvil Real</span>
+                  <span className="material-symbols-outlined text-sm text-primary">functions</span>
                 </div>
-                <pre className="text-[11px] leading-relaxed text-inverse-primary">
-                  {`SELECT
-  week_number,
-  AVG(daily_kcal) -- Ignores NULLs
-    FILTER (WHERE daily_kcal IS NOT NULL) AS real_avg,
-  COUNT(daily_kcal) AS audited_days
-FROM vigor_daily_telemetry
-WHERE user_id = 'camilo_r'
-GROUP BY week_number;`}
-                </pre>
+                <p className="text-on-surface-variant leading-relaxed">
+                  Los días sin registro permanecen fuera del denominador del promedio semanal. Solo los días completados o ayunos explícitos (0 kcal confirmadas) se incluyen en el cálculo real.
+                </p>
               </div>
 
               <div className="flex items-center gap-2 p-2 rounded-lg bg-surface-container-low text-primary">
                 <span className="material-symbols-outlined text-base">verified</span>
                 <span className="font-label-sm text-label-sm font-semibold">
-                  Supabase Ready • Next.js Server Action Compatible
+                  Cálculo sin sesgo por días vacíos
                 </span>
               </div>
             </div>

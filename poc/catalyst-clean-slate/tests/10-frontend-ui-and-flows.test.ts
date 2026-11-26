@@ -182,8 +182,8 @@ test('UI SSR RENDER: All 13 Clean-Slate views render, reconcile 30 endpoints, la
   assert.ok(recipesHtml.includes('catálogo nutricional estático simulado'));
   assert.ok(recipesHtml.includes('catálogo local simulado'));
 
-  // Technical guide view must contain 41 reconciled endpoints, dispatcher statuses, 501 admin listInvitations note, and zero Supabase
-  assert.equal(CLEAN_SLATE_UI_ENDPOINT_MAP.length, 41);
+  // Technical guide view must contain 53 reconciled endpoints, dispatcher statuses, and zero Supabase
+  assert.equal(CLEAN_SLATE_UI_ENDPOINT_MAP.length, 53);
   const guideHtml = renderToStaticMarkup(
     React.createElement(CleanSlateApp, {
       athleteRepository: repo,
@@ -193,13 +193,13 @@ test('UI SSR RENDER: All 13 Clean-Slate views render, reconcile 30 endpoints, la
     })
   );
   assert.ok(guideHtml.includes('Presupuesto Catalyst NoSQL'));
-  assert.ok(guideHtml.includes('(41 endpoints)'));
-  assert.ok(guideHtml.includes('41/41 paridad exacta'));
+  assert.ok(guideHtml.includes('(53 endpoints)'));
+  assert.ok(guideHtml.includes('53/53 paridad exacta'));
   assert.ok(guideHtml.includes('Dispatcher OK'));
   assert.ok(!guideHtml.includes('Desfase path'));
   assert.ok(!guideHtml.includes('Pendiente Dispatcher'));
-  assert.ok(guideHtml.includes('UNSUPPORTED_CONTRACT_ENDPOINT'));
-  assert.ok(guideHtml.includes('adminRepo.listInvitations'));
+  assert.ok(!guideHtml.includes('UNSUPPORTED_CONTRACT_ENDPOINT'));
+  assert.ok(guideHtml.includes('/api/v1/admin/invitations'));
   assert.ok(guideHtml.includes('PartialBatchSyncError'));
   assert.ok(guideHtml.includes('/api/v1/auth/session/revoke'));
   assert.ok(guideHtml.includes('/api/v1/auth/me'));

@@ -18,7 +18,7 @@
  * - Zero real project IDs, zero secrets, zero credentials, zero remote writes.
  */
 
-import { ROUTE_CONTRACT_SPECS, type RouteContractSpec } from '../routes/routeContracts.js';
+import { CANONICAL_ROUTE_COUNT, ROUTE_CONTRACT_SPECS, type RouteContractSpec } from '../routes/routeContracts.js';
 import { normalizeCatalystPath } from '../server/advancedIoApp.js';
 
 export interface DomainGatewayOptions {
@@ -300,7 +300,7 @@ export function buildAlternativeBConfig(
           target_path: `/server/${functionName}/api/v1/*`,
           authentication: 'NO_AUTHENTICATION',
           notes:
-            'Covers refresh, logout, revoke, auth/me, all 25 athlete routes, invitations/redeem, and all 9 admin governance routes under VigorCore HMAC cookie + bound X-Vigor-CSRF + RBAC middleware.',
+            `Covers refresh, logout, revoke, auth/me, all athlete routes, invitations/redeem, and all admin governance routes (${CANONICAL_ROUTE_COUNT} total canonical endpoints) under VigorCore HMAC cookie + bound X-Vigor-CSRF + RBAC middleware.`,
         },
         {
           request_method: 'GET',
@@ -371,7 +371,7 @@ export function verifyGatewayRewriteCoverage(
     functionName,
     totalRoutes: rows.length,
     passedRoutes,
-    allMatched: passedRoutes === ROUTE_CONTRACT_SPECS.length && rows.length === 41,
+    allMatched: passedRoutes === ROUTE_CONTRACT_SPECS.length && rows.length === CANONICAL_ROUTE_COUNT,
     rows,
   };
 }
@@ -406,7 +406,7 @@ export function verifyGatewayAuthMatrixCompleteness(
       missingRouteIds.length === 0 &&
       extraRouteIds.length === 0 &&
       matrixIds.length === matrixSet.size &&
-      contractIds.length === 41,
+      contractIds.length === CANONICAL_ROUTE_COUNT,
     zeroOAuthExecuteForced,
   };
 }

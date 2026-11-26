@@ -9,17 +9,17 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { execSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import zlib from 'node:zlib';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const POC_ROOT = path.resolve(__dirname, '..');
 const VERSIONED_ZIP_PATH = path.join(POC_ROOT, 'artifacts', 'vigor_api-env-audit-portable.zip');
-const STAGING_DIR = path.join(POC_ROOT, 'artifacts', 'vigor_api');
 
 const EXPECTED_SHA256 = 'a7565d2c2c121e0f585e2c65daf5204e1645819737869c0d6edb0e35af3af7a0';
 
@@ -50,29 +50,35 @@ test('Phase 5.3 [PASS-STATIC] Exact environment manifest values match required V
   }
 });
 
-test('Phase 5.3 [PASS-LOCAL] Staged entrypoint imports as ESM and fails closed 503 without leaking secrets', async () => {
-  const stagedEntry = path.join(STAGING_DIR, 'dist', 'server', 'catalystEntry.js');
-  assert.equal(fs.existsSync(stagedEntry), true);
+test('Phase 5.3 [PASS-LOCAL] Extracted env-audit entrypoint imports as ESM and fails closed 503 without leaking secrets', async () => {
+  const extDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vigor-env-audit-esm-'));
+  try {
+    execSync(`unzip -oq ${JSON.stringify(VERSIONED_ZIP_PATH)} -d ${JSON.stringify(extDir)}`, { stdio: 'ignore' });
+    const stagedEntry = path.join(extDir, 'dist', 'server', 'catalystEntry.js');
+    assert.equal(fs.existsSync(stagedEntry), true);
 
-  const mod = (await import(pathToFileURL(stagedEntry).href)) as {
-    default?: (req: unknown, res: unknown) => void;
-    resetAdvancedIoRuntimeForTests?: () => void;
-  };
-  assert.equal(typeof mod.default, 'function');
-  mod.resetAdvancedIoRuntimeForTests?.();
+    const mod = (await import(pathToFileURL(stagedEntry).href)) as {
+      default?: (req: unknown, res: unknown) => void;
+      resetAdvancedIoRuntimeForTests?: () => void;
+    };
+    assert.equal(typeof mod.default, 'function');
+    mod.resetAdvancedIoRuntimeForTests?.();
 
-  let statusCode = 0;
-  let bodyText = '';
-  const mockRes = {
-    statusCode: 200,
-    setHeader() {},
-    end(chunk?: string) {
-      statusCode = mockRes.statusCode;
-      bodyText = String(chunk || '');
-    },
-  };
-  mod.default!({ headers: {}, method: 'GET', url: '/health' }, mockRes);
-  assert.equal(statusCode, 503);
-  assert.ok(bodyText.includes('SERVER_CONFIGURATION_UNAVAILABLE'));
-  assert.equal(bodyText.includes('VIGOR_SESSION_HMAC_SECRET'), false);
+    let statusCode = 0;
+    let bodyText = '';
+    const mockRes = {
+      statusCode: 200,
+      setHeader() {},
+      end(chunk?: string) {
+        statusCode = mockRes.statusCode;
+        bodyText = String(chunk || '');
+      },
+    };
+    mod.default!({ headers: {}, method: 'GET', url: '/health' }, mockRes);
+    assert.equal(statusCode, 503);
+    assert.ok(bodyText.includes('SERVER_CONFIGURATION_UNAVAILABLE'));
+    assert.equal(bodyText.includes('VIGOR_SESSION_HMAC_SECRET'), false);
+  } finally {
+    fs.rmSync(extDir, { recursive: true, force: true });
+  }
 });

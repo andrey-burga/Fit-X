@@ -8,6 +8,7 @@
 
 import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
+import { formatUserRoleLabel } from '../utils/roleDisplay';
 
 export const LoginView: React.FC = () => {
   const {
@@ -18,6 +19,7 @@ export const LoginView: React.FC = () => {
     startDemoMode,
     redirectPath,
     showToast,
+    navigate,
   } = useApp();
 
   const [activeTab, setActiveTab] = useState<'login' | 'register' | 'recovery'>('login');
@@ -158,6 +160,17 @@ export const LoginView: React.FC = () => {
       </div>
 
       <div className="relative w-full max-w-lg">
+        <div className="mb-4 flex items-center justify-start">
+          <button
+            type="button"
+            onClick={() => navigate('landing')}
+            className="inline-flex items-center gap-1.5 text-xs font-medium text-on-surface-variant hover:text-primary transition-colors cursor-pointer"
+          >
+            <span className="material-symbols-outlined text-base">arrow_back</span>
+            <span>Volver a la página principal</span>
+          </button>
+        </div>
+
         {/* Brand Header */}
         <div className="text-center mb-6">
           <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-primary text-on-primary shadow-lg shadow-primary/25 mb-3">
@@ -513,7 +526,7 @@ export const LoginView: React.FC = () => {
                           : 'bg-surface-container-low border-surface-container text-on-surface-variant hover:border-outline'
                       }`}
                     >
-                      {r}
+                      {formatUserRoleLabel(r)}
                     </button>
                   ))}
                 </div>
@@ -543,7 +556,7 @@ export const LoginView: React.FC = () => {
             </form>
           )}
 
-          {/* Sandbox / Demo Mode Explicit Card */}
+          {/* Tarjeta de modo demostración local */}
           <div className="mt-6 pt-5 border-t border-surface-container/60">
             <div className="p-4 bg-surface-container-low rounded-xl border border-surface-container">
               <div className="flex items-center gap-2 mb-2">
@@ -551,11 +564,11 @@ export const LoginView: React.FC = () => {
                   <span className="material-symbols-outlined text-sm">science</span>
                 </div>
                 <span className="font-semibold text-xs text-on-surface">
-                  Entorno de Demostración Controlado (Sandbox Local)
+                  Entorno de demostración controlado (memoria local)
                 </span>
               </div>
               <p className="text-[11px] text-on-surface-variant leading-relaxed mb-3">
-                Explora el ecosistema completo (nutrición, rutinas, analítica ACWR y entrenamiento en vivo) sin registrarte. Los datos residen exclusivamente en la memoria local.
+                Explora el entorno completo (nutrición, rutinas, analítica ACWR y registro en vivo) sin crear cuenta. Los datos permanecen únicamente en este navegador.
               </p>
               <div className="grid grid-cols-2 gap-2">
                 <button
@@ -565,7 +578,7 @@ export const LoginView: React.FC = () => {
                   className="py-2 px-3 bg-surface-container-lowest hover:bg-surface-container text-on-surface rounded-lg text-xs font-semibold border border-surface-container transition-colors flex items-center justify-center gap-1.5 cursor-pointer shadow-2xs"
                 >
                   <span className="material-symbols-outlined text-xs text-primary">person</span>
-                  <span>Demo Camilo (Atleta)</span>
+                  <span>Ejemplo Camilo (Atleta)</span>
                 </button>
                 <button
                   type="button"
@@ -574,26 +587,29 @@ export const LoginView: React.FC = () => {
                   className="py-2 px-3 bg-surface-container-lowest hover:bg-surface-container text-on-surface rounded-lg text-xs font-semibold border border-surface-container transition-colors flex items-center justify-center gap-1.5 cursor-pointer shadow-2xs"
                 >
                   <span className="material-symbols-outlined text-xs text-secondary">medical_services</span>
-                  <span>Demo Sofía (Coach)</span>
+                  <span>Ejemplo Sofía (Especialista)</span>
                 </button>
               </div>
             </div>
           </div>
         </div>
 
-        {/* Footer info */}
-        <div className="mt-6 text-center text-[11px] text-on-surface-variant/80 flex items-center justify-center gap-4">
-          <span className="flex items-center gap-1">
-            <span className="material-symbols-outlined text-xs text-primary">verified_user</span>
-            Seguridad Zero-Trust
-          </span>
-          <span>•</span>
-          <span className="flex items-center gap-1">
-            <span className="material-symbols-outlined text-xs text-primary">database</span>
-            Firestore ABAC
-          </span>
-          <span>•</span>
-          <span>VigorCore v1.0</span>
+        {/* Pie informativo */}
+        <div className="mt-6 text-center text-[11px] text-on-surface-variant/85 space-y-2">
+          <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1">
+            <span className="flex items-center gap-1">
+              <span className="material-symbols-outlined text-xs text-primary">verified_user</span>
+              Acceso protegido por sesión
+            </span>
+            <span>·</span>
+            <span className="flex items-center gap-1">
+              <span className="material-symbols-outlined text-xs text-primary">database</span>
+              Aislamiento de datos por cuenta
+            </span>
+          </div>
+          <p className="text-on-surface-variant">
+            © 2026 AWD S.A.S. — Todos los derechos reservados.
+          </p>
         </div>
       </div>
     </div>

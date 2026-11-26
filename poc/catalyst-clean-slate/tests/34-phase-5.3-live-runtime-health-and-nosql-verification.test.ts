@@ -24,6 +24,7 @@ import {
 import { PHASE_5_2_STAGE_1_DEV_INVENTORY } from '../src/provisioning/phase52Stage1Inventory.js';
 import { createVigorCoreProductionRuntimeFromEnv } from '../src/server/advancedIoApp.js';
 import { TABLE_SCHEMA_REGISTRY, type TableName } from '../src/types/cleanSlate.js';
+import { CANONICAL_ROUTE_COUNT } from '../src/routes/routeContracts.js';
 import { runVerifierCli } from '../scripts/verify-clean-slate-provisioning.js';
 
 const THIS_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -223,7 +224,7 @@ test('Phase 5.3 [PASS-LOOPBACK] /health and /api/v1/health validate config only 
       const body = (await res.json()) as Record<string, unknown>;
       assert.equal(body.success, true);
       assert.equal(body.service, 'vigorcore-advanced-io');
-      assert.equal(body.routeCount, 41);
+      assert.equal(body.routeCount, CANONICAL_ROUTE_COUNT);
       assert.equal(body.status, 'ok');
     }
     assert.equal(nosqlAccessCount, 0, '/health must not instantiate NoSQL client');

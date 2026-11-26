@@ -116,7 +116,7 @@ export const NotificationPreferencesModal: React.FC = () => {
             </div>
 
             <p className="text-[11px] text-on-surface-variant leading-relaxed">
-              Permite a Vigor Core alertarte sobre ventanas anabólicas de comida, temporizadores de descanso de 90s completados en Gym Mode y alertas de compras pendientes.
+              Permite a VigorCore alertarte sobre recordatorios de comida, temporizadores de descanso completados y artículos de compras pendientes.
             </p>
           </div>
 
@@ -209,9 +209,9 @@ export const NotificationPreferencesModal: React.FC = () => {
               <div className="flex items-center gap-3">
                 <span className="material-symbols-outlined text-primary text-lg">sync_saved_locally</span>
                 <div>
-                  <div className="text-xs font-semibold text-on-surface">Sincronización de Base de Datos</div>
+                  <div className="text-xs font-semibold text-on-surface">Sincronización de Datos</div>
                   <div className="text-[11px] text-on-surface-variant">
-                    Alertas de sincronización con Supabase y respaldo de cambios
+                    Alertas de sincronización y respaldo de cambios en tu cuenta
                   </div>
                 </div>
               </div>

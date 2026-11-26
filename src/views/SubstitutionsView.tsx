@@ -276,11 +276,11 @@ export const SubstitutionsView: React.FC = () => {
         <div className="flex flex-col gap-space-xs">
           <div className="flex items-center gap-space-xs flex-wrap">
             <span className="px-2.5 py-0.5 rounded-full bg-primary-fixed text-on-primary-fixed font-label-sm text-label-sm uppercase tracking-wider font-semibold">
-              Vigor Precision Nutrition Engine
+              Motor de Equivalencias Nutricionales
             </span>
             <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-surface-container-low text-primary font-label-sm text-label-sm font-medium">
               <span className="material-symbols-outlined text-xs text-primary">verified</span>
-              Algoritmo Verificado ±3% Kcal
+              Varianza Calórica ±3%
             </span>
           </div>
           <div className="flex items-baseline gap-space-sm flex-wrap">
@@ -288,31 +288,30 @@ export const SubstitutionsView: React.FC = () => {
               Catálogo de Sustituciones Alimentarias
             </h1>
             <span className="font-code-data text-code-data text-on-surface-variant font-medium hidden sm:inline-block">
-              v4.2.1 • Sincronizado USDA SR Legacy
+              Referencias USDA SR Legacy
             </span>
           </div>
           <p className="font-body-md text-body-md text-on-surface-variant max-w-3xl">
-            Matriz bidireccional isocalórica e isomacronutricional calibrada para atletas de alto rendimiento. Modifica tus fuentes alimentarias sin alterar la partición de energía, la síntesis proteica ni la cuota de fibra prescrita en tu menú semanal.
+            Equivalencias isocalóricas e isomacronutricionales de referencia para adaptar tu menú sin alterar el balance de energía ni proteína.
           </p>
         </div>
 
         <div className="flex items-center gap-space-sm bg-surface-container-lowest p-space-sm rounded-xl shadow-xs border border-surface-container/50 shrink-0">
           <div className="flex flex-col pr-space-md">
             <span className="font-label-sm text-label-sm uppercase text-on-surface-variant">
-              Concordancia con Excel Maestro
+              Catálogo de Referencia
             </span>
-            <span className="font-code-data text-code-data font-semibold text-primary flex items-center gap-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
-              320 Matrices Activas
+            <span className="font-code-data text-code-data font-semibold text-primary">
+              Equivalencias validadas
             </span>
           </div>
           <button
-            onClick={() => showToast('Historial: última calibración hace 3 días (v4.2.1)')}
+            onClick={() => navigate('menu-semanal')}
             className="flex items-center gap-space-xs px-3 py-1.5 bg-surface-container-low hover:bg-surface-container text-on-surface font-label-md text-label-md rounded-lg transition-colors cursor-pointer border border-surface-container/40"
             type="button"
           >
-            <span className="material-symbols-outlined text-sm">history</span>
-            <span>Historial de Cambios</span>
+            <span className="material-symbols-outlined text-sm">calendar_view_week</span>
+            <span>Ir al Menú Semanal</span>
           </button>
         </div>
       </div>
@@ -496,9 +495,13 @@ export const SubstitutionsView: React.FC = () => {
                   <div className="md:col-span-5 p-space-sm bg-surface-container-low rounded-lg flex flex-col gap-space-xs border border-surface-container/40">
                     <div className="flex items-center gap-space-sm">
                       <img
-                        className="w-14 h-14 rounded-lg object-cover shrink-0 shadow-xs"
+                        className="w-14 h-14 rounded-lg object-cover shrink-0 shadow-xs bg-surface-container"
                         alt={card.original.name}
                         src={card.original.img}
+                        referrerPolicy="no-referrer"
+                        onError={e => {
+                          e.currentTarget.style.display = 'none';
+                        }}
                       />
                       <div className="flex flex-col min-w-0">
                         <span className="font-label-sm text-label-sm uppercase tracking-wider text-on-surface-variant">
@@ -552,9 +555,13 @@ export const SubstitutionsView: React.FC = () => {
                   <div className="md:col-span-5 p-space-sm bg-surface-container-high rounded-lg flex flex-col gap-space-xs border border-surface-container">
                     <div className="flex items-center gap-space-sm">
                       <img
-                        className="w-14 h-14 rounded-lg object-cover shrink-0 shadow-xs"
+                        className="w-14 h-14 rounded-lg object-cover shrink-0 shadow-xs bg-surface-container"
                         alt={card.substitute.name}
                         src={card.substitute.img}
+                        referrerPolicy="no-referrer"
+                        onError={e => {
+                          e.currentTarget.style.display = 'none';
+                        }}
                       />
                       <div className="flex flex-col min-w-0">
                         <span className="font-label-sm text-label-sm uppercase tracking-wider text-primary font-semibold">
@@ -825,7 +832,7 @@ export const SubstitutionsView: React.FC = () => {
               <li className="flex items-start gap-2">
                 <span className="w-1.5 h-1.5 rounded-full bg-primary mt-1.5 shrink-0" />
                 <span>
-                  <strong>Tolerancia Máxima:</strong> Si la varianza calórica excede el 4%, el SaaS añade automáticamente un compensador de grasa o carbohidrato simple.
+                  <strong>Tolerancia Máxima:</strong> Si la varianza calórica excede el 4%, conviene compensar la porción con una fuente ligera de grasa o carbohidrato simple.
                 </span>
               </li>
               <li className="flex items-start gap-2">
@@ -837,11 +844,20 @@ export const SubstitutionsView: React.FC = () => {
             </ul>
             <div className="pt-space-xs">
               <button
-                onClick={() => showToast('Descargando Matriz Maestra de Equivalencias en PDF/Excel...')}
+                onClick={() => {
+                  const blob = new Blob([JSON.stringify(initialCards, null, 2)], { type: 'application/json' });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement('a');
+                  a.href = url;
+                  a.download = 'vigorcore_equivalencias_alimentarias.json';
+                  a.click();
+                  URL.revokeObjectURL(url);
+                  showToast('Catálogo de equivalencias exportado en JSON');
+                }}
                 className="font-label-md text-label-md text-primary font-semibold flex items-center gap-1 hover:underline cursor-pointer"
                 type="button"
               >
-                <span>Descargar Tabla Maestra en PDF / Excel</span>
+                <span>Exportar equivalencias (JSON)</span>
                 <span className="material-symbols-outlined text-sm">download</span>
               </button>
             </div>

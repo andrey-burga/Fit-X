@@ -1,6 +1,7 @@
 export type AuthStatus = 'initializing' | 'authenticated' | 'unauthenticated' | 'email_verification_required' | 'error';
 
 export type NavigationPath =
+  | 'landing'
   | 'login'
   | 'registro'
   | 'recuperar-password'
@@ -42,6 +43,7 @@ export const PRIVATE_NAVIGATION_PATHS: NavigationPath[] = [
 ];
 
 export const PUBLIC_NAVIGATION_PATHS: NavigationPath[] = [
+  'landing',
   'login',
   'registro',
   'recuperar-password',

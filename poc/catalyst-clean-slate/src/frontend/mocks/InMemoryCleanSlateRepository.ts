@@ -262,6 +262,16 @@ export class InMemoryCleanSlateRepository
     this.db.mealLogsByUid[actorUid] = (this.db.mealLogsByUid[actorUid] ?? []).filter(m => m.id !== mealId);
   }
 
+  async listRecipes(
+    actorUid: string,
+    options: { limit?: number; startKey?: string } = {}
+  ): Promise<{ items: RecipeRecord[]; nextStartKey?: string }> {
+    await this.simulateLatencyAndFaults();
+    this.requireUser(actorUid);
+    const items = deepClone(this.db.recipesByUid[actorUid] ?? []).slice(0, options.limit ?? 100);
+    return { items };
+  }
+
   async saveRecipe(actorUid: string, recipe: RecipeRecord): Promise<RecipeRecord> {
     await this.simulateLatencyAndFaults();
     validateRecipeInput(recipe as unknown as Record<string, unknown>);
@@ -281,6 +291,16 @@ export class InMemoryCleanSlateRepository
     this.db.recipesByUid[actorUid] = (this.db.recipesByUid[actorUid] ?? []).filter(r => r.id !== recipeId);
   }
 
+  async listMealPlans(
+    actorUid: string,
+    options: { limit?: number; startKey?: string } = {}
+  ): Promise<{ items: MealPlanRecord[]; nextStartKey?: string }> {
+    await this.simulateLatencyAndFaults();
+    this.requireUser(actorUid);
+    const items = deepClone(this.db.mealPlansByUid[actorUid] ?? []).slice(0, options.limit ?? 100);
+    return { items };
+  }
+
   async saveMealPlan(actorUid: string, plan: MealPlanRecord): Promise<MealPlanRecord> {
     await this.simulateLatencyAndFaults();
     validateMealPlanInput(plan as unknown as Record<string, unknown>);
@@ -292,6 +312,17 @@ export class InMemoryCleanSlateRepository
     else list.unshift(saved);
     this.db.mealPlansByUid[actorUid] = list;
     return deepClone(saved);
+  }
+
+  async listGroceries(
+    actorUid: string,
+    options: { status?: string; limit?: number; startKey?: string } = {}
+  ): Promise<{ items: GroceryItemRecord[]; nextStartKey?: string }> {
+    await this.simulateLatencyAndFaults();
+    this.requireUser(actorUid);
+    let items = deepClone(this.db.groceriesByUid[actorUid] ?? []);
+    if (options.status) items = items.filter(g => g.status === options.status);
+    return { items: items.slice(0, options.limit ?? 100) };
   }
 
   async syncGroceries(
@@ -308,14 +339,35 @@ export class InMemoryCleanSlateRepository
     return { groceries: deepClone(items), batchCalls };
   }
 
-  async toggleGroceryStatus(actorUid: string, groceryId: string): Promise<GroceryItemRecord> {
+  async toggleGroceryStatus(
+    actorUid: string,
+    groceryId: string,
+    patch: Partial<
+      Pick<
+        GroceryItemRecord,
+        'status' | 'name' | 'quantity' | 'calculatedQuantity' | 'unit' | 'department' | 'notes' | 'isCustomized'
+      >
+    > = {}
+  ): Promise<GroceryItemRecord> {
     await this.simulateLatencyAndFaults();
     const list = this.db.groceriesByUid[actorUid] ?? [];
     const item = list.find(g => g.id === groceryId);
     if (!item) {
       throw new CleanSlateRepositoryError('GROCERY_NOT_FOUND', 'Artículo no encontrado.', 404);
     }
-    item.status = item.status === 'bought' ? 'pending' : 'bought';
+    const hasCustomPatch = Object.keys(patch).some(k => k !== 'status' && patch[k as keyof typeof patch] !== undefined);
+    if (patch.status !== undefined) {
+      item.status = patch.status;
+    } else if (!hasCustomPatch) {
+      item.status = item.status === 'bought' || item.status === 'completed' ? 'pending' : 'bought';
+    }
+    if (patch.name !== undefined) item.name = patch.name;
+    if (patch.quantity !== undefined) item.quantity = patch.quantity;
+    if (patch.calculatedQuantity !== undefined) item.calculatedQuantity = patch.calculatedQuantity;
+    if (patch.unit !== undefined) item.unit = patch.unit;
+    if (patch.department !== undefined) item.department = patch.department;
+    if (patch.notes !== undefined) item.notes = patch.notes;
+    if (patch.isCustomized !== undefined) item.isCustomized = patch.isCustomized;
     return deepClone(item);
   }
 
@@ -338,6 +390,27 @@ export class InMemoryCleanSlateRepository
     this.db.groceriesByUid[actorUid] = (this.db.groceriesByUid[actorUid] ?? []).filter(g => g.id !== groceryId);
   }
 
+  async clearCompletedGroceries(actorUid: string): Promise<{ deletedCount: number; batchCalls: number }> {
+    await this.simulateLatencyAndFaults();
+    const list = this.db.groceriesByUid[actorUid] ?? [];
+    const remaining = list.filter(g => g.status !== 'bought' && g.status !== 'completed');
+    const deletedCount = list.length - remaining.length;
+    this.db.groceriesByUid[actorUid] = remaining;
+    return {
+      deletedCount,
+      batchCalls: Math.ceil(deletedCount / CATALYST_BUDGET_LIMITS.MAX_BATCH_WRITE_ITEMS),
+    };
+  }
+
+  async listWorkoutRoutines(
+    actorUid: string,
+    options: { limit?: number; startKey?: string } = {}
+  ): Promise<{ items: WorkoutRoutineRecord[]; nextStartKey?: string }> {
+    await this.simulateLatencyAndFaults();
+    this.requireUser(actorUid);
+    return { items: deepClone(this.db.routinesByUid[actorUid] ?? []).slice(0, options.limit ?? 100) };
+  }
+
   async saveWorkoutRoutine(actorUid: string, routine: WorkoutRoutineRecord): Promise<WorkoutRoutineRecord> {
     await this.simulateLatencyAndFaults();
     validateWorkoutRoutineInput(routine as unknown as Record<string, unknown>);
@@ -355,6 +428,12 @@ export class InMemoryCleanSlateRepository
     return deepClone(saved);
   }
 
+  async deleteWorkoutRoutine(actorUid: string, routineId: string): Promise<void> {
+    await this.simulateLatencyAndFaults();
+    this.requireUser(actorUid);
+    this.db.routinesByUid[actorUid] = (this.db.routinesByUid[actorUid] ?? []).filter(r => r.id !== routineId);
+  }
+
   async setDefaultRoutine(actorUid: string, routineId: string): Promise<WorkoutRoutineRecord[]> {
     await this.simulateLatencyAndFaults();
     const list = this.db.routinesByUid[actorUid] ?? [];
@@ -362,6 +441,39 @@ export class InMemoryCleanSlateRepository
       r.isDefault = r.id === routineId;
     });
     return deepClone(list);
+  }
+
+  async listExecutedWorkouts(
+    actorUid: string,
+    options: {
+      startDate?: string;
+      endDate?: string;
+      status?: 'in_progress' | 'completed' | 'abandoned';
+      limit?: number;
+      startKey?: string;
+    } = {}
+  ): Promise<{ items: ExecutedWorkoutRecord[]; nextStartKey?: string }> {
+    await this.simulateLatencyAndFaults();
+    this.requireUser(actorUid);
+    let list = deepClone(this.db.executedWorkoutsByUid[actorUid] ?? []);
+    if (options.startDate) list = list.filter(w => w.startedAt >= options.startDate!);
+    if (options.endDate) list = list.filter(w => w.startedAt <= `${options.endDate!}T23:59:59.999Z`);
+    if (options.status) list = list.filter(w => w.status === options.status);
+    return { items: list.slice(0, options.limit ?? 50) };
+  }
+
+  async getExecutedWorkoutDetail(
+    actorUid: string,
+    workoutId: string
+  ): Promise<{ workout: ExecutedWorkoutRecord; sets: WorkoutSetRecord[] }> {
+    await this.simulateLatencyAndFaults();
+    this.requireUser(actorUid);
+    const workout = (this.db.executedWorkoutsByUid[actorUid] ?? []).find(w => w.id === workoutId);
+    if (!workout) {
+      throw new CleanSlateRepositoryError('WORKOUT_NOT_FOUND', 'Sesión no encontrada.', 404);
+    }
+    const sets = (this.db.workoutSetsByUid[actorUid] ?? []).filter(s => s.executedWorkoutId === workoutId);
+    return { workout: deepClone(workout), sets: deepClone(sets) };
   }
 
   async startExecutedWorkout(
@@ -468,6 +580,18 @@ export class InMemoryCleanSlateRepository
     return deepClone(workout);
   }
 
+  async listCardioSessions(
+    actorUid: string,
+    options: { startDate?: string; endDate?: string; limit?: number; startKey?: string } = {}
+  ): Promise<{ items: CardioSessionRecord[]; nextStartKey?: string }> {
+    await this.simulateLatencyAndFaults();
+    this.requireUser(actorUid);
+    let list = deepClone(this.db.cardioByUid[actorUid] ?? []);
+    if (options.startDate) list = list.filter(c => c.date >= options.startDate!);
+    if (options.endDate) list = list.filter(c => c.date <= options.endDate!);
+    return { items: list.slice(0, options.limit ?? 50) };
+  }
+
   async addCardioSession(
     actorUid: string,
     session: Omit<CardioSessionRecord, 'id'>
@@ -488,6 +612,17 @@ export class InMemoryCleanSlateRepository
   async deleteCardioSession(actorUid: string, cardioId: string): Promise<void> {
     await this.simulateLatencyAndFaults();
     this.db.cardioByUid[actorUid] = (this.db.cardioByUid[actorUid] ?? []).filter(c => c.id !== cardioId);
+  }
+
+  async listNotifications(
+    actorUid: string,
+    options: { unreadOnly?: boolean; limit?: number; startKey?: string } = {}
+  ): Promise<{ items: NotificationRecord[]; nextStartKey?: string }> {
+    await this.simulateLatencyAndFaults();
+    this.requireUser(actorUid);
+    let list = deepClone(this.db.notificationsByUid[actorUid] ?? []);
+    if (options.unreadOnly) list = list.filter(n => !n.read);
+    return { items: list.slice(0, options.limit ?? 50) };
   }
 
   async createNotification(
@@ -533,6 +668,14 @@ export class InMemoryCleanSlateRepository
     return deepClone(list);
   }
 
+  async deleteNotification(actorUid: string, notificationId: string): Promise<void> {
+    await this.simulateLatencyAndFaults();
+    this.requireUser(actorUid);
+    this.db.notificationsByUid[actorUid] = (this.db.notificationsByUid[actorUid] ?? []).filter(
+      n => n.id !== notificationId
+    );
+  }
+
   // ==================== ADMIN GOVERNANCE MOCK CONTRACTS ====================
 
   async listUsers(actorUid: string, filter: AdminDirectoryFilter = {}): Promise<UserAccountModel[]> {
@@ -543,6 +686,9 @@ export class InMemoryCleanSlateRepository
       this.db.users.filter(u => {
         if (filter.role && filter.role !== 'all' && u.role !== filter.role) return false;
         if (filter.accountStatus && filter.accountStatus !== 'all' && u.accountStatus !== filter.accountStatus) return false;
+        if (filter.emailVerified !== undefined && filter.emailVerified !== 'all' && u.emailVerified !== filter.emailVerified) {
+          return false;
+        }
         if (q && !u.displayName.toLowerCase().includes(q) && !u.email.toLowerCase().includes(q) && !u.uid.toLowerCase().includes(q)) {
           return false;
         }
@@ -554,6 +700,7 @@ export class InMemoryCleanSlateRepository
   async getStats(actorUid: string): Promise<AdminStatsModel> {
     await this.simulateLatencyAndFaults();
     this.assertAdminRole(actorUid);
+    const cutoff30d = Date.now() - 30 * 24 * 3600 * 1000;
     return {
       totalUsers: this.db.users.length,
       activeUsers: this.db.users.filter(u => u.accountStatus === 'active').length,
@@ -561,6 +708,8 @@ export class InMemoryCleanSlateRepository
       superadmins: this.db.users.filter(u => u.role === 'superadmin').length,
       admins: this.db.users.filter(u => u.role === 'admin').length,
       pendingInvitations: this.db.invitations.filter(i => i.status === 'pending').length,
+      pendingVerificationUsers: this.db.users.filter(u => !u.emailVerified).length,
+      recentSignups30d: this.db.users.filter(u => new Date(u.createdAt).getTime() >= cutoff30d).length,
     };
   }
 
@@ -575,10 +724,27 @@ export class InMemoryCleanSlateRepository
     return { user: deepClone(user), recentLogs: deepClone(recentLogs) };
   }
 
-  async listInvitations(actorUid: string): Promise<AdminInvitationModel[]> {
+  async listInvitations(
+    actorUid: string,
+    filter: {
+      email?: string;
+      status?: AdminInvitationModel['status'] | 'all';
+      limit?: number;
+      startKey?: string;
+    } = {}
+  ): Promise<AdminInvitationModel[]> {
     await this.simulateLatencyAndFaults();
     this.assertAdminRole(actorUid);
-    return deepClone(this.db.invitations);
+    const emailFilter = (filter.email || '').trim().toLowerCase();
+    return deepClone(
+      this.db.invitations
+        .filter(inv => {
+          if (emailFilter && inv.emailNormalized !== emailFilter) return false;
+          if (filter.status && filter.status !== 'all' && inv.status !== filter.status) return false;
+          return true;
+        })
+        .slice(0, filter.limit ?? 50)
+    );
   }
 
   async createInvitation(

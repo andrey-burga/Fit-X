@@ -194,12 +194,11 @@ export const WorkoutLogView: React.FC = () => {
         <div className="flex flex-col gap-space-xs">
           <div className="flex items-center gap-space-xs flex-wrap">
             <span className="inline-flex items-center gap-1.5 px-space-sm py-1 rounded-full bg-primary/10 text-primary font-label-sm text-label-sm tracking-wider uppercase font-semibold">
-              <span className="inline-block w-2 h-2 rounded-full bg-primary animate-pulse" />
-              MODO GIMNASIO • REGISTRO EN TIEMPO REAL
+              Registro de Entrenamiento en Vivo
             </span>
             <span className="text-secondary font-label-sm text-label-sm flex items-center gap-1">
               <span className="material-symbols-outlined text-sm text-primary">cloud_done</span>
-              {isDemoMode ? 'Persistencia local aislada (Demo)' : 'Persistencia Cloud Firestore'}
+              {isDemoMode ? 'Persistencia local aislada' : 'Cuenta sincronizada'}
             </span>
           </div>
           <h1 className="font-headline-lg text-headline-lg text-on-surface tracking-tight mt-1 font-semibold">
@@ -629,12 +628,11 @@ export const WorkoutLogView: React.FC = () => {
           <div className="flex flex-col gap-space-xs">
             <div className="flex flex-wrap items-center gap-space-sm">
               <span className="inline-flex items-center gap-1.5 px-space-sm py-1 rounded-full bg-primary/10 text-primary font-label-sm text-label-sm tracking-wider uppercase font-semibold">
-                <span className="inline-block w-2 h-2 rounded-full bg-primary animate-pulse" />
-                Modo Gimnasio Activo • {activeLiveWorkout.routineDayName}
+                Sesión en curso · {activeLiveWorkout.routineDayName}
               </span>
               <span className="text-secondary font-label-sm text-label-sm flex items-center gap-1">
                 <span className="material-symbols-outlined text-sm text-primary">cloud_done</span>
-                {isDemoMode ? 'Persistencia local aislada' : 'Persistencia en tiempo real: Cloud Firestore'}
+                {isDemoMode ? 'Persistencia local aislada' : 'Cuenta sincronizada'}
               </span>
             </div>
             <h1 className="font-headline-lg text-headline-lg text-on-surface tracking-tight mt-1 font-semibold">
@@ -840,7 +838,7 @@ export const WorkoutLogView: React.FC = () => {
                   ~{estimatedCaloriesBurned} <span className="text-xs font-normal text-secondary">kcal</span>
                 </div>
                 <span className="font-label-sm text-label-sm text-secondary mt-1 flex items-center gap-1">
-                  <span className="material-symbols-outlined text-xs text-primary">sync</span> Telemetría de gasto
+                  <span className="material-symbols-outlined text-xs text-primary">local_fire_department</span> Estimación por sesión
                 </span>
               </div>
             </div>
@@ -1027,8 +1025,7 @@ export const WorkoutLogView: React.FC = () => {
                               </span>
                             </div>
                             <span className="inline-flex items-center gap-1 font-label-sm text-label-sm text-primary font-bold">
-                              <span className="w-2 h-2 rounded-full bg-primary animate-pulse" />
-                              LISTO PARA EJECUTAR
+                              Listo para registrar
                             </span>
                           </div>
 

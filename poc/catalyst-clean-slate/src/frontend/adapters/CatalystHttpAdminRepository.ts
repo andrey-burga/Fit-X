@@ -2,14 +2,13 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
  *
- * VigorCore Phase 4.2.2 — Canonical Catalyst HTTP Admin Governance Repository Adapter
+ * VigorCore Phase 5.7 — Canonical Catalyst HTTP Admin Governance Repository Adapter
  *
  * Strictly separated from `CatalystHttpAthleteRepository`.
  * - Enforces no local RBAC bypass and exposes zero admin credentials or secrets.
  * - Uses ONLY canonical parameterized paths from `ROUTE_CONTRACT_SPECS` /
  *   `CLEAN_SLATE_ENDPOINT_CATALOG` (legacy flat paths removed).
- * - Fails honestly with `UNSUPPORTED_CONTRACT_ENDPOINT` (501) on `listInvitations` because
- *   `GET /api/v1/admin/invitations` does not exist in `CLEAN_SLATE_ENDPOINT_CATALOG`.
+ * - Implements `listInvitations` directly against `GET /api/v1/admin/invitations`.
  */
 
 import type {
@@ -58,7 +57,13 @@ export class CatalystHttpAdminRepository implements IAdminGovernanceRepository {
         role: filter.role && filter.role !== 'all' ? filter.role : undefined,
         accountStatus:
           filter.accountStatus && filter.accountStatus !== 'all' ? filter.accountStatus : undefined,
+        emailVerified:
+          filter.emailVerified !== undefined && filter.emailVerified !== 'all'
+            ? String(filter.emailVerified)
+            : undefined,
         searchQuery: filter.searchQuery?.trim() || undefined,
+        sortBy: filter.sortBy,
+        sortOrder: filter.sortOrder,
       },
     });
     return res.data?.users ?? res.data?.items ?? [];
@@ -110,13 +115,29 @@ export class CatalystHttpAdminRepository implements IAdminGovernanceRepository {
     };
   }
 
-  async listInvitations(_actorUid: string): Promise<AdminInvitationModel[]> {
-    throw new CleanSlateRepositoryError(
-      'UNSUPPORTED_CONTRACT_ENDPOINT',
-      'GET /api/v1/admin/invitations no existe en CLEAN_SLATE_ENDPOINT_CATALOG ni en AdminGovernanceService.',
-      501,
-      { origin: 'client_synthetic' }
-    );
+  async listInvitations(
+    _actorUid: string,
+    filter: {
+      email?: string;
+      status?: AdminInvitationModel['status'] | 'all';
+      limit?: number;
+      startKey?: string;
+    } = {}
+  ): Promise<AdminInvitationModel[]> {
+    const res = await this.transport.request<{
+      invitations?: AdminInvitationModel[];
+      items?: AdminInvitationModel[];
+    }>({
+      method: 'GET',
+      path: '/api/v1/admin/invitations',
+      query: {
+        email: filter.email?.trim() || undefined,
+        status: filter.status && filter.status !== 'all' ? filter.status : undefined,
+        limit: filter.limit,
+        startKey: filter.startKey,
+      },
+    });
+    return res.data?.invitations ?? res.data?.items ?? [];
   }
 
   async createInvitation(

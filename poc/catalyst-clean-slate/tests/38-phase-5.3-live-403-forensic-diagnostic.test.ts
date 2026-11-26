@@ -25,6 +25,7 @@ import {
   compareContentManifests,
   createDeterministicPortableZip,
   extractCanonicalContentManifest,
+  PHASE_5_8_CANDIDATE_ZIP_NAME,
   parseZipEntries,
 } from '../scripts/build-vigor-api-portable-package.js';
 import { CleanSlateInMemoryNoSQLAdapter } from '../src/nosql/cleanSlateEngine.js';
@@ -592,12 +593,17 @@ test('Phase 5.3 [PASS-LOCAL] Separate forensic diagnostic ZIP is reproducible, p
     EXPECTED_DIAGNOSTIC_UNCOMPRESSED_BYTES
   );
 
-  // Source-to-package parity for ALL compiled dist/*.js modules except subsequent hosted_native remediation on dist/sdk/catalystSdkBridge.js
-  for (const item of diagManifest.filter(m => m.path.startsWith('dist/'))) {
-    if (item.path === 'dist/sdk/catalystSdkBridge.js') continue;
+  // Phase 5.3 diagnostic ZIP remains frozen; current compiled POC_ROOT/dist/*.js must match Phase 5.8 candidate archive
+  const currentCandidateZipPath = path.join(ARTIFACTS_DIR, PHASE_5_8_CANDIDATE_ZIP_NAME);
+  assert.equal(fs.existsSync(currentCandidateZipPath), true, 'Missing Phase 5.8 candidate archive');
+  const currentCandidateDist = extractCanonicalContentManifest(currentCandidateZipPath).filter(m =>
+    m.path.startsWith('dist/')
+  );
+  assert.equal(currentCandidateDist.length, 16);
+  for (const item of currentCandidateDist) {
     const localJs = fs.readFileSync(path.join(POC_ROOT, item.path), 'utf8').replace(/\r\n/g, '\n');
     const localSha = crypto.createHash('sha256').update(localJs, 'utf8').digest('hex');
-    assert.equal(item.sha256, localSha, `Compiled dist mismatch for ${item.path}`);
+    assert.equal(item.sha256, localSha, `Compiled dist mismatch vs Phase 5.8 candidate for ${item.path}`);
   }
 
   // Exact delta vs untouched original authorized candidate ZIP

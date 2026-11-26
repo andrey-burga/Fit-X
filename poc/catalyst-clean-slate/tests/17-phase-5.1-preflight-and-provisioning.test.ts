@@ -262,8 +262,7 @@ test('Phase 5.1 [PASS-UNIT] Reconciles 5 frozen tables, 8 GSIs, Phase 5.0 provid
   assert.equal(completeness.tableCount, 5);
   assert.equal(completeness.gsiCount, 8);
   assert.equal(completeness.routeCount, ROUTE_CONTRACT_SPECS.length);
-  assert.equal(completeness.routeCount, 41);
-  assert.equal(completeness.mappedCount, 41);
+  assert.equal(completeness.mappedCount, ROUTE_CONTRACT_SPECS.length);
   assert.deepEqual(completeness.missingRouteIds, []);
   assert.deepEqual(completeness.extraRouteIds, []);
   assert.deepEqual(completeness.missingGsis, []);

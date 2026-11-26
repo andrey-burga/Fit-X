@@ -30,6 +30,7 @@ import {
   extractSanitizedCatalystUserCookie,
 } from '../src/sdk/catalystSdkBridge.js';
 import { createVigorCoreProductionRuntimeFromEnv } from '../src/server/advancedIoApp.js';
+import { CANONICAL_ROUTE_COUNT } from '../src/routes/routeContracts.js';
 import { KeyBuilders, type SessionRecordItem, type UserAccountItem } from '../src/types/cleanSlate.js';
 
 const THIS_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -467,7 +468,7 @@ test('Phase 5.3 [PASS-LOOPBACK] Scenarios 6, 7, 8 & 12: Valid HMAC-only Path 3 w
     assert.equal(healthRes.status, 200);
     const healthJson = (await healthRes.json()) as any;
     assert.equal(healthJson.status, 'ok');
-    assert.equal(healthJson.routeCount, 41);
+    assert.equal(healthJson.routeCount, CANONICAL_ROUTE_COUNT);
 
     const optRes = await fetch(`${baseUrl}/server/vigor_api/api/v1/athlete/workspace`, {
       method: 'OPTIONS',

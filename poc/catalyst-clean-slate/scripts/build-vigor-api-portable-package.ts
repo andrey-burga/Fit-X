@@ -2,9 +2,9 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
  *
- * VigorCore Phase 5.3 — Deterministic & Reproducible Portable Package Builder
- * Generates `artifacts/vigor_api-vars-reconciled-portable.zip` using an isolated
- * temporary staging directory so all prior staging/ZIP artifacts remain untouched.
+ * VigorCore Phase 5.8 — Deterministic & Reproducible Portable Package Builder
+ * Generates `artifacts/vigor_api-phase-5.8-development-candidate.zip` using an isolated
+ * temporary staging directory so all preserved historical archives remain untouched.
  *
  * Determinism Guarantees:
  *   1. Entry paths sorted strictly by ASCII / UTF-8 code-point ordinal order.
@@ -27,7 +27,23 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 export const POC_ROOT = path.resolve(__dirname, '..');
 export const ARTIFACTS_DIR = path.join(POC_ROOT, 'artifacts');
-export const DEFAULT_OUTPUT_ZIP_PATH = path.join(ARTIFACTS_DIR, 'vigor_api-vars-reconciled-portable.zip');
+export const PHASE_5_8_CANDIDATE_ZIP_NAME = 'vigor_api-phase-5.8-development-candidate.zip';
+export const PHASE_5_8_CANDIDATE_MANIFEST_NAME = 'vigor_api-phase-5.8-development-candidate.manifest.json';
+export const PHASE_5_8_CANDIDATE_RELEASE_NAME = 'vigor_api-phase-5.8-development-candidate.release.json';
+export const DEFAULT_OUTPUT_ZIP_PATH = path.join(ARTIFACTS_DIR, PHASE_5_8_CANDIDATE_ZIP_NAME);
+export const DEFAULT_OUTPUT_MANIFEST_PATH = path.join(ARTIFACTS_DIR, PHASE_5_8_CANDIDATE_MANIFEST_NAME);
+export const DEFAULT_OUTPUT_RELEASE_PATH = path.join(ARTIFACTS_DIR, PHASE_5_8_CANDIDATE_RELEASE_NAME);
+
+export const PRESERVED_HISTORICAL_ZIPS = new Set<string>([
+  'vigor_api.zip',
+  'vigor_api-portable.zip',
+  'vigor_api-env-audit-portable.zip',
+  'vigor_api-reproducible-portable.zip',
+  'vigor_api-vars-reconciled-portable.zip',
+  'vigor_api-auth-reconciled-portable.zip',
+  'vigor_api-auth-forensic-diagnostic-portable.zip',
+  'vigor_api-hosted-admin-remediated-portable.zip',
+]);
 
 // Canonical DOS epoch 1980-01-01 00:00:00
 // Date bits: ((1980-1980) << 9) | (1 << 5) | 1 = 0x0021
@@ -338,11 +354,110 @@ export interface BuildPackageOptions {
   quiet?: boolean;
 }
 
+export function computeServerSourceStateFingerprint(pocRoot: string = POC_ROOT): {
+  type: 'deterministic-server-source-sha256';
+  sha256: string;
+  fileCount: number;
+  files: Array<{ path: string; sha256: string; sizeBytes: number }>;
+} {
+  const inputPaths: string[] = [
+    path.join(pocRoot, 'package.json'),
+    path.join(pocRoot, 'tsconfig.server.json'),
+  ];
+  for (const sub of REQUIRED_DIST_DIRS) {
+    const srcSub = path.join(pocRoot, 'src', sub);
+    if (fs.existsSync(srcSub)) {
+      inputPaths.push(...walkFiles(srcSub).filter(f => f.endsWith('.ts') || f.endsWith('.json')));
+    }
+  }
+  const normalizedFiles = inputPaths
+    .map(full => {
+      const rel = path.relative(pocRoot, full).replace(/\\/g, '/');
+      const content = fs.readFileSync(full, 'utf8').replace(/\r\n/g, '\n');
+      const sha256 = crypto.createHash('sha256').update(content, 'utf8').digest('hex');
+      return {
+        path: rel,
+        sha256,
+        sizeBytes: Buffer.byteLength(content, 'utf8'),
+      };
+    })
+    .sort((a, b) => compareCodePoint(a.path, b.path));
+
+  const aggregateHasher = crypto.createHash('sha256');
+  for (const item of normalizedFiles) {
+    aggregateHasher.update(`${item.path}:${item.sha256}\n`, 'utf8');
+  }
+  return {
+    type: 'deterministic-server-source-sha256',
+    sha256: aggregateHasher.digest('hex'),
+    fileCount: normalizedFiles.length,
+    files: normalizedFiles,
+  };
+}
+
+export function generateCandidateReleaseMetadata(params: {
+  zipPath: string;
+  zipSizeBytes: number;
+  zipSha256: string;
+  entryCount: number;
+  totalUncompressedBytes: number;
+  manifest: CanonicalManifestEntry[];
+}) {
+  const rootPkg = JSON.parse(fs.readFileSync(path.join(POC_ROOT, 'package.json'), 'utf8')) as {
+    dependencies: Record<string, string>;
+  };
+  const requiredDependencies: Record<string, string> = {};
+  for (const dep of RUNTIME_PACKAGES) {
+    requiredDependencies[dep] = rootPkg.dependencies[dep];
+  }
+  const compiledModules = params.manifest
+    .filter(m => m.path.startsWith('dist/'))
+    .map(m => ({
+      path: m.path,
+      uncompressedSize: m.uncompressedSize,
+      sha256: m.sha256,
+    }));
+  const entryModule = compiledModules.find(m => m.path === 'dist/server/catalystEntry.js');
+
+  return {
+    candidateName: path.basename(params.zipPath),
+    phase: '5.8',
+    targetEnvironment: 'Development',
+    readinessStatus: 'READY_FOR_DEVELOPMENT_OPERATOR_REVIEW',
+    sourceStateIdentifier: computeServerSourceStateFingerprint(POC_ROOT),
+    buildCommand:
+      'npm --prefix poc/catalyst-clean-slate run build:server && ./poc/catalyst-clean-slate/node_modules/.bin/tsx poc/catalyst-clean-slate/scripts/build-vigor-api-portable-package.ts',
+    nodeRuntime: {
+      buildHostNodeVersion: process.version,
+      targetCatalystStack: 'node22',
+      enginesNode: '>=22',
+    },
+    entryPoint: 'dist/server/catalystEntry.js',
+    entryPointSha256: entryModule?.sha256 ?? '',
+    requiredDependencies,
+    packageStats: {
+      entryCount: params.entryCount,
+      zipSizeBytes: params.zipSizeBytes,
+      totalUncompressedBytes: params.totalUncompressedBytes,
+      zipSha256: params.zipSha256,
+    },
+    compiledEntrySha256s: compiledModules,
+  };
+}
+
 export function buildReproduciblePortablePackage(options: BuildPackageOptions = {}) {
   const outputZipPath = options.outputZipPath ? path.resolve(options.outputZipPath) : DEFAULT_OUTPUT_ZIP_PATH;
+  if (
+    path.resolve(path.dirname(outputZipPath)) === path.resolve(ARTIFACTS_DIR) &&
+    PRESERVED_HISTORICAL_ZIPS.has(path.basename(outputZipPath))
+  ) {
+    throw new Error(
+      `PRESERVED_HISTORICAL_ARCHIVE_IMMUTABLE: Refusing to overwrite preserved archive '${path.basename(outputZipPath)}'.`
+    );
+  }
   const log = options.quiet ? () => {} : (msg: string) => console.log(msg);
 
-  log('=== Building Reproducible Final Portable Package (TypeScript TSX Builder) ===');
+  log('=== Building Reproducible Development Candidate Portable Package (TypeScript TSX Builder) ===');
   if (!fs.existsSync(ARTIFACTS_DIR)) {
     fs.mkdirSync(ARTIFACTS_DIR, { recursive: true });
   }
@@ -386,7 +501,7 @@ export function buildReproduciblePortablePackage(options: BuildPackageOptions = 
       version: '1.0.0',
       private: true,
       type: 'module',
-      description: 'VigorCore Advanced I/O API backend for Zoho Catalyst (Node.js 22) - Final Environment Audit Package',
+      description: 'VigorCore Advanced I/O API backend for Zoho Catalyst (Node.js 22) - Phase 5.8 Development Candidate',
       main: 'dist/server/catalystEntry.js',
       engines: { node: '>=22' },
       dependencies: prodDeps,
@@ -451,20 +566,28 @@ export function buildReproduciblePortablePackage(options: BuildPackageOptions = 
   }
 }
 
-function parseCliArgs(argv: string[]): { outputZipPath?: string; manifestPath?: string; skipCompile: boolean } {
+function parseCliArgs(argv: string[]): {
+  outputZipPath?: string;
+  manifestPath?: string;
+  releaseMetaPath?: string;
+  skipCompile: boolean;
+} {
   let outputZipPath: string | undefined;
   let manifestPath: string | undefined;
+  let releaseMetaPath: string | undefined;
   let skipCompile = false;
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--output' && argv[i + 1]) {
       outputZipPath = argv[++i];
     } else if (argv[i] === '--manifest' && argv[i + 1]) {
       manifestPath = argv[++i];
+    } else if (argv[i] === '--release-meta' && argv[i + 1]) {
+      releaseMetaPath = argv[++i];
     } else if (argv[i] === '--skip-compile') {
       skipCompile = true;
     }
   }
-  return { outputZipPath, manifestPath, skipCompile };
+  return { outputZipPath, manifestPath, releaseMetaPath, skipCompile };
 }
 
 const isCliEntry = process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url;
@@ -474,9 +597,33 @@ if (isCliEntry) {
     outputZipPath: args.outputZipPath,
     skipCompile: args.skipCompile,
   });
-  if (args.manifestPath) {
+  const effectiveManifestPath =
+    args.manifestPath ??
+    (path.resolve(res.outputZipPath) === path.resolve(DEFAULT_OUTPUT_ZIP_PATH)
+      ? DEFAULT_OUTPUT_MANIFEST_PATH
+      : undefined);
+  const effectiveReleasePath =
+    args.releaseMetaPath ??
+    (path.resolve(res.outputZipPath) === path.resolve(DEFAULT_OUTPUT_ZIP_PATH)
+      ? DEFAULT_OUTPUT_RELEASE_PATH
+      : undefined);
+  if (effectiveManifestPath || effectiveReleasePath) {
     const manifest = extractCanonicalContentManifest(res.outputZipPath);
-    fs.mkdirSync(path.dirname(path.resolve(args.manifestPath)), { recursive: true });
-    fs.writeFileSync(path.resolve(args.manifestPath), JSON.stringify(manifest, null, 2) + '\n', 'utf8');
+    if (effectiveManifestPath) {
+      fs.mkdirSync(path.dirname(path.resolve(effectiveManifestPath)), { recursive: true });
+      fs.writeFileSync(path.resolve(effectiveManifestPath), JSON.stringify(manifest, null, 2) + '\n', 'utf8');
+    }
+    if (effectiveReleasePath) {
+      const releaseMeta = generateCandidateReleaseMetadata({
+        zipPath: res.outputZipPath,
+        zipSizeBytes: res.zipSizeBytes,
+        zipSha256: res.sha256,
+        entryCount: res.entryCount,
+        totalUncompressedBytes: res.totalUncompressedBytes,
+        manifest,
+      });
+      fs.mkdirSync(path.dirname(path.resolve(effectiveReleasePath)), { recursive: true });
+      fs.writeFileSync(path.resolve(effectiveReleasePath), JSON.stringify(releaseMeta, null, 2) + '\n', 'utf8');
+    }
   }
 }

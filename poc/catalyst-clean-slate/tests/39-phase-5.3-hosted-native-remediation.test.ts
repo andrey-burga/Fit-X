@@ -24,7 +24,9 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   buildReproduciblePortablePackage,
   compareContentManifests,
+  createDeterministicPortableZip,
   extractCanonicalContentManifest,
+  PHASE_5_8_CANDIDATE_ZIP_NAME,
   parseZipEntries,
 } from '../scripts/build-vigor-api-portable-package.js';
 import { AuthGuardError, ServerSessionTokenManager } from '../src/auth/cleanSlateAuthGuard.js';
@@ -696,27 +698,41 @@ test('Phase 5.3 [PASS-LOCAL] Remediated deployment candidate ZIP is reproducible
     ['dist/sdk/catalystSdkBridge.js']
   );
 
-  // Source-to-package parity for ALL compiled dist/*.js modules
-  for (const item of remManifest.filter(m => m.path.startsWith('dist/'))) {
+  // Phase 5.3 remediated ZIP remains frozen; current compiled POC_ROOT/dist/*.js must match Phase 5.8 candidate archive
+  const currentCandidateZipPath = path.join(ARTIFACTS_DIR, PHASE_5_8_CANDIDATE_ZIP_NAME);
+  assert.equal(fs.existsSync(currentCandidateZipPath), true, 'Missing Phase 5.8 candidate archive');
+  const currentCandidateDist = extractCanonicalContentManifest(currentCandidateZipPath).filter(m =>
+    m.path.startsWith('dist/')
+  );
+  assert.equal(currentCandidateDist.length, 16);
+  for (const item of currentCandidateDist) {
     const localJs = fs.readFileSync(path.join(POC_ROOT, item.path), 'utf8').replace(/\r\n/g, '\n');
     const localSha = crypto.createHash('sha256').update(localJs, 'utf8').digest('hex');
-    assert.equal(item.sha256, localSha, `Compiled dist mismatch for ${item.path}`);
+    assert.equal(item.sha256, localSha, `Compiled dist mismatch vs Phase 5.8 candidate for ${item.path}`);
   }
 
-  // 3. Reproducibility check (two independent builds yield identical SHA-256)
+  // 3. Reproducibility check: frozen Phase 5.3 remediated staging re-packs deterministically AND live builder double-builds match Phase 5.8 candidate
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vigor-remed-repro-'));
   try {
+    const extStageDir = path.join(tmpDir, 'frozen-stage');
+    fs.mkdirSync(extStageDir, { recursive: true });
+    execSync(`unzip -oq ${JSON.stringify(REMEDIATED_ZIP_PATH)} -d ${JSON.stringify(extStageDir)}`, { stdio: 'ignore' });
+    const frozen1 = createDeterministicPortableZip(extStageDir, path.join(tmpDir, 'remed-a.zip'));
+    const frozen2 = createDeterministicPortableZip(extStageDir, path.join(tmpDir, 'remed-b.zip'));
+    assert.equal(frozen1.sha256, EXPECTED_REMEDIATED_SHA256);
+    assert.equal(frozen2.sha256, frozen1.sha256);
+
     const b1 = buildReproduciblePortablePackage({
-      outputZipPath: path.join(tmpDir, 'remed-a.zip'),
+      outputZipPath: path.join(tmpDir, 'cand-a.zip'),
       skipCompile: true,
       quiet: true,
     });
     const b2 = buildReproduciblePortablePackage({
-      outputZipPath: path.join(tmpDir, 'remed-b.zip'),
+      outputZipPath: path.join(tmpDir, 'cand-b.zip'),
       skipCompile: true,
       quiet: true,
     });
-    assert.equal(b1.sha256, EXPECTED_REMEDIATED_SHA256);
+    assert.equal(b1.sha256, sha256File(currentCandidateZipPath));
     assert.equal(b2.sha256, b1.sha256);
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });

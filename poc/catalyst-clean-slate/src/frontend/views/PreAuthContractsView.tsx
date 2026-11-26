@@ -195,7 +195,7 @@ export const PreAuthContractsView: React.FC = () => {
         <div className="mb-3 rounded-lg border border-border bg-surface-alt/40 p-3 text-xs text-ink-muted space-y-1.5">
           <div>
             <strong className="text-ink">Comportamiento honesto del Adaptador HTTP:</strong>{' '}
-            Todas las operaciones del atleta (41 rutas canónicas verificadas, incluyendo <code>saveBiometrics</code>, <code>savePreferences</code>, eliminaciones CRUD, compras individuales, rutina por defecto y lectura de notificaciones) están conectadas al dispatcher. La única operación administrativa sin ruta dedicada en <code>CLEAN_SLATE_ENDPOINT_CATALOG</code> (<code>adminRepo.listInvitations</code>) devuelve error explícito <code>501 UNSUPPORTED_CONTRACT_ENDPOINT</code> (<code>origin: &apos;client_synthetic&apos;</code>) sin fallback silencioso a mock.
+            Todas las operaciones del atleta y de administración (53 rutas canónicas verificadas, incluyendo <code>saveBiometrics</code>, <code>savePreferences</code>, colecciones <code>GET</code> paginadas/filtradas, eliminaciones CRUD, <code>clearCompletedGroceries</code> y <code>GET /api/v1/admin/invitations</code>) están conectadas al dispatcher sin fallback silencioso a mock.
           </div>
           <div>
             <strong className="text-ink">Sincronización multi-lote de compras (&gt;25 ítems):</strong>{' '}

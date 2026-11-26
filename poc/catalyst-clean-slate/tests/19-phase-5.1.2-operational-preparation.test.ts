@@ -26,7 +26,7 @@ import {
   PROJECT_RAINFALL_RECONCILED_INVENTORY,
   validateConsolidatedProvisioningManifest,
 } from '../src/provisioning/operationalPreparationManifest.js';
-import { ROUTE_CONTRACT_SPECS } from '../src/routes/routeContracts.js';
+import { CANONICAL_ROUTE_COUNT, ROUTE_CONTRACT_SPECS } from '../src/routes/routeContracts.js';
 import { TABLE_SCHEMA_REGISTRY, type TableSchemaSpec } from '../src/types/cleanSlate.js';
 import {
   ApplyModeForbiddenError,
@@ -114,13 +114,13 @@ test('Phase 5.1.2 [PASS-UNIT] TTL manifest rules permit ttlEpochSec (Number) str
   assert.ok(res.violations.some(v => v.includes('AuditLogs') && v.includes('TTL')));
 });
 
-test('Phase 5.1.2 [PASS-UNIT] Anomaly detector validates 41/41 routes, zero orphans, zero collisions, and flags injected duplicate method+path', () => {
+test('Phase 5.1.2 [PASS-UNIT] Anomaly detector validates all canonical routes, zero orphans, zero collisions, and flags injected duplicate method+path', () => {
   const cleanReport = detectRouteAndManifestAnomalies();
   assert.equal(cleanReport.passed, true);
-  assert.equal(cleanReport.totalCanonicalRoutes, 41);
-  assert.equal(cleanReport.mappedSchemaRoutes, 41);
-  assert.equal(cleanReport.gatewayAuthMatrixRoutes, 41);
-  assert.equal(cleanReport.gatewayRewriteMatchedRoutes, 41);
+  assert.equal(cleanReport.totalCanonicalRoutes, CANONICAL_ROUTE_COUNT);
+  assert.equal(cleanReport.mappedSchemaRoutes, CANONICAL_ROUTE_COUNT);
+  assert.equal(cleanReport.gatewayAuthMatrixRoutes, CANONICAL_ROUTE_COUNT);
+  assert.equal(cleanReport.gatewayRewriteMatchedRoutes, CANONICAL_ROUTE_COUNT);
   assert.equal(cleanReport.anomalyCount, 0);
   assert.deepEqual(cleanReport.orphanRouteIds, []);
   assert.deepEqual(cleanReport.unmappedRouteIds, []);
@@ -162,7 +162,7 @@ test('Phase 5.1.2 [PASS-UNIT] Function deployment manifest, non-applied plan, re
   assert.equal(fnManifest.type, 'advancedio');
   assert.equal(fnManifest.runtime, 'node22');
   assert.equal(fnManifest.entrypoint, 'dist/server/catalystEntry.js');
-  assert.equal(fnManifest.canonicalApiRoutesCount, 41);
+  assert.equal(fnManifest.canonicalApiRoutesCount, CANONICAL_ROUTE_COUNT);
 
   const tsconfigServerPath = path.join(POC_ROOT, 'tsconfig.server.json');
   assert.equal(fs.existsSync(tsconfigServerPath), true);

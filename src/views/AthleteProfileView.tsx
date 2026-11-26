@@ -9,6 +9,8 @@
 
 import React, { useState, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
+import { UserAvatar } from '../components/layout/UserAvatar';
+import { formatUserRoleLabel } from '../utils/roleDisplay';
 import {
   WeightUnit,
   HeightUnit,
@@ -228,11 +230,11 @@ export const AthleteProfileView: React.FC = () => {
         <div>
           <div className="flex items-center gap-2 mb-1">
             <span className="text-xs font-semibold text-primary uppercase tracking-wider bg-primary-fixed/30 px-2.5 py-0.5 rounded-full">
-              SaaS Perfil &amp; Preferencias
+              Cuenta y Biometría
             </span>
             <span className="text-xs text-on-surface-variant flex items-center gap-1">
               <span className="material-symbols-outlined text-xs text-primary">verified</span>
-              {isDemoMode ? 'Modo Demostración' : 'Cloud Firestore Sincronizado'}
+              {isDemoMode ? 'Modo demostración local' : 'Cuenta sincronizada'}
             </span>
           </div>
           <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-on-surface">
@@ -248,7 +250,7 @@ export const AthleteProfileView: React.FC = () => {
             type="button"
             onClick={logout}
             disabled={isLoggingOut}
-            className="px-3 py-1.5 bg-error-container/20 hover:bg-error-container/40 text-error rounded-xl text-xs font-semibold transition-colors flex items-center gap-1.5"
+            className="px-3 py-1.5 bg-error-container/20 hover:bg-error-container/40 text-error rounded-xl text-xs font-semibold transition-colors flex items-center gap-1.5 cursor-pointer"
           >
             <span className="material-symbols-outlined text-base">logout</span>
             <span>{isLoggingOut ? 'Cerrando...' : 'Cerrar Sesión'}</span>
@@ -259,16 +261,17 @@ export const AthleteProfileView: React.FC = () => {
       {/* Profile Overview Card */}
       <div className="p-4 sm:p-5 bg-surface-container-low rounded-2xl border border-surface-container/60 flex flex-col sm:flex-row items-center sm:items-start justify-between gap-4">
         <div className="flex flex-col sm:flex-row items-center gap-4 text-center sm:text-left">
-          <img
-            src={currentUser?.avatarUrl}
-            alt={currentUser?.name}
-            className="w-16 h-16 rounded-2xl object-cover ring-2 ring-primary shadow-sm shrink-0"
+          <UserAvatar
+            name={currentUser?.name}
+            avatarUrl={currentUser?.avatarUrl}
+            sizeClassName="w-16 h-16"
+            className="rounded-2xl ring-2 ring-primary shadow-sm"
           />
           <div>
             <div className="flex items-center justify-center sm:justify-start gap-2 flex-wrap">
               <h2 className="text-lg font-bold text-on-surface">{currentUser?.name}</h2>
               <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-primary text-on-primary">
-                {currentUser?.role}
+                {formatUserRoleLabel(currentUser?.role)}
               </span>
             </div>
             <span className="text-xs text-on-surface-variant block mt-0.5 font-mono">{currentUser?.email}</span>

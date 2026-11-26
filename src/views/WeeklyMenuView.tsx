@@ -214,7 +214,6 @@ export const WeeklyMenuView: React.FC = () => {
               Nutrición · Plan Semanal & Recetas
             </span>
             <div className="flex items-center gap-1.5 px-space-sm py-0.5 rounded-full bg-surface-container-lowest text-on-surface-variant shadow-xs text-label-sm font-code-data">
-              <span className="inline-block w-2 h-2 rounded-full bg-primary animate-pulse" />
               <span>{recipes.length} recetas en biblioteca · USDA FDC</span>
             </div>
           </div>

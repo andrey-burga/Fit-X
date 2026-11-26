@@ -105,7 +105,7 @@ export const GuideSettingsView: React.FC = () => {
       title: 'Tratamiento de Días Sin Registrar y Ayuno (Integridad SQL)',
       badge: 'INTEGRIDAD DE DATOS (SUPABASE)',
       sqlCode: "UPDATE logs_diarios SET calorias = NULL WHERE tipo_registro = 'unlogged';",
-      description: "Dejar tomas vacías en días futuros, fines de semana o jornadas de descanso planificado conserva el estado NULL en la tabla de Supabase. Nunca introduzca ceros arbitrarios ('0 kcal') en días no registrados para 'completar casillas': introducir un cero computa como un día real de inanición absoluta y descalibra severamente el promedio móvil de gasto metabólico y TDEE.",
+      description: "Dejar tomas vacías en días futuros, fines de semana o jornadas de descanso planificado conserva el registro como no completado (NULL). Nunca introduzcas ceros arbitrarios ('0 kcal') en días no registrados para 'completar casillas': introducir un cero computa como un día de ayuno absoluto y descalibra el promedio móvil de gasto metabólico y TDEE.",
       tags: 'sql supabase null ayuno integridad datos base de datos ceros vacio',
     },
   ];
@@ -146,12 +146,7 @@ export const GuideSettingsView: React.FC = () => {
         <div className="flex flex-col gap-space-xs max-w-3xl">
           <div className="flex items-center gap-space-xs flex-wrap">
             <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-surface-container-high text-on-surface-variant font-label-sm text-label-sm uppercase tracking-wider">
-              <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
-              DOCUMENTACIÓN Y REGLAS DE NEGOCIO • VERSIÓN 4.2
-            </span>
-            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-primary-fixed text-on-primary-fixed font-code-data text-code-data">
-              <span className="material-symbols-outlined text-[14px]">lock</span>
-              Sincronización Estricta
+              Documentación y reglas de cálculo
             </span>
           </div>
           <h1 className="font-headline-lg text-headline-lg text-on-surface font-semibold tracking-tight">
@@ -420,8 +415,7 @@ export const GuideSettingsView: React.FC = () => {
                 <h3 className="font-headline-sm text-headline-sm text-on-surface font-semibold">Configuración Activa</h3>
               </div>
               <span className="inline-flex items-center gap-1 font-label-sm text-label-sm text-primary font-semibold bg-primary-fixed px-2 py-0.5 rounded-full">
-                <span className="w-1.5 h-1.5 rounded-full bg-primary" />
-                Sincronizado v4.2
+                Activo
               </span>
             </div>
 
@@ -522,7 +516,7 @@ export const GuideSettingsView: React.FC = () => {
               <span>Metodología Basada en Evidencia</span>
             </div>
             <p className="text-on-surface-variant font-body-md text-body-md text-xs">
-              Todos los algoritmos de este SaaS operan de conformidad con las guías de la ISSN (International Society of Sports Nutrition) y el modelo de periodización energética de Eric Helms (PhD, CSCS).
+              Los cálculos de VigorCore siguen las guías de la ISSN (International Society of Sports Nutrition) y el modelo de periodización energética de Eric Helms (PhD, CSCS).
             </p>
           </div>
         </aside>

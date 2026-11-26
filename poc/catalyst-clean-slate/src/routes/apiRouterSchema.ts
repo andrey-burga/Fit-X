@@ -2,11 +2,11 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
  *
- * VigorCore — Phase 4.2.3 Unified Route Definitions, Endpoint Catalog & Dispatcher
+ * VigorCore — Phase 5.7 Unified Route Definitions, Endpoint Catalog & Dispatcher
  *
  * Single Source of Truth Architecture:
- * - `ROUTE_CONTRACT_SPECS` (`./routeContracts.ts`) holds the isomorphic metadata for all 41 routes.
- * - `ROUTE_DEFINITIONS` binds every one of those 41 canonical specs to its executable backend
+ * - `ROUTE_CONTRACT_SPECS` (`./routeContracts.ts`) holds the isomorphic metadata for all canonical routes.
+ * - `ROUTE_DEFINITIONS` binds every one of those canonical specs to its executable backend
  *   handler, compiled path matcher, parameter sanitization, bound CSRF, RBAC, and anti-IDOR rules.
  * - `CLEAN_SLATE_ENDPOINT_CATALOG` is derived directly from `ROUTE_DEFINITIONS` (never duplicated).
  * - Legacy flat admin paths (`/api/v1/admin/invitations/revoke`, `/users/set-status`,
@@ -27,8 +27,9 @@ import {
 } from '../validators/domainValidators.js';
 import { AdminGovernanceError, type AdminGovernanceService } from '../services/adminGovernanceService.js';
 import type { AthleteDataService } from '../services/athleteDataService.js';
-import type { AuthoritativeActor, UserRole } from '../types/cleanSlate.js';
+import type { AdminInvitationItem, AuthoritativeActor, UserRole } from '../types/cleanSlate.js';
 import {
+  CANONICAL_ROUTE_COUNT,
   OPTIONS_PREFLIGHT_CONTRACT,
   ROUTE_CONTRACT_SPECS,
   type ContractAuthLevel,
@@ -36,7 +37,7 @@ import {
   type RouteContractSpec,
 } from './routeContracts.js';
 
-export { OPTIONS_PREFLIGHT_CONTRACT, ROUTE_CONTRACT_SPECS };
+export { CANONICAL_ROUTE_COUNT, OPTIONS_PREFLIGHT_CONTRACT, ROUTE_CONTRACT_SPECS };
 export type { RouteContractSpec };
 
 export interface EndpointResponse {
@@ -117,6 +118,22 @@ function queryIntParam(
   return parsed;
 }
 
+function queryBooleanParam(query: Record<string, unknown> | undefined, key: string): boolean | undefined {
+  if (!query || query[key] === undefined || query[key] === null || query[key] === '') return undefined;
+  const raw = Array.isArray(query[key]) ? query[key][0] : query[key];
+  if (typeof raw === 'boolean') return raw;
+  if (typeof raw === 'string') {
+    const norm = raw.trim().toLowerCase();
+    if (norm === 'true' || norm === '1') return true;
+    if (norm === 'false' || norm === '0') return false;
+  }
+  throw new DomainValidationError(
+    'INVALID_QUERY_PARAMETER',
+    `Query parameter '${key}' must be a boolean ('true' or 'false').`,
+    400
+  );
+}
+
 function generateEntityId(prefix: string): string {
   return `${prefix}_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
 }
@@ -182,6 +199,11 @@ async function authenticateForSpec(ctx: RouteHandlerContext): Promise<Authoritat
 
 const VALID_ROLES: ReadonlySet<string> = new Set(['athlete', 'admin', 'superadmin']);
 const VALID_ACCOUNT_STATUSES: ReadonlySet<string> = new Set(['active', 'suspended']);
+const VALID_WORKOUT_STATUSES: ReadonlySet<string> = new Set(['in_progress', 'completed', 'abandoned']);
+const VALID_GROCERY_FILTER_STATUSES: ReadonlySet<string> = new Set(['pending', 'bought', 'in_pantry', 'completed']);
+const VALID_INVITE_STATUSES: ReadonlySet<string> = new Set(['pending', 'redeeming', 'redeemed', 'revoked', 'expired']);
+const VALID_DIRECTORY_SORT_FIELDS: ReadonlySet<string> = new Set(['createdAt', 'displayName', 'email']);
+const VALID_SORT_ORDERS: ReadonlySet<string> = new Set(['asc', 'desc']);
 const ISO_DATE_PREFIX_RE = /^\d{4}-\d{2}-\d{2}/;
 const YYYY_MM_DD_RE = /^\d{4}-\d{2}-\d{2}$/;
 const YYYY_MM_RE = /^\d{4}-\d{2}$/;
@@ -375,7 +397,7 @@ export const ROUTE_DEFINITIONS: readonly RouteDefinition[] = [
       const actor = await authenticateForSpec(ctx);
       const body = asPlainObject(ctx.req.body);
       const result = await ctx.athleteService.completeOnboarding(actor, {
-        displayName: body.displayName as string,
+        displayName: (body.displayName ?? body.name) as string,
         goal: body.goal as string,
         biometrics: body.biometrics as Record<string, unknown>,
         preferences: body.preferences as Record<string, unknown>,
@@ -673,7 +695,10 @@ export const ROUTE_DEFINITIONS: readonly RouteDefinition[] = [
       const actor = await authenticateForSpec(ctx);
       const rawRole = queryStringParam(ctx.req.query, 'role');
       const rawStatus = queryStringParam(ctx.req.query, 'accountStatus');
+      const emailVerified = queryBooleanParam(ctx.req.query, 'emailVerified');
       const searchQuery = queryStringParam(ctx.req.query, 'searchQuery');
+      const sortBy = queryStringParam(ctx.req.query, 'sortBy');
+      const sortOrder = queryStringParam(ctx.req.query, 'sortOrder');
       const limit = queryIntParam(ctx.req.query, 'limit', 1, 100);
       const startKey = queryStringParam(ctx.req.query, 'startKey');
 
@@ -687,30 +712,37 @@ export const ROUTE_DEFINITIONS: readonly RouteDefinition[] = [
           400
         );
       }
+      if (sortBy !== undefined && !VALID_DIRECTORY_SORT_FIELDS.has(sortBy)) {
+        throw new DomainValidationError(
+          'INVALID_QUERY_PARAMETER',
+          `Invalid sortBy '${sortBy}'. Must be 'createdAt', 'displayName', or 'email'.`,
+          400
+        );
+      }
+      if (sortOrder !== undefined && !VALID_SORT_ORDERS.has(sortOrder)) {
+        throw new DomainValidationError(
+          'INVALID_QUERY_PARAMETER',
+          `Invalid sortOrder '${sortOrder}'. Must be 'asc' or 'desc'.`,
+          400
+        );
+      }
 
       const page = await ctx.adminService.listDirectoryUsers(actor, {
         role: rawRole && rawRole !== 'all' ? (rawRole as UserRole) : undefined,
         accountStatus:
           rawStatus && rawStatus !== 'all' ? (rawStatus as 'active' | 'suspended') : undefined,
+        emailVerified,
+        searchQuery,
+        sortBy: sortBy as 'createdAt' | 'displayName' | 'email' | undefined,
+        sortOrder: sortOrder as 'asc' | 'desc' | undefined,
         limit,
         startKey,
       });
 
-      const items = searchQuery
-        ? page.items.filter(user => {
-            const needle = searchQuery.toLowerCase();
-            return (
-              user.displayName.toLowerCase().includes(needle) ||
-              user.email.toLowerCase().includes(needle) ||
-              user.uid.toLowerCase().includes(needle)
-            );
-          })
-        : page.items;
-
       return {
         status: 200,
         headers: ctx.corsHeaders,
-        body: { success: true, items, users: items, nextStartKey: page.nextStartKey },
+        body: { success: true, items: page.items, users: page.items, nextStartKey: page.nextStartKey },
       };
     },
   },
@@ -1014,6 +1046,298 @@ export const ROUTE_DEFINITIONS: readonly RouteDefinition[] = [
       const actor = await authenticateForSpec(ctx);
       const res = await ctx.athleteService.markAllNotificationsRead(actor);
       return { status: 200, headers: ctx.corsHeaders, body: { success: true, ...res } };
+    },
+  },
+  // ==================== PHASE 5.7: 12 COMPLETED CANONICAL ROUTES (TOTAL 53) ====================
+  {
+    ...specById('athlete.workouts.list'),
+    handler: async ctx => {
+      const actor = await authenticateForSpec(ctx);
+      const rawStatus = queryStringParam(ctx.req.query, 'status');
+      const startDate = queryStringParam(ctx.req.query, 'startDate');
+      const endDate = queryStringParam(ctx.req.query, 'endDate');
+      const limit = queryIntParam(ctx.req.query, 'limit', 1, 100);
+      const startKey = queryStringParam(ctx.req.query, 'startKey');
+
+      if (rawStatus !== undefined && !VALID_WORKOUT_STATUSES.has(rawStatus)) {
+        throw new DomainValidationError(
+          'INVALID_QUERY_PARAMETER',
+          `Invalid workout status '${rawStatus}'.`,
+          400
+        );
+      }
+      if ((startDate && !endDate) || (!startDate && endDate)) {
+        throw new DomainValidationError(
+          'INVALID_QUERY_PARAMETER',
+          'startDate and endDate must both be provided together.',
+          400
+        );
+      }
+      if (startDate && endDate && (!ISO_DATE_PREFIX_RE.test(startDate) || !ISO_DATE_PREFIX_RE.test(endDate) || startDate > endDate)) {
+        throw new DomainValidationError(
+          'INVALID_QUERY_PARAMETER',
+          'Valid startDate and endDate (startDate <= endDate) matching YYYY-MM-DD are required.',
+          400
+        );
+      }
+
+      const page = await ctx.athleteService.listExecutedWorkouts(actor, {
+        status: rawStatus as 'in_progress' | 'completed' | 'abandoned' | undefined,
+        startDate,
+        endDate,
+        limit,
+        startKey,
+      });
+      return {
+        status: 200,
+        headers: ctx.corsHeaders,
+        body: {
+          success: true,
+          items: page.items,
+          workouts: page.items.map(i => i.payload),
+          nextStartKey: page.nextStartKey,
+        },
+      };
+    },
+  },
+  {
+    ...specById('athlete.workouts.getDetail'),
+    handler: async ctx => {
+      const actor = await authenticateForSpec(ctx);
+      const detail = await ctx.athleteService.getExecutedWorkoutDetail(actor, ctx.params.workoutId);
+      return { status: 200, headers: ctx.corsHeaders, body: { success: true, ...detail } };
+    },
+  },
+  {
+    ...specById('athlete.routines.list'),
+    handler: async ctx => {
+      const actor = await authenticateForSpec(ctx);
+      const limit = queryIntParam(ctx.req.query, 'limit', 1, 100);
+      const startKey = queryStringParam(ctx.req.query, 'startKey');
+      const page = await ctx.athleteService.listWorkoutRoutines(actor, { limit, startKey });
+      return {
+        status: 200,
+        headers: ctx.corsHeaders,
+        body: {
+          success: true,
+          items: page.items,
+          routines: page.items.map(i => i.payload),
+          nextStartKey: page.nextStartKey,
+        },
+      };
+    },
+  },
+  {
+    ...specById('athlete.routines.delete'),
+    handler: async ctx => {
+      const actor = await authenticateForSpec(ctx);
+      const res = await ctx.athleteService.deleteWorkoutRoutine(actor, ctx.params.routineId);
+      return { status: 200, headers: ctx.corsHeaders, body: { success: true, ...res } };
+    },
+  },
+  {
+    ...specById('athlete.recipes.list'),
+    handler: async ctx => {
+      const actor = await authenticateForSpec(ctx);
+      const limit = queryIntParam(ctx.req.query, 'limit', 1, 100);
+      const startKey = queryStringParam(ctx.req.query, 'startKey');
+      const page = await ctx.athleteService.listRecipes(actor, { limit, startKey });
+      return {
+        status: 200,
+        headers: ctx.corsHeaders,
+        body: {
+          success: true,
+          items: page.items,
+          recipes: page.items.map(i => i.payload),
+          nextStartKey: page.nextStartKey,
+        },
+      };
+    },
+  },
+  {
+    ...specById('athlete.mealPlans.list'),
+    handler: async ctx => {
+      const actor = await authenticateForSpec(ctx);
+      const limit = queryIntParam(ctx.req.query, 'limit', 1, 100);
+      const startKey = queryStringParam(ctx.req.query, 'startKey');
+      const page = await ctx.athleteService.listMealPlans(actor, { limit, startKey });
+      return {
+        status: 200,
+        headers: ctx.corsHeaders,
+        body: {
+          success: true,
+          items: page.items,
+          mealPlans: page.items.map(i => i.payload),
+          nextStartKey: page.nextStartKey,
+        },
+      };
+    },
+  },
+  {
+    ...specById('athlete.groceries.list'),
+    handler: async ctx => {
+      const actor = await authenticateForSpec(ctx);
+      const rawStatus = queryStringParam(ctx.req.query, 'status');
+      const limit = queryIntParam(ctx.req.query, 'limit', 1, 100);
+      const startKey = queryStringParam(ctx.req.query, 'startKey');
+      if (rawStatus !== undefined && !VALID_GROCERY_FILTER_STATUSES.has(rawStatus)) {
+        throw new DomainValidationError(
+          'INVALID_QUERY_PARAMETER',
+          `Invalid grocery status filter '${rawStatus}'.`,
+          400
+        );
+      }
+      const page = await ctx.athleteService.listGroceries(actor, {
+        status: rawStatus,
+        limit,
+        startKey,
+      });
+      return {
+        status: 200,
+        headers: ctx.corsHeaders,
+        body: {
+          success: true,
+          items: page.items,
+          groceries: page.items.map(i => i.payload),
+          nextStartKey: page.nextStartKey,
+        },
+      };
+    },
+  },
+  {
+    ...specById('athlete.groceries.clearCompleted'),
+    handler: async ctx => {
+      const actor = await authenticateForSpec(ctx);
+      const res = await ctx.athleteService.clearCompletedGroceries(actor);
+      return { status: 200, headers: ctx.corsHeaders, body: { success: true, ...res } };
+    },
+  },
+  {
+    ...specById('athlete.cardio.list'),
+    handler: async ctx => {
+      const actor = await authenticateForSpec(ctx);
+      const startDate = queryStringParam(ctx.req.query, 'startDate');
+      const endDate = queryStringParam(ctx.req.query, 'endDate');
+      const limit = queryIntParam(ctx.req.query, 'limit', 1, 100);
+      const startKey = queryStringParam(ctx.req.query, 'startKey');
+      if ((startDate && !endDate) || (!startDate && endDate)) {
+        throw new DomainValidationError(
+          'INVALID_QUERY_PARAMETER',
+          'startDate and endDate must both be provided together.',
+          400
+        );
+      }
+      if (startDate && endDate && (!ISO_DATE_PREFIX_RE.test(startDate) || !ISO_DATE_PREFIX_RE.test(endDate) || startDate > endDate)) {
+        throw new DomainValidationError(
+          'INVALID_QUERY_PARAMETER',
+          'Valid startDate and endDate (startDate <= endDate) matching YYYY-MM-DD are required.',
+          400
+        );
+      }
+      const page = await ctx.athleteService.listCardioSessions(actor, {
+        startDate,
+        endDate,
+        limit,
+        startKey,
+      });
+      return {
+        status: 200,
+        headers: ctx.corsHeaders,
+        body: {
+          success: true,
+          items: page.items,
+          cardioSessions: page.items.map(i => i.payload),
+          nextStartKey: page.nextStartKey,
+        },
+      };
+    },
+  },
+  {
+    ...specById('athlete.notifications.list'),
+    handler: async ctx => {
+      const actor = await authenticateForSpec(ctx);
+      const unreadOnly = queryBooleanParam(ctx.req.query, 'unreadOnly');
+      const startDate = queryStringParam(ctx.req.query, 'startDate');
+      const endDate = queryStringParam(ctx.req.query, 'endDate');
+      const limit = queryIntParam(ctx.req.query, 'limit', 1, 100);
+      const startKey = queryStringParam(ctx.req.query, 'startKey');
+      if ((startDate && !endDate) || (!startDate && endDate)) {
+        throw new DomainValidationError(
+          'INVALID_QUERY_PARAMETER',
+          'startDate and endDate must both be provided together.',
+          400
+        );
+      }
+      if (startDate && endDate && (!ISO_DATE_PREFIX_RE.test(startDate) || !ISO_DATE_PREFIX_RE.test(endDate) || startDate > endDate)) {
+        throw new DomainValidationError(
+          'INVALID_QUERY_PARAMETER',
+          'Valid startDate and endDate (startDate <= endDate) matching YYYY-MM-DD are required.',
+          400
+        );
+      }
+      const page = await ctx.athleteService.listNotifications(actor, {
+        unreadOnly,
+        startDate,
+        endDate,
+        limit,
+        startKey,
+      });
+      return {
+        status: 200,
+        headers: ctx.corsHeaders,
+        body: {
+          success: true,
+          items: page.items,
+          notifications: page.items.map(i => i.payload),
+          nextStartKey: page.nextStartKey,
+        },
+      };
+    },
+  },
+  {
+    ...specById('athlete.notifications.delete'),
+    handler: async ctx => {
+      const actor = await authenticateForSpec(ctx);
+      const res = await ctx.athleteService.deleteNotification(actor, ctx.params.notificationId);
+      return { status: 200, headers: ctx.corsHeaders, body: { success: true, ...res } };
+    },
+  },
+  {
+    ...specById('admin.invitations.list'),
+    handler: async ctx => {
+      const actor = await authenticateForSpec(ctx);
+      const email = queryStringParam(ctx.req.query, 'email');
+      const rawStatus = queryStringParam(ctx.req.query, 'status');
+      const limit = queryIntParam(ctx.req.query, 'limit', 1, 100);
+      const startKey = queryStringParam(ctx.req.query, 'startKey');
+      if (rawStatus !== undefined && rawStatus !== 'all' && !VALID_INVITE_STATUSES.has(rawStatus)) {
+        throw new DomainValidationError(
+          'INVALID_QUERY_PARAMETER',
+          `Invalid invitation status filter '${rawStatus}'.`,
+          400
+        );
+      }
+      const res = await ctx.adminService.listInvitations(actor, {
+        email,
+        status:
+          rawStatus && rawStatus !== 'all'
+            ? (rawStatus as AdminInvitationItem['status'])
+            : undefined,
+        limit,
+        startKey,
+      });
+      return {
+        status: 200,
+        headers: ctx.corsHeaders,
+        body: {
+          success: true,
+          items: res.items,
+          invitations: res.items,
+          nextStartKey: res.nextStartKey,
+          queryStrategy: res.queryStrategy,
+          ...(res.indexLimitationNote ? { indexLimitationNote: res.indexLimitationNote } : {}),
+        },
+      };
     },
   },
 ];

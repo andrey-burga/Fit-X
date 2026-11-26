@@ -246,8 +246,7 @@ export const WorkoutRoutineView: React.FC = () => {
               PROGRAMA: {activeRoutine.name.toUpperCase()} • {activeRoutine.goal.toUpperCase()}
             </span>
             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-primary/10 text-primary font-label-sm text-label-sm font-medium">
-              <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
-              {activeRoutine.frequencyDays} Sesiones / Semana
+              {activeRoutine.frequencyDays} sesiones / semana
             </span>
           </div>
           <h1 className="font-headline-lg text-headline-lg text-on-surface tracking-tight mt-0.5 font-semibold">
@@ -277,7 +276,7 @@ export const WorkoutRoutineView: React.FC = () => {
           </button>
           <button
             onClick={() => navigate('planificador-mesociclo')}
-            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 font-label-md text-label-md shadow-xs transition-colors cursor-pointer border border-amber-500/30 font-medium"
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-900 font-label-md text-label-md shadow-xs transition-colors cursor-pointer border border-amber-300 font-medium"
             type="button"
           >
             <span className="material-symbols-outlined text-base">event_note</span>
@@ -822,10 +821,10 @@ export const WorkoutRoutineView: React.FC = () => {
             </div>
             <div className="flex flex-col gap-1">
               <h3 className="font-headline-md text-headline-md font-bold tracking-tight text-on-primary">
-                Iniciar Gym Mode
+                Iniciar sesión en vivo
               </h3>
               <p className="font-body-md text-body-md text-on-primary/90 text-sm">
-                Registra cargas reales, activa cronómetro de descanso automático por serie y sincroniza con tu RPE diario.
+                Registra cargas reales, activa el cronómetro de descanso por serie y actualiza tu historial RIR.
               </p>
             </div>
             <div className="flex items-center gap-space-md bg-on-primary/10 p-space-sm rounded-xl text-on-primary">

@@ -9,6 +9,7 @@ import { Sidebar } from './components/layout/Sidebar';
 import { Header } from './components/layout/Header';
 import { ProtectedRoute } from './components/layout/ProtectedRoute';
 import { LoginView } from './views/LoginView';
+import { LandingView } from './views/LandingView';
 
 // Views
 import { NutritionalDashboardView } from './views/NutritionalDashboardView';
@@ -53,16 +54,7 @@ const AppContent: React.FC = () => {
     );
   }
 
-  // 1. Initializing state: ProtectedRoute displays the secure branded loader (Zero data leakage)
-  if (authStatus === 'initializing') {
-    return (
-      <ProtectedRoute>
-        <div />
-      </ProtectedRoute>
-    );
-  }
-
-  // 2. Fatal Auth Error or Failed Logout Lockdown: ProtectedRoute displays lockdown error UI
+  // 1. Fatal Auth Error or Failed Logout Lockdown: ProtectedRoute displays lockdown error UI
   if (authStatus === 'error') {
     return (
       <ProtectedRoute>
@@ -71,7 +63,26 @@ const AppContent: React.FC = () => {
     );
   }
 
-  // 3. Email Verification Gate: Prevent Firestore access until email is confirmed
+  // 2. Public Landing Page: Accessible immediately without an authenticated session
+  if (currentPath === 'landing') {
+    return (
+      <>
+        <LandingView />
+        <ToastNotification />
+      </>
+    );
+  }
+
+  // 3. Initializing state on protected/auth routes: ProtectedRoute displays the secure branded loader (Zero data leakage)
+  if (authStatus === 'initializing') {
+    return (
+      <ProtectedRoute>
+        <div />
+      </ProtectedRoute>
+    );
+  }
+
+  // 4. Email Verification Gate: Prevent Firestore access until email is confirmed
   if (authStatus === 'email_verification_required') {
     return (
       <ProtectedRoute>
@@ -80,7 +91,7 @@ const AppContent: React.FC = () => {
     );
   }
 
-  // 4. Unauthenticated: Full private layout is stripped; dedicated LoginView rendered
+  // 5. Unauthenticated: Full private layout is stripped; dedicated LoginView rendered
   if (
     authStatus === 'unauthenticated' ||
     !isAuthenticated ||

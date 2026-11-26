@@ -237,4 +237,45 @@ export class CatalystHttpAuthRepository {
     }
     return (res.data ?? {}) as Record<string, unknown>;
   }
+
+  async redeemInvitation(
+    inviteId: string,
+    token: string
+  ): Promise<{ assignedRole: string; roleVersion: number }> {
+    const safeInviteId = inviteId.trim();
+    const safeToken = token.trim();
+    if (!/^[A-Za-z0-9._:-]{1,128}$/.test(safeInviteId) || safeInviteId === '.' || safeInviteId.includes('..')) {
+      throw new CleanSlateRepositoryError(
+        'INVALID_PATH_PARAMETER',
+        'El identificador de invitación tiene formato inválido.',
+        400,
+        { origin: 'client_synthetic' }
+      );
+    }
+    if (!safeToken) {
+      throw new CleanSlateRepositoryError(
+        'INVALID_INVITATION_TOKEN',
+        'El token de invitación es requerido.',
+        400,
+        { origin: 'client_synthetic' }
+      );
+    }
+    const res = await this.transport.request<{ assignedRole?: string; roleVersion?: number }>({
+      method: 'POST',
+      path: '/api/v1/invitations/redeem',
+      body: { inviteId: safeInviteId, token: safeToken },
+    });
+    if (!res.data?.assignedRole || typeof res.data.roleVersion !== 'number') {
+      throw new CleanSlateRepositoryError(
+        'INVALID_REDEEM_RESPONSE',
+        'POST /api/v1/invitations/redeem no devolvió assignedRole ni roleVersion.',
+        502,
+        { origin: 'client_synthetic' }
+      );
+    }
+    return {
+      assignedRole: res.data.assignedRole,
+      roleVersion: res.data.roleVersion,
+    };
+  }
 }

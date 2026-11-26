@@ -503,27 +503,27 @@ const initialCardioSessions: CardioSession[] = [
     id: 'cardio-1',
     date: 'Hoy, 07:15',
     title: 'Caminadora Inclinada Z2',
-    details: '12% inclinación @ 4.8 km/h',
+    details: '12% inclinación · 4.8 km/h',
     durationMinutes: 45,
     avgHr: 133,
     maxHr: 139,
     zone2Minutes: 42.3,
     zone2Percentage: 94,
     caloriesBurned: 380,
-    device: 'Polar H10',
+    device: 'Registro manual',
   },
   {
     id: 'cardio-2',
     date: 'Ayer, 18:30',
-    title: 'Assault Bike HIIT 10x(20/40)',
-    details: 'Potencia promedio 520W (Max effort)',
+    title: 'Bicicleta de Aire HIIT 10x(20/40)',
+    details: 'Intervalos de alta intensidad (20s / 40s)',
     durationMinutes: 15,
     avgHr: 164,
     maxHr: 183,
     zone2Minutes: 0,
     zone2Percentage: 0,
     caloriesBurned: 210,
-    device: 'Watch Ultra',
+    device: 'Registro manual',
   },
 ];
 
@@ -569,11 +569,14 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const getInitialPath = (): NavigationPath => {
     if (typeof window !== 'undefined' && window.location.hash) {
       const hash = window.location.hash.replace(/^#\/?/, '');
+      if (!hash) {
+        return 'landing';
+      }
       if (isPrivatePath(hash) || PUBLIC_NAVIGATION_PATHS.includes(hash as any)) {
         return hash as NavigationPath;
       }
     }
-    return 'dashboard-nutricional';
+    return 'landing';
   };
 
   const [currentPath, setCurrentPath] = useState<NavigationPath>(getInitialPath);
@@ -934,7 +937,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     setCurrentPath(path);
     if (typeof window !== 'undefined') {
-      window.location.hash = `#/${path}`;
+      window.location.hash = path === 'landing' ? '#/' : `#/${path}`;
     }
     setIsMobileSidebarOpen(false);
     if (typeof window !== 'undefined') {
@@ -945,8 +948,12 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   // Synchronize hash with currentPath and enforce route protection on Back/Forward buttons
   useEffect(() => {
     const handleHashChange = () => {
-      const hash = window.location.hash.replace(/^#\/?/, '') as NavigationPath;
-      if (!hash) return;
+      const rawHash = window.location.hash.replace(/^#\/?/, '');
+      if (!rawHash) {
+        setCurrentPath('landing');
+        return;
+      }
+      const hash = rawHash as NavigationPath;
 
       if (isPrivatePath(hash)) {
         if (authStatus === 'unauthenticated') {

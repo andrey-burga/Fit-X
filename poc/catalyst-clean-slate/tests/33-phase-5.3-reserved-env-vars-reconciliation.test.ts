@@ -24,6 +24,7 @@ import {
   resolveCatalystApiDomainFromEnv,
   resolveCatalystProjectIdFromEnv,
 } from '../src/sdk/catalystSdkBridge.js';
+import { CANONICAL_ROUTE_COUNT } from '../src/routes/routeContracts.js';
 import { catalystAdvancedIoEntry, resetAdvancedIoRuntimeForTests } from '../src/server/catalystEntry.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -133,7 +134,7 @@ test('Phase 5.3 [PASS-LOCAL] Valid non-reserved VIGORCORE_CATALYST_* variables p
     const body = (await res.json()) as Record<string, unknown>;
     assert.equal(body.success, true);
     assert.equal(body.status, 'ok');
-    assert.equal(body.routeCount, 41);
+    assert.equal(body.routeCount, CANONICAL_ROUTE_COUNT);
   } finally {
     resetAdvancedIoRuntimeForTests();
     for (const k of Object.keys(env)) {

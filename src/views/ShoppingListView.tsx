@@ -162,8 +162,7 @@ export const ShoppingListView: React.FC = () => {
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-space-md">
         <div className="flex flex-col">
           <div className="flex items-center gap-space-xs font-code-data text-code-data text-primary uppercase tracking-wider">
-            <span className="inline-block w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
-            <span>Sincronización Idempotente Activa • Menú Semanal</span>
+            <span>Sincronización Idempotente · Menú Semanal</span>
           </div>
           <div className="flex items-baseline gap-space-sm mt-0.5 flex-wrap">
             <h1 className="font-headline-lg text-headline-lg text-on-surface font-semibold tracking-tight">

@@ -1,5 +1,7 @@
 import React, { useState } from 'react';
 import { useApp } from '../../context/AppContext';
+import { UserAvatar } from '../layout/UserAvatar';
+import { formatUserRoleLabel } from '../../utils/roleDisplay';
 
 export const AuthModal: React.FC = () => {
   const {
@@ -132,18 +134,18 @@ export const AuthModal: React.FC = () => {
             </div>
             <div>
               <h2 className="font-headline-sm text-headline-sm text-on-surface font-semibold">
-                {isAuthenticated ? 'Perfil de Usuario' : 'Acceso a Vigor Core'}
+                {isAuthenticated ? 'Perfil de Usuario' : 'Acceso a VigorCore'}
               </h2>
               <p className="font-label-sm text-label-sm text-on-surface-variant">
                 {isAuthenticated
                   ? 'Gestión de credenciales y sesión'
-                  : 'Sincronización segura con Cloud Firestore'}
+                  : 'Sincronización segura de cuenta'}
               </p>
             </div>
           </div>
           <button
             onClick={closeAuthModal}
-            className="p-1.5 rounded-lg text-on-surface-variant hover:bg-surface-container hover:text-on-surface transition-colors"
+            className="p-1.5 rounded-lg text-on-surface-variant hover:bg-surface-container hover:text-on-surface transition-colors cursor-pointer"
             title="Cerrar"
             type="button"
           >
@@ -157,10 +159,11 @@ export const AuthModal: React.FC = () => {
             /* Authenticated User Profile Summary */
             <div className="flex flex-col gap-space-md">
               <div className="flex items-center gap-space-md p-space-md bg-surface-container-low rounded-xl border border-surface-container">
-                <img
-                  src={currentUser.avatarUrl}
-                  alt={currentUser.name}
-                  className="w-16 h-16 rounded-full object-cover ring-2 ring-primary"
+                <UserAvatar
+                  name={currentUser.name}
+                  avatarUrl={currentUser.avatarUrl}
+                  sizeClassName="w-16 h-16"
+                  className="rounded-full ring-2 ring-primary"
                 />
                 <div className="flex flex-col">
                   <div className="flex items-center gap-2">
@@ -168,7 +171,7 @@ export const AuthModal: React.FC = () => {
                       {currentUser.name}
                     </span>
                     <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-primary-fixed text-on-primary-fixed">
-                      {currentUser.role}
+                      {formatUserRoleLabel(currentUser.role)}
                     </span>
                   </div>
                   <span className="text-body-sm text-on-surface-variant">{currentUser.email}</span>
@@ -197,12 +200,12 @@ export const AuthModal: React.FC = () => {
                   {isDemoMode ? (
                     <span className="text-xs font-semibold text-amber-700 flex items-center gap-1 mt-0.5">
                       <span className="material-symbols-outlined text-xs">storage</span>
-                      Sandbox Local (Demo)
+                      Demostración local
                     </span>
                   ) : (
                     <span className="text-xs font-semibold text-primary flex items-center gap-1 mt-0.5">
                       <span className="material-symbols-outlined text-xs">cloud_done</span>
-                      Cloud Firestore Live
+                      Cuenta sincronizada
                     </span>
                   )}
                 </div>
@@ -532,13 +535,13 @@ export const AuthModal: React.FC = () => {
                           key={r}
                           type="button"
                           onClick={() => setRole(r)}
-                          className={`py-1.5 px-2 text-xs rounded-lg font-medium border text-center transition-all ${
+                          className={`py-1.5 px-2 text-xs rounded-lg font-medium border text-center transition-all cursor-pointer ${
                             role === r
                               ? 'bg-primary text-on-primary border-primary font-semibold'
                               : 'bg-surface-container-low text-on-surface-variant border-surface-container hover:bg-surface-container'
                           }`}
                         >
-                          {r}
+                          {formatUserRoleLabel(r)}
                         </button>
                       ))}
                     </div>

@@ -106,7 +106,7 @@ test('Phase 5.0 [PASS-LOOPBACK] Real Express HTTP loopback tests lifecycle, CORS
     const healthRes = await fetch(`${baseUrl}/server/vigor_api/health`);
     assert.equal(healthRes.status, 200);
     const healthBody = (await healthRes.json()) as any;
-    assert.equal(healthBody.routeCount, 41);
+    assert.equal(healthBody.routeCount, ROUTE_CONTRACT_SPECS.length);
     assert.equal(healthRes.headers.get('x-content-type-options'), 'nosniff');
     assert.equal(healthRes.headers.get('cache-control'), 'no-store');
 

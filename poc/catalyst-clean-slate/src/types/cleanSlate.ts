@@ -348,6 +348,7 @@ export interface UserAccountItem {
   email: string;
   normalizedEmail: string;
   displayName: string;
+  avatarUrl?: string;
   profileLabel?: 'Atleta Pro' | 'Coach' | 'Nutricionista';
   role: UserRole;
   roleVersion: number;

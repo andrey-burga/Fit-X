@@ -55,13 +55,14 @@ export type TrainingExperience = 'principiante' | 'intermedio' | 'avanzado';
 export type DietaryPreference = 'omnivoro' | 'vegetariano' | 'vegano' | 'pescetariano' | 'sin_gluten';
 export type MealMoment = 'desayuno' | 'almuerzo' | 'merienda' | 'cena' | 'snack';
 export type GroceryDepartment = 'carnes' | 'huevos' | 'verduras' | 'carbohidratos' | 'grasas';
-export type GroceryStatus = 'pending' | 'bought' | 'in_pantry';
+export type GroceryStatus = 'pending' | 'bought' | 'in_pantry' | 'completed';
 
 export interface UserAccountModel {
   uid: string;
   email: string;
   normalizedEmail: string;
   displayName: string;
+  avatarUrl?: string;
   profileLabel?: 'Atleta Pro' | 'Coach' | 'Nutricionista';
   role: UserRole;
   roleVersion: number;
@@ -236,6 +237,7 @@ export interface GroceryItemRecord {
   id: string;
   name: string;
   quantity: number;
+  calculatedQuantity?: number;
   unit: string;
   department: GroceryDepartment;
   status: GroceryStatus;
@@ -244,6 +246,7 @@ export interface GroceryItemRecord {
   foodId?: string;
   recipeSource?: string;
   notes?: string;
+  isCustomized?: boolean;
 }
 
 export type MuscleGroup =
@@ -440,6 +443,8 @@ export interface AdminStatsModel {
   superadmins: number;
   admins: number;
   pendingInvitations: number;
+  pendingVerificationUsers?: number;
+  recentSignups30d?: number;
 }
 
 export type ViewId =

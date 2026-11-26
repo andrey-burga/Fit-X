@@ -14,7 +14,11 @@
  *   hosted_native vs external_oauth env var matrix, and fail-closed apply lock.
  */
 
-import { ROUTE_CONTRACT_SPECS, type RouteContractSpec } from '../routes/routeContracts.js';
+import {
+  CANONICAL_ROUTE_COUNT,
+  ROUTE_CONTRACT_SPECS,
+  type RouteContractSpec,
+} from '../routes/routeContracts.js';
 import {
   CATALYST_PLATFORM_LIMITS,
   TABLE_SCHEMA_REGISTRY,
@@ -121,7 +125,7 @@ export interface FunctionEndpointManifestEntry {
   readonly buildCommand: 'npm --prefix poc/catalyst-clean-slate run build:server';
   readonly dependencies: readonly string[];
   readonly healthEndpoint: '/health';
-  readonly canonicalApiRoutesCount: 41;
+  readonly canonicalApiRoutesCount: number;
   readonly pathNormalizationHelper: 'normalizeCatalystPath';
   readonly packagingContents: readonly string[];
 }
@@ -964,7 +968,7 @@ export function detectRouteAndManifestAnomalies(
     extraGsis,
     uninventoriedEnvVarsReadInCode,
     anomalyCount,
-    passed: anomalyCount === 0 && routes.length === 41 && rewriteReport.allMatched,
+    passed: anomalyCount === 0 && routes.length === CANONICAL_ROUTE_COUNT && rewriteReport.allMatched,
   };
 }
 
@@ -987,7 +991,7 @@ export function getFunctionDeploymentManifest(
       'express@^4.22.3',
     ],
     healthEndpoint: '/health',
-    canonicalApiRoutesCount: 41,
+    canonicalApiRoutesCount: CANONICAL_ROUTE_COUNT,
     pathNormalizationHelper: 'normalizeCatalystPath',
     packagingContents: [
       'dist/server/catalystEntry.js (+ dist/**/*.js server artifacts only; exclude src/frontend)',

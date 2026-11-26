@@ -2,13 +2,13 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
  *
- * VigorCore — Phase 5.1 Frozen 5-Table / 8-GSI / 41-Route Reconciliation Registry
+ * VigorCore — Phase 5.7 Frozen 5-Table / 8-GSI / 53-Route Reconciliation Registry
  *
  * Read-only structural matrix proving coherence across:
  * 1. `TABLE_SCHEMA_REGISTRY` (Phase 4.0.2 Schema Freeze)
  * 2. Phase 5.0 Per-Table Providers (`UsersTableProvider`, `UserDataTableProvider`,
  *    `AdminInvitationsTableProvider`, `AuditLogsTableProvider`, `SystemControlTableProvider`)
- * 3. `ROUTE_CONTRACT_SPECS` (all 41 canonical endpoints)
+ * 3. `ROUTE_CONTRACT_SPECS` (all canonical endpoints)
  * 4. `AthleteDataService`, `AdminGovernanceService`, and `CleanSlateAuthGuard`
  */
 
@@ -353,6 +353,117 @@ export const ROUTE_TO_SCHEMA_MAPPING: readonly RouteToSchemaMappingEntry[] = [
     conditionalWritePattern: 'queryTable(ROUTINE#, consistent_read=true) + chunked <=25 delete/write batches for changed flags',
     notes: 'Verifies target routineId exists (404 otherwise).',
   },
+  // Phase 5.7 Reconciled Athlete Routes (11 additions)
+  {
+    routeId: 'athlete.workouts.list',
+    method: 'GET',
+    path: '/api/v1/athlete/workouts',
+    primaryTables: ['UserData', 'Users', 'SystemControl'],
+    indexesUsed: ['UserData.GSI_UserEntityDate'],
+    requiresConsistentRead: true,
+    conditionalWritePattern: 'Read-only queryTable(WORKOUT#) or GSI_UserEntityDate EXECUTED_WORKOUT#<start>..#<end> (limit<=100)',
+    notes: 'Activates UserData.GSI_UserEntityDate on date-range workout queries.',
+  },
+  {
+    routeId: 'athlete.workouts.getDetail',
+    method: 'GET',
+    path: '/api/v1/athlete/workouts/:workoutId',
+    primaryTables: ['UserData', 'Users', 'SystemControl'],
+    indexesUsed: [],
+    requiresConsistentRead: true,
+    conditionalWritePattern: 'Read-only WORKOUT# lookup (404 if absent) + queryAll SET#<workoutId>#',
+    notes: 'Returns sorted workout sets inside caller partition.',
+  },
+  {
+    routeId: 'athlete.routines.list',
+    method: 'GET',
+    path: '/api/v1/athlete/routines',
+    primaryTables: ['UserData', 'Users', 'SystemControl'],
+    indexesUsed: [],
+    requiresConsistentRead: true,
+    conditionalWritePattern: 'Read-only queryTable(ROUTINE#, consistent_read=true, limit<=100)',
+    notes: 'Paginated athlete routines list.',
+  },
+  {
+    routeId: 'athlete.routines.delete',
+    method: 'DELETE',
+    path: '/api/v1/athlete/routines/:routineId',
+    primaryTables: ['UserData', 'Users', 'SystemControl'],
+    indexesUsed: [],
+    requiresConsistentRead: true,
+    conditionalWritePattern: 'Idempotent key deletion { pk, sk: ROUTINE#<routineId> }',
+    notes: 'Scoped to caller pk.',
+  },
+  {
+    routeId: 'athlete.recipes.list',
+    method: 'GET',
+    path: '/api/v1/athlete/recipes',
+    primaryTables: ['UserData', 'Users', 'SystemControl'],
+    indexesUsed: [],
+    requiresConsistentRead: true,
+    conditionalWritePattern: 'Read-only queryTable(RECIPE#, consistent_read=true, limit<=100)',
+    notes: 'Paginated athlete recipes list.',
+  },
+  {
+    routeId: 'athlete.mealPlans.list',
+    method: 'GET',
+    path: '/api/v1/athlete/meal-plans',
+    primaryTables: ['UserData', 'Users', 'SystemControl'],
+    indexesUsed: [],
+    requiresConsistentRead: true,
+    conditionalWritePattern: 'Read-only queryTable(PLAN#, scanDescending=true, consistent_read=true, limit<=100)',
+    notes: 'Paginated weekly meal plans list.',
+  },
+  {
+    routeId: 'athlete.groceries.list',
+    method: 'GET',
+    path: '/api/v1/athlete/groceries',
+    primaryTables: ['UserData', 'Users', 'SystemControl'],
+    indexesUsed: [],
+    requiresConsistentRead: true,
+    conditionalWritePattern: 'Read-only queryTable(GROCERY#, consistent_read=true, limit<=100)',
+    notes: 'Supports optional status filtering.',
+  },
+  {
+    routeId: 'athlete.groceries.clearCompleted',
+    method: 'DELETE',
+    path: '/api/v1/athlete/groceries/completed',
+    primaryTables: ['UserData', 'Users', 'SystemControl'],
+    indexesUsed: [],
+    requiresConsistentRead: true,
+    conditionalWritePattern: 'queryAll(GROCERY#, consistent_read=true) + chunked <=25 deleteBatch on bought/completed',
+    notes: 'Reports atomicBatch=batchCalls<=1.',
+  },
+  {
+    routeId: 'athlete.cardio.list',
+    method: 'GET',
+    path: '/api/v1/athlete/cardio',
+    primaryTables: ['UserData', 'Users', 'SystemControl'],
+    indexesUsed: ['UserData.GSI_UserEntityDate'],
+    requiresConsistentRead: true,
+    conditionalWritePattern: 'Read-only queryTable(CARDIO#) or GSI_UserEntityDate CARDIO_SESSION#<start>..#<end> (limit<=100)',
+    notes: 'Activates UserData.GSI_UserEntityDate on date-range cardio queries.',
+  },
+  {
+    routeId: 'athlete.notifications.list',
+    method: 'GET',
+    path: '/api/v1/athlete/notifications',
+    primaryTables: ['UserData', 'Users', 'SystemControl'],
+    indexesUsed: ['UserData.GSI_UserEntityDate'],
+    requiresConsistentRead: true,
+    conditionalWritePattern: 'Read-only queryTable(NOTIF#) or GSI_UserEntityDate NOTIFICATION#<start>..#<end> (limit<=100)',
+    notes: 'Supports unreadOnly & date-range queries via GSI_UserEntityDate.',
+  },
+  {
+    routeId: 'athlete.notifications.delete',
+    method: 'DELETE',
+    path: '/api/v1/athlete/notifications/:notificationId',
+    primaryTables: ['UserData', 'Users', 'SystemControl'],
+    indexesUsed: [],
+    requiresConsistentRead: true,
+    conditionalWritePattern: 'queryAll(NOTIF#, consistent_read=true) + deleteItem { pk, sk }',
+    notes: 'Idempotent within caller partition.',
+  },
 
   // Invitations & Admin Governance (12 routes -> Users, AdminInvitations, AuditLogs, SystemControl)
   {
@@ -455,6 +566,16 @@ export const ROUTE_TO_SCHEMA_MAPPING: readonly RouteToSchemaMappingEntry[] = [
     conditionalWritePattern: 'Single-month PK=AUDIT#YYYY-MM query OR target/actor/quarterly GSI_GlobalChronology fan-out',
     notes: 'AuditLogs is strictly append-only (TTL disabled).',
   },
+  {
+    routeId: 'admin.invitations.list',
+    method: 'GET',
+    path: '/api/v1/admin/invitations',
+    primaryTables: ['AdminInvitations', 'AuditLogs', 'Users', 'SystemControl'],
+    indexesUsed: ['AdminInvitations.GSI_InviteEmailStatus', 'AuditLogs.GSI_GlobalChronology'],
+    requiresConsistentRead: true,
+    conditionalWritePattern: 'When email provided -> AdminInvitations GSI_InviteEmailStatus; otherwise bounded AuditLogs.GSI_GlobalChronology invitation_created hydration + AdminInvitations consistent_read fetchItem',
+    notes: 'Activates AdminInvitations.GSI_InviteEmailStatus on filtered admin queries and eliminates 501 stub.',
+  },
 ] as const;
 
 export const EIGHT_GSI_COVERAGE_AUDIT: readonly IndexCoverageAuditEntry[] = [
@@ -509,10 +630,17 @@ export const EIGHT_GSI_COVERAGE_AUDIT: readonly IndexCoverageAuditEntry[] = [
     projection: 'ALL',
     includeColumnCount: null,
     providerMethods: ['UserDataTableProvider.queryEntityDateIndex'],
-    serviceAndRouteConsumers: ['All 11 UserData entity writers populate entityDateKey=<TYPE>#<ISO>#<id>'],
-    status: 'ACTIVE_IN_PROVIDER_RESERVED_FOR_QUERY_EXPANSION',
+    serviceAndRouteConsumers: [
+      'AthleteDataService.listExecutedWorkouts (date range)',
+      'AthleteDataService.listCardioSessions (date range)',
+      'AthleteDataService.listNotifications (date range)',
+      'athlete.workouts.list',
+      'athlete.cardio.list',
+      'athlete.notifications.list',
+    ],
+    status: 'ACTIVE_IN_ROUTES_AND_PROVIDERS',
     notes:
-      'All 11 subcollections write deterministic entityDateKey and provider exposes queryEntityDateIndex(); current HTTP routes use primary sk prefix/BETWEEN queries while preserving frozen GSI_UserEntityDate and Additional SKs (entityType, updatedAt) against immutable schema lock.',
+      'All 11 subcollections populate entityDateKey=<TYPE>#<ISO>#<id>; Phase 5.7 wires GSI_UserEntityDate directly into workouts, cardio, and notifications date-range listing endpoints.',
   },
   {
     table: 'AdminInvitations',
@@ -522,10 +650,13 @@ export const EIGHT_GSI_COVERAGE_AUDIT: readonly IndexCoverageAuditEntry[] = [
     projection: 'ALL',
     includeColumnCount: null,
     providerMethods: ['AdminInvitationsTableProvider.findByEmailAndStatus'],
-    serviceAndRouteConsumers: ['AdminInvitationsTableProvider lookup / pending invitation deduplication'],
-    status: 'ACTIVE_IN_PROVIDER_RESERVED_FOR_QUERY_EXPANSION',
+    serviceAndRouteConsumers: [
+      'AdminGovernanceService.listInvitations (email/status lookup)',
+      'admin.invitations.list',
+    ],
+    status: 'ACTIVE_IN_ROUTES_AND_PROVIDERS',
     notes:
-      'Active in AdminInvitationsTableProvider.findByEmailAndStatus(); current create/revoke/redeem HTTP routes operate directly on INVITE#<inviteId>. Reserved on frozen table since Catalyst GSIs cannot be added lightly post-cutover without backfill.',
+      'Used directly by GET /api/v1/admin/invitations when filtering by email (+ optional status); unfiltered global listing hydrates recent invitation_created AuditLogs due to frozen schema without global status GSI.',
   },
   {
     table: 'AuditLogs',

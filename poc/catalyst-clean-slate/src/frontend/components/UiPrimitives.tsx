@@ -113,6 +113,8 @@ export interface StatePanelProps {
   description: string;
   actionLabel?: string;
   onAction?: () => void;
+  secondaryActionLabel?: string;
+  onSecondaryAction?: () => void;
 }
 
 export const StatePanel: React.FC<StatePanelProps> = ({
@@ -121,6 +123,8 @@ export const StatePanel: React.FC<StatePanelProps> = ({
   description,
   actionLabel,
   onAction,
+  secondaryActionLabel,
+  onSecondaryAction,
 }) => (
   <div
     role={mode === 'error' ? 'alert' : 'status'}
@@ -135,15 +139,28 @@ export const StatePanel: React.FC<StatePanelProps> = ({
     )}
     <h3 className="text-base font-semibold text-ink">{title}</h3>
     <p className="text-sm text-ink-muted max-w-md">{description}</p>
-    {actionLabel && onAction && (
-      <button
-        type="button"
-        onClick={onAction}
-        className="mt-1 inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-brand hover:bg-brand-hover text-white text-sm font-medium cursor-pointer transition-colors"
-      >
-        <RefreshCw className="w-4 h-4" aria-hidden="true" />
-        <span>{actionLabel}</span>
-      </button>
+    {(actionLabel || secondaryActionLabel) && (
+      <div className="mt-1 flex flex-wrap items-center justify-center gap-2.5">
+        {actionLabel && onAction && (
+          <button
+            type="button"
+            onClick={onAction}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-brand hover:bg-brand-hover text-white text-sm font-medium cursor-pointer transition-colors"
+          >
+            <RefreshCw className="w-4 h-4" aria-hidden="true" />
+            <span>{actionLabel}</span>
+          </button>
+        )}
+        {secondaryActionLabel && onSecondaryAction && (
+          <button
+            type="button"
+            onClick={onSecondaryAction}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-border bg-surface-alt hover:bg-canvas text-ink text-sm font-medium cursor-pointer transition-colors"
+          >
+            <span>{secondaryActionLabel}</span>
+          </button>
+        )}
+      </div>
     )}
   </div>
 );

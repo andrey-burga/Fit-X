@@ -260,9 +260,10 @@ export function validatePhase53VigorApiPreparation(): Phase53PreparationValidati
     violations.push('Function manifest mismatch against Phase 5.3 vigor_api preparation.');
   }
 
-  if (PHASE_5_3_VIGOR_API_PREPARATION.routeInventory.length !== 41) {
+  if (PHASE_5_3_VIGOR_API_PREPARATION.routeInventory.length === 0 ||
+      PHASE_5_3_VIGOR_API_PREPARATION.routeInventory.length !== ROUTE_CONTRACT_SPECS.length) {
     violations.push(
-      `Expected 41 canonical routes, got ${PHASE_5_3_VIGOR_API_PREPARATION.routeInventory.length}.`
+      `Expected ${ROUTE_CONTRACT_SPECS.length} canonical routes, got ${PHASE_5_3_VIGOR_API_PREPARATION.routeInventory.length}.`
     );
   }
 

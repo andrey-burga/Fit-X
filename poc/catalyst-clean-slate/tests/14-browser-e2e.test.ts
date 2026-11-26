@@ -466,7 +466,8 @@ test('[PASS-BROWSER-E2E] Chromium E2E: Mock Dev UI (desktop + mobile drawer/over
     await page.getByText('Consola Administrativa · Adaptador HTTP Clean-Slate (/api/v1/admin/*)').waitFor({
       state: 'visible',
     });
-    await page.getByText('Contrato pendiente (501)').waitFor({ state: 'visible' });
+    await page.getByText('Invitaciones RBAC (AdminInvitations)').waitFor({ state: 'visible' });
+    assert.equal(await page.getByText('Contrato pendiente (501)').count(), 0);
 
     assert.deepEqual(
       unexpectedPageErrors,

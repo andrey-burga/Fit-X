@@ -138,21 +138,40 @@ export interface IAthleteWorkspaceRepository {
   logMeal(actorUid: string, meal: Omit<MealLogRecord, 'id'> & { id?: string }): Promise<MealLogRecord>;
   deleteMeal(actorUid: string, mealId: string): Promise<void>;
 
+  listRecipes(actorUid: string, options?: { limit?: number; startKey?: string }): Promise<{ items: RecipeRecord[]; nextStartKey?: string }>;
   saveRecipe(actorUid: string, recipe: RecipeRecord): Promise<RecipeRecord>;
   deleteRecipe(actorUid: string, recipeId: string): Promise<void>;
 
+  listMealPlans(actorUid: string, options?: { limit?: number; startKey?: string }): Promise<{ items: MealPlanRecord[]; nextStartKey?: string }>;
   saveMealPlan(actorUid: string, plan: MealPlanRecord): Promise<MealPlanRecord>;
 
+  listGroceries(actorUid: string, options?: { status?: string; limit?: number; startKey?: string }): Promise<{ items: GroceryItemRecord[]; nextStartKey?: string }>;
   syncGroceries(
     actorUid: string,
     items: GroceryItemRecord[]
   ): Promise<{ groceries: GroceryItemRecord[]; batchCalls: number }>;
-  toggleGroceryStatus(actorUid: string, groceryId: string): Promise<GroceryItemRecord>;
+  toggleGroceryStatus(
+    actorUid: string,
+    groceryId: string,
+    patch?: Partial<Pick<GroceryItemRecord, 'status' | 'name' | 'quantity' | 'calculatedQuantity' | 'unit' | 'department' | 'notes' | 'isCustomized'>>
+  ): Promise<GroceryItemRecord>;
   addManualGrocery(actorUid: string, item: Omit<GroceryItemRecord, 'id'>): Promise<GroceryItemRecord>;
   deleteGrocery(actorUid: string, groceryId: string): Promise<void>;
+  clearCompletedGroceries(actorUid: string): Promise<{ deletedCount: number; batchCalls: number }>;
 
+  listWorkoutRoutines(actorUid: string, options?: { limit?: number; startKey?: string }): Promise<{ items: WorkoutRoutineRecord[]; nextStartKey?: string }>;
   saveWorkoutRoutine(actorUid: string, routine: WorkoutRoutineRecord): Promise<WorkoutRoutineRecord>;
+  deleteWorkoutRoutine(actorUid: string, routineId: string): Promise<void>;
   setDefaultRoutine(actorUid: string, routineId: string): Promise<WorkoutRoutineRecord[]>;
+
+  listExecutedWorkouts(
+    actorUid: string,
+    options?: { startDate?: string; endDate?: string; status?: 'in_progress' | 'completed' | 'abandoned'; limit?: number; startKey?: string }
+  ): Promise<{ items: ExecutedWorkoutRecord[]; nextStartKey?: string }>;
+  getExecutedWorkoutDetail(
+    actorUid: string,
+    workoutId: string
+  ): Promise<{ workout: ExecutedWorkoutRecord; sets: WorkoutSetRecord[] }>;
 
   startExecutedWorkout(
     actorUid: string,
@@ -177,24 +196,36 @@ export interface IAthleteWorkspaceRepository {
     summary: { durationSeconds: number; sessionRpe?: number; notes?: string }
   ): Promise<ExecutedWorkoutRecord>;
 
+  listCardioSessions(
+    actorUid: string,
+    options?: { startDate?: string; endDate?: string; limit?: number; startKey?: string }
+  ): Promise<{ items: CardioSessionRecord[]; nextStartKey?: string }>;
   addCardioSession(
     actorUid: string,
     session: Omit<CardioSessionRecord, 'id'>
   ): Promise<CardioSessionRecord>;
   deleteCardioSession(actorUid: string, cardioId: string): Promise<void>;
 
+  listNotifications(
+    actorUid: string,
+    options?: { unreadOnly?: boolean; limit?: number; startKey?: string }
+  ): Promise<{ items: NotificationRecord[]; nextStartKey?: string }>;
   createNotification(
     actorUid: string,
     notification: Omit<NotificationRecord, 'id' | 'createdAt' | 'read'>
   ): Promise<NotificationRecord>;
   markNotificationRead(actorUid: string, notificationId: string, read?: boolean): Promise<NotificationRecord>;
   markAllNotificationsRead(actorUid: string): Promise<NotificationRecord[]>;
+  deleteNotification(actorUid: string, notificationId: string): Promise<void>;
 }
 
 export interface AdminDirectoryFilter {
   searchQuery?: string;
   role?: UserRole | 'all';
   accountStatus?: AccountStatus | 'all';
+  emailVerified?: boolean | 'all';
+  sortBy?: 'createdAt' | 'lastSignInAt' | 'displayName' | 'email';
+  sortOrder?: 'asc' | 'desc';
 }
 
 export interface IAdminGovernanceRepository {
@@ -204,7 +235,10 @@ export interface IAdminGovernanceRepository {
     actorUid: string,
     targetUid: string
   ): Promise<{ user: UserAccountModel; recentLogs: AuditLogModel[] }>;
-  listInvitations(actorUid: string): Promise<AdminInvitationModel[]>;
+  listInvitations(
+    actorUid: string,
+    filter?: { email?: string; status?: AdminInvitationModel['status'] | 'all'; limit?: number; startKey?: string }
+  ): Promise<AdminInvitationModel[]>;
   createInvitation(
     actorUid: string,
     targetEmail: string,

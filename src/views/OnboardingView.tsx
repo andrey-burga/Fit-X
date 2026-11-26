@@ -412,7 +412,7 @@ export const OnboardingView: React.FC = () => {
                   Bienvenido a VigorCore, {currentUser?.name || 'Atleta'}.
                 </h2>
                 <p className="text-sm text-on-surface-variant mt-1 leading-relaxed">
-                  Tu ecosistema SaaS integral para optimizar rendimiento deportivo, recomposición corporal y longevidad metabólica.
+                  Tu plataforma integral para optimizar rendimiento deportivo, composición corporal y consistencia nutricional.
                 </p>
               </div>
 

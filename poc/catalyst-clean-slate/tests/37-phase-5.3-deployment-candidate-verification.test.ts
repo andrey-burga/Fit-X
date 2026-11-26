@@ -23,9 +23,11 @@ import {
   buildReproduciblePortablePackage,
   compareCodePoint,
   compareContentManifests,
+  createDeterministicPortableZip,
   extractCanonicalContentManifest,
   FIXED_DOS_MDATE,
   FIXED_DOS_MTIME,
+  PHASE_5_8_CANDIDATE_ZIP_NAME,
   parseZipEntries,
   RUNTIME_PACKAGES,
 } from '../scripts/build-vigor-api-portable-package.js';
@@ -38,6 +40,7 @@ const ARTIFACTS_DIR = path.join(POC_ROOT, 'artifacts');
 const CANDIDATE_ZIP_PATH = path.join(ARTIFACTS_DIR, 'vigor_api-auth-reconciled-portable.zip');
 const CANDIDATE_MANIFEST_PATH = path.join(ARTIFACTS_DIR, 'vigor_api-auth-reconciled-portable.manifest.json');
 const PRIOR_VARS_ZIP_PATH = path.join(ARTIFACTS_DIR, 'vigor_api-vars-reconciled-portable.zip');
+const CURRENT_CANDIDATE_ZIP_PATH = path.join(ARTIFACTS_DIR, PHASE_5_8_CANDIDATE_ZIP_NAME);
 
 const EXPECTED_CANDIDATE_SIZE_BYTES = 1_279_670;
 const EXPECTED_CANDIDATE_UNCOMPRESSED_BYTES = 3_761_484;
@@ -69,6 +72,16 @@ test('Phase 5.3 [PASS-LOCAL] Deployment candidate ZIP matches exact size, SHA-25
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vigor-cand-repro-'));
   try {
+    // Verify frozen Phase 5.3 archive deterministic ZIP re-packing
+    const frozenStage = path.join(tmpDir, 'frozen-stage');
+    fs.mkdirSync(frozenStage, { recursive: true });
+    execSync(`unzip -oq ${JSON.stringify(CANDIDATE_ZIP_PATH)} -d ${JSON.stringify(frozenStage)}`, { stdio: 'ignore' });
+    const frozenA = createDeterministicPortableZip(frozenStage, path.join(tmpDir, 'frozen-a.zip'));
+    const frozenB = createDeterministicPortableZip(frozenStage, path.join(tmpDir, 'frozen-b.zip'));
+    assert.equal(frozenA.sha256, EXPECTED_CANDIDATE_SHA256);
+    assert.equal(frozenB.sha256, frozenA.sha256);
+
+    // Verify live builder deterministic double-build on current compiled source
     const buildA = buildReproduciblePortablePackage({
       outputZipPath: path.join(tmpDir, 'cand-a.zip'),
       skipCompile: true,
@@ -157,19 +170,17 @@ test('Phase 5.3 [PASS-LOCAL] ZIP passes CRC/unzip -tq, hygiene checks, and exact
     ['dist/auth/cleanSlateAuthGuard.js', 'dist/sdk/catalystSdkBridge.js'],
   );
 
-  // Source-to-package parity for compiled modules except the subsequent local-only 403 diagnostic additions
-  const diagUpdatedDist = new Set([
-    'dist/auth/cleanSlateAuthGuard.js',
-    'dist/sdk/catalystSdkBridge.js',
-    'dist/server/advancedIoApp.js',
-  ]);
-  for (const item of candManifest.filter(m => m.path.startsWith('dist/'))) {
+  // Phase 5.3 historical ZIP remains frozen; current compiled POC_ROOT/dist/*.js must match Phase 5.8 candidate archive
+  assert.equal(fs.existsSync(CURRENT_CANDIDATE_ZIP_PATH), true, 'Missing Phase 5.8 candidate archive');
+  const currentCandidateDist = extractCanonicalContentManifest(CURRENT_CANDIDATE_ZIP_PATH).filter(m =>
+    m.path.startsWith('dist/')
+  );
+  assert.equal(currentCandidateDist.length, 16);
+  for (const item of currentCandidateDist) {
     assert.equal(fs.existsSync(path.join(POC_ROOT, item.path)), true);
-    if (!diagUpdatedDist.has(item.path)) {
-      const localJs = fs.readFileSync(path.join(POC_ROOT, item.path), 'utf8').replace(/\r\n/g, '\n');
-      const localSha = crypto.createHash('sha256').update(localJs, 'utf8').digest('hex');
-      assert.equal(item.sha256, localSha, `Unexpected drift in non-diagnostic dist module ${item.path}`);
-    }
+    const localJs = fs.readFileSync(path.join(POC_ROOT, item.path), 'utf8').replace(/\r\n/g, '\n');
+    const localSha = crypto.createHash('sha256').update(localJs, 'utf8').digest('hex');
+    assert.equal(item.sha256, localSha, `Compiled dist drift vs Phase 5.8 candidate in ${item.path}`);
   }
 });
 

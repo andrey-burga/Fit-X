@@ -112,7 +112,7 @@ export const TrainingProgressView: React.FC = () => {
             )}
             <span className="inline-flex items-center gap-1 px-space-sm py-0.5 rounded-full bg-surface-container-low text-on-surface-variant font-label-sm text-label-sm">
               <span className="material-symbols-outlined text-xs">verified</span>
-              Warmup Excluido del Tonelaje
+              Calentamiento excluido del tonelaje
             </span>
           </div>
           <h1 className="font-headline-lg text-headline-lg text-on-surface font-semibold tracking-tight">

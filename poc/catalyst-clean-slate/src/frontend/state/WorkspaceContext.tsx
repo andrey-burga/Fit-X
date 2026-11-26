@@ -32,8 +32,14 @@ import {
   type MockFaultMode,
   type OnboardingCompletionInput,
 } from '../contracts/repositories';
+import type { CatalystHostedAuthBridge } from '../adapters/CatalystHostedAuthBridge';
 import { getTodayIsoDate } from '../domain/nutritionEngine';
 import { InMemoryCleanSlateRepository } from '../mocks/InMemoryCleanSlateRepository';
+import {
+  buildPathWithPreservedMode,
+  navigateBrowserPath,
+  type AppRouteId,
+} from '../routing/authRouting';
 
 export type DevPersonaKey = 'usr_athlete_01' | 'usr_admin_01' | 'usr_superadmin_01';
 
@@ -71,6 +77,11 @@ interface WorkspaceContextValue {
 
   athleteRepo: IAthleteWorkspaceRepository;
   adminRepo: IAdminGovernanceRepository;
+  authRepository?: HttpSessionLifecycleRepository;
+  authBridge: CatalystHostedAuthBridge | null;
+  currentRoute: AppRouteId;
+  navigateToPath: (path: string, options?: { replace?: boolean }) => void;
+  navigateToAuthLogin: () => void;
   isLocalDevMock: boolean;
   repositoryModeLabel: string;
   logoutSession: (() => Promise<void>) | null;
@@ -118,6 +129,7 @@ const WorkspaceContext = createContext<WorkspaceContextValue | null>(null);
 export interface HttpSessionLifecycleRepository {
   getMe(): Promise<{ actor: Record<string, unknown>; csrfToken?: string }>;
   logout(): Promise<{ loggedOut: boolean; revokedSid: string }>;
+  redeemInvitation?(inviteId: string, token: string): Promise<{ assignedRole: string; roleVersion: number }>;
 }
 
 export interface WorkspaceProviderProps {
@@ -125,6 +137,9 @@ export interface WorkspaceProviderProps {
   athleteRepository?: IAthleteWorkspaceRepository;
   adminRepository?: IAdminGovernanceRepository;
   authRepository?: HttpSessionLifecycleRepository;
+  authBridge?: CatalystHostedAuthBridge | null;
+  currentRoute?: AppRouteId;
+  onNavigateRoute?: (path: string, options?: { replace?: boolean }) => void;
   initialView?: ViewId;
   initialPersonaUid?: DevPersonaKey;
   initialWorkspaceSnapshot?: CleanSlateWorkspaceSnapshot | null;
@@ -137,6 +152,9 @@ export const WorkspaceProvider: React.FC<WorkspaceProviderProps> = ({
   athleteRepository,
   adminRepository,
   authRepository,
+  authBridge = null,
+  currentRoute = 'workspace',
+  onNavigateRoute,
   initialView = 'dashboard',
   initialPersonaUid = 'usr_athlete_01',
   initialWorkspaceSnapshot = null,
@@ -200,12 +218,32 @@ export const WorkspaceProvider: React.FC<WorkspaceProviderProps> = ({
   }, [athleteRepo, authRepository, activePersonaUid]);
 
   useEffect(() => {
+    if (currentRoute !== 'workspace') {
+      return;
+    }
     void reloadWorkspace();
-  }, [reloadWorkspace]);
+  }, [reloadWorkspace, currentRoute]);
 
   const navigate = useCallback((view: ViewId) => {
     setActiveView(view);
   }, []);
+
+  const navigateToPath = useCallback(
+    (targetPath: string, options?: { replace?: boolean }) => {
+      if (onNavigateRoute) {
+        onNavigateRoute(targetPath, options);
+      } else {
+        navigateBrowserPath(targetPath, options);
+      }
+    },
+    [onNavigateRoute]
+  );
+
+  const navigateToAuthLogin = useCallback(() => {
+    const search = typeof window !== 'undefined' ? window.location.search : '';
+    const loginPath = buildPathWithPreservedMode('/auth/login', search);
+    navigateToPath(loginPath);
+  }, [navigateToPath]);
 
   const toggleTheme = useCallback(() => {
     setTheme(prev => (prev === 'light' ? 'dark' : 'light'));
@@ -644,6 +682,11 @@ export const WorkspaceProvider: React.FC<WorkspaceProviderProps> = ({
     dismissToast,
     athleteRepo,
     adminRepo,
+    authRepository,
+    authBridge,
+    currentRoute,
+    navigateToPath,
+    navigateToAuthLogin,
     isLocalDevMock: athleteRepo.isLocalDevMock,
     repositoryModeLabel: athleteRepo.modeLabel,
     logoutSession,

@@ -14,6 +14,7 @@ import {
   applyPeriodizationToBiometrics,
   NutritionalPeriodizationResult,
 } from '../services/nutritionalPeriodizationService';
+import { computeConsolidatedAnalytics } from '../services/workoutAnalyticsService';
 
 const MOMENT_ICONS: Record<MealMoment, string> = {
   desayuno: 'wb_twilight',
@@ -51,6 +52,7 @@ export const NutritionalDashboardView: React.FC = () => {
     activeRoutine,
     workoutRoutines,
     executedWorkoutsHistory,
+    workoutHistory,
     updateBiometrics,
     revertToPreviousBiometrics,
   } = useApp();
@@ -128,16 +130,34 @@ export const NutritionalDashboardView: React.FC = () => {
     }
   };
 
+  const trainingOverview = useMemo(() => {
+    const analytics = computeConsolidatedAnalytics(executedWorkoutsHistory, workoutHistory, {
+      period: '4w',
+    });
+    const completedTotal = executedWorkoutsHistory.filter(w => w.status === 'completed').length;
+    const latestCompleted = executedWorkoutsHistory.find(w => w.status === 'completed') || null;
+    const currentWeek = activeMesocycle?.mesocycleConfig?.currentWeek ?? null;
+    const totalWeeks = activeMesocycle?.mesocycleConfig?.durationWeeks ?? null;
+
+    return {
+      analytics,
+      completedTotal,
+      latestCompleted,
+      currentWeek,
+      totalWeeks,
+    };
+  }, [executedWorkoutsHistory, workoutHistory, activeMesocycle]);
+
   const handleSyncExcel = async () => {
     setIsSyncing(true);
-    showToast('Sincronizando con Cloud Firestore...');
+    showToast('Sincronizando datos de perfil y registros...');
     try {
       await testConnection();
       setIsSyncing(false);
-      showToast('¡Datos consolidados y sincronizados en Cloud Firestore con éxito!', 'success');
+      showToast('Datos consolidados y verificados con éxito.', 'success');
     } catch {
       setIsSyncing(false);
-      showToast('Sincronización completada localmente');
+      showToast('Verificación completada en almacenamiento local');
     }
   };
 
@@ -344,13 +364,13 @@ export const NutritionalDashboardView: React.FC = () => {
           <button
             onClick={handleSyncExcel}
             disabled={isSyncing}
-            className="flex items-center gap-space-xs px-space-md py-2 bg-primary hover:bg-primary-container text-on-primary font-label-md text-label-md rounded-lg font-medium transition-colors shadow-sm cursor-pointer"
+            className="flex items-center gap-space-xs px-space-md py-2 bg-primary hover:bg-primary-container text-on-primary font-label-md text-label-md rounded-lg font-medium transition-colors shadow-sm cursor-pointer disabled:opacity-60"
             type="button"
           >
             <span className={`material-symbols-outlined text-base ${isSyncing ? 'animate-spin' : ''}`}>
-              {isSyncing ? 'sync' : 'upload_file'}
+              {isSyncing ? 'sync' : 'sync'}
             </span>
-            <span>{isSyncing ? 'Sincronizando...' : 'Sincronizar Cloud Firestore'}</span>
+            <span>{isSyncing ? 'Verificando...' : 'Sincronizar datos'}</span>
           </button>
         </div>
       </div>
@@ -437,13 +457,13 @@ export const NutritionalDashboardView: React.FC = () => {
 
         {/* Insufficient Biometric Data Warning Banner */}
         {!periodizationRecommendation.hasSufficientData && (
-          <div className="p-space-sm rounded-lg bg-amber-500/10 border border-amber-500/30 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-space-sm">
-            <div className="flex items-start gap-space-xs text-xs text-amber-200">
-              <span className="material-symbols-outlined text-amber-400 text-base shrink-0 mt-0.5">warning</span>
+          <div className="p-space-sm rounded-lg bg-amber-50 border border-amber-300 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-space-sm">
+            <div className="flex items-start gap-space-xs text-xs text-amber-950">
+              <span className="material-symbols-outlined text-amber-700 text-base shrink-0 mt-0.5">warning</span>
               <div className="flex flex-col gap-0.5">
-                <span className="font-semibold text-amber-300">Datos Antropométricos Incompletos:</span>
+                <span className="font-semibold text-amber-950">Datos antropométricos incompletos:</span>
                 <span>{periodizationRecommendation.referenceNotice}</span>
-                <span className="text-[11px] text-amber-300/80">
+                <span className="text-[11px] text-amber-900">
                   Parámetros faltantes: <strong>{periodizationRecommendation.missingFields.join(', ')}</strong>. La aplicación automática se encuentra desactivada por seguridad.
                 </span>
               </div>
@@ -451,9 +471,9 @@ export const NutritionalDashboardView: React.FC = () => {
             <button
               type="button"
               onClick={() => navigate('perfil-atleta')}
-              className="px-3 py-1.5 rounded bg-amber-500 hover:bg-amber-600 text-black text-xs font-semibold shrink-0 cursor-pointer transition-colors self-end sm:self-auto"
+              className="px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold shrink-0 cursor-pointer transition-colors self-end sm:self-auto"
             >
-              Completar Perfil
+              Completar perfil
             </button>
           </div>
         )}
@@ -539,9 +559,9 @@ export const NutritionalDashboardView: React.FC = () => {
 
           {/* Proteínas */}
           <div className="bg-surface-container-lowest p-3 rounded-lg border border-surface-container/60 flex flex-col justify-between">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between flex-wrap gap-1">
               <span className="text-[11px] font-semibold uppercase tracking-wider text-on-surface-variant">Proteínas</span>
-              <span className="text-[9px] px-1.5 py-0.5 rounded bg-surface-container-high text-primary font-medium">
+              <span className="text-[9px] px-1.5 py-0.5 rounded bg-surface-container-high text-primary font-medium whitespace-nowrap">
                 {periodizationRecommendation.proposedPlan.proteinBasis === 'fat_free_mass'
                   ? 'Base: FFM (Masa Magra)'
                   : 'Base: Peso Total'}
@@ -915,6 +935,118 @@ export const NutritionalDashboardView: React.FC = () => {
         </div>
       </div>
 
+      {/* Grounded Training & Workload Summary */}
+      <section aria-label="Resumen de entrenamiento y carga" className="bg-surface-container-lowest rounded-xl p-space-md md:p-space-lg border border-surface-container/60 shadow-xs flex flex-col gap-space-md">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-space-sm border-b border-surface-container/60 pb-space-sm">
+          <div className="flex items-center gap-space-sm">
+            <div className="w-9 h-9 rounded-lg bg-tertiary/10 text-tertiary flex items-center justify-center shrink-0">
+              <span className="material-symbols-outlined text-lg">fitness_center</span>
+            </div>
+            <div>
+              <h2 className="font-headline-sm text-headline-sm text-on-surface font-semibold">
+                Entrenamiento y Carga Reciente
+              </h2>
+              <p className="text-xs text-on-surface-variant">
+                {activeRoutine
+                  ? `${activeRoutine.name}${trainingOverview.currentWeek && trainingOverview.totalWeeks ? ` · Semana ${trainingOverview.currentWeek} de ${trainingOverview.totalWeeks}` : ''}`
+                  : 'Sin rutina activa asignada actualmente'}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              type="button"
+              onClick={() => navigate('planificador-mesociclo')}
+              className="px-3 py-1.5 rounded-lg border border-surface-container bg-surface-container-low hover:bg-surface-container text-on-surface text-xs font-medium transition-colors cursor-pointer"
+            >
+              Mesociclos
+            </button>
+            <button
+              type="button"
+              onClick={() => navigate('rutina-de-entrenamiento')}
+              className="px-3 py-1.5 rounded-lg border border-surface-container bg-surface-container-low hover:bg-surface-container text-on-surface text-xs font-medium transition-colors cursor-pointer"
+            >
+              Rutina semanal
+            </button>
+            <button
+              type="button"
+              onClick={() => navigate('progreso-del-entrenamiento')}
+              className="px-3 py-1.5 rounded-lg border border-surface-container bg-surface-container-low hover:bg-surface-container text-on-surface text-xs font-medium transition-colors cursor-pointer"
+            >
+              Progreso y ACWR
+            </button>
+            <button
+              type="button"
+              onClick={() => navigate('registro-de-entrenamiento')}
+              className="px-3 py-1.5 rounded-lg bg-primary hover:bg-primary-container text-on-primary text-xs font-semibold transition-colors cursor-pointer"
+            >
+              Registrar entreno
+            </button>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-space-sm">
+          <div className="p-3 rounded-lg bg-surface-container-low border border-surface-container/50 flex flex-col justify-between">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-on-surface-variant">
+              Rutina / Mesociclo
+            </span>
+            <span className="text-sm font-bold text-on-surface mt-1 truncate">
+              {activeRoutine ? activeRoutine.name : 'Pendiente de configurar'}
+            </span>
+            <span className="text-[11px] text-on-surface-variant mt-1">
+              {activeRoutine
+                ? `${activeRoutine.frequencyDays} días/semana · ${activeRoutine.goal}`
+                : 'Genera o selecciona una plantilla'}
+            </span>
+          </div>
+
+          <div className="p-3 rounded-lg bg-surface-container-low border border-surface-container/50 flex flex-col justify-between">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-on-surface-variant">
+              Sesiones Completadas
+            </span>
+            <span className="font-metric-md text-on-surface font-bold mt-1 tabular-nums">
+              {trainingOverview.completedTotal}
+            </span>
+            <span className="text-[11px] text-on-surface-variant mt-1 truncate">
+              {trainingOverview.latestCompleted
+                ? `Última: ${trainingOverview.latestCompleted.routineDayName}`
+                : 'Registra tu primera sesión'}
+            </span>
+          </div>
+
+          <div className="p-3 rounded-lg bg-surface-container-low border border-surface-container/50 flex flex-col justify-between">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-on-surface-variant">
+              Tonelaje Efectivo (4 sem)
+            </span>
+            <span className="font-metric-md text-primary font-bold mt-1 tabular-nums">
+              {trainingOverview.analytics.totalEffectiveTonnageKg > 0
+                ? `${trainingOverview.analytics.totalEffectiveTonnageKg.toLocaleString()} kg`
+                : '0 kg'}
+            </span>
+            <span className="text-[11px] text-on-surface-variant mt-1">
+              {trainingOverview.analytics.totalEffectiveSets} series efectivas (sin warmups)
+            </span>
+          </div>
+
+          <div className="p-3 rounded-lg bg-surface-container-low border border-surface-container/50 flex flex-col justify-between">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-on-surface-variant">
+              Índice de Carga (ACWR)
+            </span>
+            <span className="font-metric-md text-on-surface font-bold mt-1 tabular-nums">
+              {trainingOverview.analytics.acwr.isCalculable && trainingOverview.analytics.acwr.acwrTonnageRatio !== null
+                ? trainingOverview.analytics.acwr.acwrTonnageRatio.toFixed(2)
+                : 'En construcción'}
+            </span>
+            <span className="text-[11px] text-on-surface-variant mt-1 truncate">
+              {trainingOverview.analytics.acwr.isCalculable
+                ? trainingOverview.analytics.acwr.statusLabel
+                : `Requiere historial base (${trainingOverview.analytics.acwr.availableHistoryDays}/35 días)`}
+            </span>
+          </div>
+        </div>
+      </section>
+
       {/* Central Analytical Charts Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-space-lg">
         {/* Chart 1: Weekly Balance */}
@@ -996,19 +1128,20 @@ export const NutritionalDashboardView: React.FC = () => {
               )}
               <div className="w-full h-full flex items-end justify-between pl-8 pr-2 gap-1.5 z-10">
                 {chartDays.map((item, idx) => (
-                  <div
+                  <button
                     key={idx}
+                    type="button"
                     onClick={() => {
                       setSelectedDate(item.dateStr);
                       showToast(`Fecha seleccionada: ${formatSpanishDate(item.dateStr)}`);
                     }}
                     title={`${item.dateStr}: ${item.empty ? 'Sin registros' : `${item.kcal} kcal (${item.mealsCount} comidas)`}`}
                     className={`flex-1 flex flex-col items-center gap-1 h-full justify-end group cursor-pointer transition-transform hover:scale-[1.02] ${
-                      item.empty ? 'opacity-40 hover:opacity-75' : ''
+                      item.empty ? 'opacity-45 hover:opacity-80' : ''
                     }`}
                   >
                     <span
-                      className={`font-code-data text-[11px] transition-opacity ${
+                      className={`font-code-data text-[11px] transition-opacity tabular-nums ${
                         item.active
                           ? 'text-primary font-bold opacity-100'
                           : 'text-on-surface opacity-0 group-hover:opacity-100'
@@ -1044,7 +1177,7 @@ export const NutritionalDashboardView: React.FC = () => {
                         {item.date}
                       </span>
                     </div>
-                  </div>
+                  </button>
                 ))}
               </div>
             </div>
@@ -1440,8 +1573,9 @@ export const NutritionalDashboardView: React.FC = () => {
               </p>
             </div>
             <div className="pt-space-xs flex items-center justify-between">
-              <span className="font-code-data text-code-data text-primary font-medium text-xs">Hoja: Menu_Semanal</span>
+              <span className="font-code-data text-code-data text-primary font-medium text-xs">Plan de 7 días</span>
               <button
+                type="button"
                 onClick={() => navigate('menu-semanal')}
                 className="font-label-md text-label-md text-primary font-semibold flex items-center gap-1 hover:underline cursor-pointer text-xs"
               >

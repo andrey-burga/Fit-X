@@ -41,6 +41,7 @@ import {
   type AuthoritativeActor,
   type UserAccountItem,
 } from '../src/types/cleanSlate.js';
+import { CANONICAL_ROUTE_COUNT } from '../src/routes/routeContracts.js';
 import { runVerifierCli } from '../scripts/verify-clean-slate-provisioning.js';
 
 function startFakeCatalystLoopbackBaaS() {
@@ -585,15 +586,15 @@ test('Phase 5.1.1 [PASS-LOOPBACK] VIGOR_CORS_MODE=platform_managed suppresses du
   }
 });
 
-test('Phase 5.1.1 [PASS-UNIT] API Gateway 41-route rewrite coverage, 41-route auth matrix, CORS/OPTIONS matrix, and Global Impact Audit are complete & non-applied', () => {
+test('Phase 5.1.1 [PASS-UNIT] API Gateway route rewrite coverage, auth matrix, CORS/OPTIONS matrix, and Global Impact Audit are complete & non-applied', () => {
   const rewriteReport = verifyGatewayRewriteCoverage('vigor_api');
-  assert.equal(rewriteReport.totalRoutes, 41);
-  assert.equal(rewriteReport.passedRoutes, 41);
+  assert.equal(rewriteReport.totalRoutes, CANONICAL_ROUTE_COUNT);
+  assert.equal(rewriteReport.passedRoutes, CANONICAL_ROUTE_COUNT);
   assert.equal(rewriteReport.allMatched, true);
 
   const authCompleteness = verifyGatewayAuthMatrixCompleteness();
-  assert.equal(authCompleteness.totalContractRoutes, 41);
-  assert.equal(authCompleteness.totalMatrixRoutes, 41);
+  assert.equal(authCompleteness.totalContractRoutes, CANONICAL_ROUTE_COUNT);
+  assert.equal(authCompleteness.totalMatrixRoutes, CANONICAL_ROUTE_COUNT);
   assert.deepEqual(authCompleteness.missingRouteIds, []);
   assert.deepEqual(authCompleteness.extraRouteIds, []);
   assert.equal(authCompleteness.allRoutesCovered, true);
@@ -607,7 +608,7 @@ test('Phase 5.1.1 [PASS-UNIT] API Gateway 41-route rewrite coverage, 41-route au
   assert.equal(altB.domainMapping.webClientHostingRequired, false);
   assert.equal(altB.domainMapping.dnsRecordType, 'CNAME');
   assert.equal(altB.authorizedDomainsCors.supportsWithoutIframe, true);
-  assert.equal(altB.perRouteAuthMatrix.length, 41);
+  assert.equal(altB.perRouteAuthMatrix.length, CANONICAL_ROUTE_COUNT);
 
   const bootstrapEntry = altB.perRouteAuthMatrix.find(r => r.routeId === 'auth.session.bootstrapProfile');
   const exchangeEntry = altB.perRouteAuthMatrix.find(r => r.routeId === 'auth.session.exchange');

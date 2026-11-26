@@ -3,7 +3,7 @@ import { useApp } from '../context/AppContext';
 import { MealMoment, MealLogItem } from '../types';
 
 export const MealLogView: React.FC = () => {
-  const { mealLogs, openMealDrawer, deleteMealLog, duplicateMealLog, showToast, todaySummary } = useApp();
+  const { mealLogs, openMealDrawer, deleteMealLog, duplicateMealLog, showToast, todaySummary, biometrics, hasBiometricsConfigured } = useApp();
 
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedMoment, setSelectedMoment] = useState<string>('all');
@@ -41,14 +41,13 @@ export const MealLogView: React.FC = () => {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `vigor_registro_comidas_${new Date().toISOString().slice(0, 10)}.json`;
+    a.download = `vigorcore_registro_comidas_${new Date().toISOString().slice(0, 10)}.json`;
     a.click();
-    showToast('Exportación descargada en formato JSON / CSV');
+    URL.revokeObjectURL(url);
+    showToast('Historial descargado en formato JSON');
   };
 
-  const handleImport = () => {
-    showToast('Importación desde Excel o CSV simulada: 12 filas añadidas');
-  };
+  const calorieTarget = hasBiometricsConfigured && biometrics.targetCalories > 0 ? biometrics.targetCalories : 2400;
 
   return (
     <div className="p-4 sm:p-gutter-desktop max-w-[1440px] mx-auto w-full flex flex-col gap-space-lg animate-in fade-in duration-150">
@@ -59,17 +58,12 @@ export const MealLogView: React.FC = () => {
             <h1 className="font-headline-lg text-headline-lg text-on-surface tracking-tight font-semibold">
               Registro de Comidas
             </h1>
-            <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-surface-container-high text-primary font-label-sm text-label-sm font-semibold shadow-xs">
-              <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
-              924 registros almacenados
-            </span>
-            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-surface-container-low text-on-surface-variant font-label-sm text-label-sm">
-              <span className="material-symbols-outlined text-xs text-primary">cloud_done</span>
-              Sincronizado: Hoy, 12:45 PM
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-surface-container-high text-primary font-label-sm text-label-sm font-semibold tabular-nums">
+              {mealLogs.length} {mealLogs.length === 1 ? 'registro guardado' : 'registros guardados'}
             </span>
           </div>
           <p className="font-body-md text-body-md text-on-surface-variant">
-            Historial granular de alimentos y preparaciones consumidas sincronizado con la base de datos (~900 filas históricas con desglose métrico exacto).
+            Historial granular de alimentos y preparaciones consumidas con desglose métrico por momento del día.
           </p>
         </div>
 
@@ -80,28 +74,20 @@ export const MealLogView: React.FC = () => {
             type="button"
           >
             <span className="material-symbols-outlined text-base text-secondary">file_download</span>
-            <span>Exportar</span>
+            <span>Exportar JSON</span>
           </button>
           <button
-            onClick={handleImport}
-            className="inline-flex items-center gap-space-xs px-space-md py-2 bg-surface-container-lowest hover:bg-surface-container-low text-on-surface font-label-md text-label-md rounded-lg font-medium shadow-xs transition-colors cursor-pointer border border-surface-container"
-            type="button"
-          >
-            <span className="material-symbols-outlined text-base text-secondary">upload_file</span>
-            <span>Importar Excel / CSV</span>
-          </button>
-          <button
-            onClick={openMealDrawer}
+            onClick={() => openMealDrawer()}
             className="inline-flex items-center gap-space-xs px-space-md py-2 bg-primary hover:bg-primary-container text-on-primary font-label-md text-label-md rounded-lg font-medium shadow-sm transition-all active:scale-[0.98] cursor-pointer"
             type="button"
           >
             <span className="material-symbols-outlined text-base">add_circle</span>
-            <span>+ Registrar nueva comida</span>
+            <span>Registrar nueva comida</span>
           </button>
         </div>
       </div>
 
-      {/* Daily Summary Telemetry Bento */}
+      {/* Daily Summary Bento */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-space-md">
         <div className="bg-surface-container-lowest rounded-xl p-space-md shadow-xs border border-surface-container/50 flex flex-col justify-between">
           <div className="flex items-center justify-between">
@@ -111,15 +97,17 @@ export const MealLogView: React.FC = () => {
             <span className="material-symbols-outlined text-primary text-lg">local_fire_department</span>
           </div>
           <div className="my-space-xs flex items-baseline gap-1">
-            <span className="font-metric-xl text-metric-xl text-on-surface font-bold">
+            <span className="font-metric-xl text-metric-xl text-on-surface font-bold tabular-nums">
               {todaySummary.calories}
             </span>
-            <span className="font-label-md text-label-md text-on-surface-variant">/ 2,400 kcal</span>
+            <span className="font-label-md text-label-md text-on-surface-variant tabular-nums">
+              / {calorieTarget} kcal
+            </span>
           </div>
           <div className="w-full bg-surface-container-low h-1.5 rounded-full overflow-hidden">
             <div
               className="bg-primary h-full rounded-full"
-              style={{ width: `${Math.min(100, Math.round((todaySummary.calories / 2400) * 100))}%` }}
+              style={{ width: `${Math.min(100, Math.round((todaySummary.calories / calorieTarget) * 100))}%` }}
             />
           </div>
         </div>

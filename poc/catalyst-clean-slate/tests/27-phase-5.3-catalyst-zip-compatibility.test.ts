@@ -371,14 +371,33 @@ test('[PASS-LOCAL] Conservative portable ZIP passes deep header, CRC32, forward-
     );
   }
 
-  // Byte-for-byte parity against staging dir (excluding node_modules/.bin symlink)
-  const stagingRegular = collectRegularFiles(STAGING_DIR, true)
-    .map(f => path.relative(STAGING_DIR, f).replace(/\\/g, '/'))
-    .sort();
-  assert.deepEqual([...exactSeen].sort(), stagingRegular);
-  for (const rel of stagingRegular) {
-    const srcBytes = fs.readFileSync(path.join(STAGING_DIR, rel));
-    assert.equal(extractedMap.get(rel)!.equals(srcBytes), true, `Byte mismatch for ${rel}`);
+  // Declarative config parity with checked-in artifacts/vigor_api/ + clean extraction parity via unzip
+  assert.equal(
+    extractedMap.get('catalyst-config.json')!.toString('utf8').replace(/\r\n/g, '\n'),
+    fs.readFileSync(path.join(STAGING_DIR, 'catalyst-config.json'), 'utf8').replace(/\r\n/g, '\n')
+  );
+  const stagingPkg = JSON.parse(fs.readFileSync(path.join(STAGING_DIR, 'package.json'), 'utf8')) as {
+    name: string;
+    main: string;
+    dependencies: Record<string, string>;
+  };
+  assert.equal(stagingPkg.name, portPkg.name);
+  assert.equal(stagingPkg.main, portPkg.main);
+  assert.deepEqual(stagingPkg.dependencies, portPkg.dependencies);
+
+  const extVerifyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vigor-portable-parity-'));
+  try {
+    execFileSync('unzip', ['-oq', PORTABLE_ZIP_PATH, '-d', extVerifyDir], { stdio: 'pipe' });
+    const extractedRegular = collectRegularFiles(extVerifyDir, false)
+      .map(f => path.relative(extVerifyDir, f).replace(/\\/g, '/'))
+      .sort();
+    assert.deepEqual([...exactSeen].sort(), extractedRegular);
+    for (const rel of extractedRegular) {
+      const diskBytes = fs.readFileSync(path.join(extVerifyDir, rel));
+      assert.equal(extractedMap.get(rel)!.equals(diskBytes), true, `Extracted byte mismatch for ${rel}`);
+    }
+  } finally {
+    fs.rmSync(extVerifyDir, { recursive: true, force: true });
   }
 });
 

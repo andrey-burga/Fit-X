@@ -1,0 +1,207 @@
+{
+  "candidateName": "vigor_api-phase-5.8-development-candidate.zip",
+  "phase": "5.8",
+  "targetEnvironment": "Development",
+  "readinessStatus": "READY_FOR_DEVELOPMENT_OPERATOR_REVIEW",
+  "sourceStateIdentifier": {
+    "type": "deterministic-server-source-sha256",
+    "sha256": "879ed3f3f0b9870448467af5b49dd06b99e8df3a668eef3f1c9eb84c96b1606c",
+    "fileCount": 18,
+    "files": [
+      {
+        "path": "package.json",
+        "sha256": "fb9305f1ea5344e2f1f5b554d25ec232a5474e8168f1650e5330ff02a8f4b937",
+        "sizeBytes": 996
+      },
+      {
+        "path": "src/auth/cleanSlateAuthGuard.ts",
+        "sha256": "85f1222d1afdd1fc6b336db95fc0f11dab35d78ba7c485a87663af65788da8f3",
+        "sizeBytes": 61285
+      },
+      {
+        "path": "src/nosql/catalystModularAdapter.ts",
+        "sha256": "d5dcb824db4c7ad468cedb7098aad0e3e4e11c561f32ff5394c13695df42ec38",
+        "sizeBytes": 14085
+      },
+      {
+        "path": "src/nosql/cleanSlateEngine.ts",
+        "sha256": "2afd0de3428450e7808380eb3a6805f213ccfa9d5a53520bd03dd5eb51f45590",
+        "sizeBytes": 29111
+      },
+      {
+        "path": "src/nosql/providers/baseTableProvider.ts",
+        "sha256": "f2b54ac3a5acbdaec20259a5121ef26be10c9a71d248fdf67bbc2fd34f683dda",
+        "sizeBytes": 6266
+      },
+      {
+        "path": "src/nosql/providers/index.ts",
+        "sha256": "37a15817f02638aba1007d369ba50c6f472dab59086013df2854ce6607cb859f",
+        "sizeBytes": 137
+      },
+      {
+        "path": "src/nosql/providers/tableProviders.ts",
+        "sha256": "4b3c603ce5450ea2bc3771f00bffb84f9d7e84f91eceb98a7d9d6d03911bdb12",
+        "sizeBytes": 16681
+      },
+      {
+        "path": "src/routes/apiRouterSchema.ts",
+        "sha256": "c13fd58529dceeb7d069157749c69daf439ac1146c17ef73a475e6fa7fb86d1b",
+        "sizeBytes": 56709
+      },
+      {
+        "path": "src/routes/routeContracts.ts",
+        "sha256": "75c5b77c3831ebad9faa48490b9d84d25b62276eac1b886a2a94d4ec6d0ab41e",
+        "sizeBytes": 56884
+      },
+      {
+        "path": "src/sdk/catalystSdkBridge.ts",
+        "sha256": "47aef5171cded054fcd916df9611f6211a26e94d46f6675cebd2f5377067d5a0",
+        "sizeBytes": 70356
+      },
+      {
+        "path": "src/security/httpSecurityPolicy.ts",
+        "sha256": "3859eaaac54b47638590ee04a5590a2ad6aee7e59b8691c70f4902e7e89db786",
+        "sizeBytes": 16552
+      },
+      {
+        "path": "src/server/advancedIoApp.ts",
+        "sha256": "535c8573cbbeb4c7f43e4771b8da46f34f3c2de0cdd1bd50065c169c60a87156",
+        "sizeBytes": 18940
+      },
+      {
+        "path": "src/server/catalystEntry.ts",
+        "sha256": "044aa28e57770cc9867fcce70b3393799477092a5df1051a1663ad3cc1616eae",
+        "sizeBytes": 2515
+      },
+      {
+        "path": "src/services/adminGovernanceService.ts",
+        "sha256": "8ac19ad029719d8af1a2d3a14ef8cabda12a0adfa296aa2408c994166e3b8889",
+        "sizeBytes": 54695
+      },
+      {
+        "path": "src/services/athleteDataService.ts",
+        "sha256": "bcd5e85e68f1857e953e60655dc7bbb1e4865781be380fa563866fb19c2019a9",
+        "sizeBytes": 51509
+      },
+      {
+        "path": "src/types/cleanSlate.ts",
+        "sha256": "69d6679f228df2213e911474ea3512894a74244f69db606c4a37f07bc845eff8",
+        "sizeBytes": 15287
+      },
+      {
+        "path": "src/validators/domainValidators.ts",
+        "sha256": "60868cf8e734ea263df039c38135b99ddd9d0c36bbecc7031a6769516a703928",
+        "sizeBytes": 19021
+      },
+      {
+        "path": "tsconfig.server.json",
+        "sha256": "f7bb96ea0083e83a107e8c240ead86a971cdc623bf9a056af17f9c70b1840ae0",
+        "sizeBytes": 283
+      }
+    ]
+  },
+  "buildCommand": "npm --prefix poc/catalyst-clean-slate run build:server && ./poc/catalyst-clean-slate/node_modules/.bin/tsx poc/catalyst-clean-slate/scripts/build-vigor-api-portable-package.ts",
+  "nodeRuntime": {
+    "buildHostNodeVersion": "v22.23.5",
+    "targetCatalystStack": "node22",
+    "enginesNode": ">=22"
+  },
+  "entryPoint": "dist/server/catalystEntry.js",
+  "entryPointSha256": "3eb34a68fdbcda6a97e8b8010461920a14b57a6b67859bc6210d4d216d28b827",
+  "requiredDependencies": {
+    "@zcatalyst/auth": "^1.0.0",
+    "@zcatalyst/auth-admin": "^1.1.0",
+    "@zcatalyst/nosql": "^1.0.0",
+    "@zcatalyst/transport": "^1.1.0",
+    "@zcatalyst/utils": "^1.1.0",
+    "express": "^4.22.3"
+  },
+  "packageStats": {
+    "entryCount": 905,
+    "zipSizeBytes": 1288500,
+    "totalUncompressedBytes": 3826002,
+    "zipSha256": "75db5ec6a516f6d5b349b80bf97ec443a798cf3b68cdc17a661d3e648e1d8354"
+  },
+  "compiledEntrySha256s": [
+    {
+      "path": "dist/auth/cleanSlateAuthGuard.js",
+      "uncompressedSize": 56518,
+      "sha256": "90607d2238f1af86822588cd84a51b344a5466b9fbb56ba25b6bff112f97288e"
+    },
+    {
+      "path": "dist/nosql/catalystModularAdapter.js",
+      "uncompressedSize": 12440,
+      "sha256": "5f9bdd119d6e01ddf58d526b6a597bbeb51785434b442d0db616868a4458dbc6"
+    },
+    {
+      "path": "dist/nosql/cleanSlateEngine.js",
+      "uncompressedSize": 26402,
+      "sha256": "1d5a361e0a2233135906fef4d7c84dbac873f379f313ed58b62fb1057caed908"
+    },
+    {
+      "path": "dist/nosql/providers/baseTableProvider.js",
+      "uncompressedSize": 5277,
+      "sha256": "566666c6d736a4a3dd0dfc276199f666b4cd86f483286490b8e5aa370ce187b7"
+    },
+    {
+      "path": "dist/nosql/providers/index.js",
+      "uncompressedSize": 169,
+      "sha256": "bef2f0f7d99eb57fab795f0d1493bc301505bb1e600b7ecd7688a4459d364c1d"
+    },
+    {
+      "path": "dist/nosql/providers/tableProviders.js",
+      "uncompressedSize": 13067,
+      "sha256": "3656ce5622631aee3ec2b2ceb86f5e1b5abe238ef308546f1418a3977b7123f3"
+    },
+    {
+      "path": "dist/routes/apiRouterSchema.js",
+      "uncompressedSize": 59262,
+      "sha256": "e1b787a541201dc3d3134d9cc07cd0ea0d06925b54ecdea6f3a2c989e2ff4064"
+    },
+    {
+      "path": "dist/routes/routeContracts.js",
+      "uncompressedSize": 59636,
+      "sha256": "14e2c72dde62a55d95192feb11674eee760100cc7b406361d201fcd08475f6de"
+    },
+    {
+      "path": "dist/sdk/catalystSdkBridge.js",
+      "uncompressedSize": 64427,
+      "sha256": "6bbf56caa40b302890958139a8e32392fcf9ec4dcc489205a25cfd51a2ee92c5"
+    },
+    {
+      "path": "dist/security/httpSecurityPolicy.js",
+      "uncompressedSize": 15444,
+      "sha256": "00d6b8e3eb406d975c5d0a45fd2d3f5c29c589d49eca09820601e52466b6dda8"
+    },
+    {
+      "path": "dist/server/advancedIoApp.js",
+      "uncompressedSize": 17787,
+      "sha256": "2452dc744cf59ae3988bec207d48104db7dfa3e7fc7cc2ea681262d6b3c54da2"
+    },
+    {
+      "path": "dist/server/catalystEntry.js",
+      "uncompressedSize": 2219,
+      "sha256": "3eb34a68fdbcda6a97e8b8010461920a14b57a6b67859bc6210d4d216d28b827"
+    },
+    {
+      "path": "dist/services/adminGovernanceService.js",
+      "uncompressedSize": 52004,
+      "sha256": "5fbcdf28f0b61573be621a25a594c95aa1b5ac8df2ad2b2a4b31be291ab7a097"
+    },
+    {
+      "path": "dist/services/athleteDataService.js",
+      "uncompressedSize": 50136,
+      "sha256": "c8684f37c1cb4b0f33e2c6f74b4d58037a5ff03db33627f0e6efd35f0a0b14c0"
+    },
+    {
+      "path": "dist/types/cleanSlate.js",
+      "uncompressedSize": 10570,
+      "sha256": "d2317c4b38406d4f7fd6eee09d61ee8f8f299c4e81f1a45887917549e72f8c11"
+    },
+    {
+      "path": "dist/validators/domainValidators.js",
+      "uncompressedSize": 18722,
+      "sha256": "50491de205882915f6efa644cfb0ff8676516c47e0c832203ae999d2ffeb1048"
+    }
+  ]
+}

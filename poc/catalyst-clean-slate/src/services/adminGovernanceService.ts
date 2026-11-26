@@ -52,6 +52,7 @@ export type AdminPermission =
   | 'users:setRole'
   | 'users:setStatus'
   | 'users:resetPassword'
+  | 'invitations:list'
   | 'invitations:create'
   | 'invitations:revoke'
   | 'audit:list';
@@ -63,6 +64,7 @@ export const PERMISSION_MATRIX: Record<AdminPermission, UserRole[]> = {
   'users:setRole': ['superadmin'],
   'users:setStatus': ['admin', 'superadmin'],
   'users:resetPassword': ['admin', 'superadmin'],
+  'invitations:list': ['admin', 'superadmin'],
   'invitations:create': ['admin', 'superadmin'],
   'invitations:revoke': ['admin', 'superadmin'],
   'audit:list': ['admin', 'superadmin'],
@@ -631,9 +633,129 @@ export class AdminGovernanceService {
       targetUid: emailNormalized,
       targetEmail: emailNormalized,
       reason: `Invitación generada para rol ${targetRole}`,
+      changes: {
+        after: {
+          inviteId,
+          targetRole,
+          expiresAt: inviteItem.expiresAt,
+        },
+      },
     });
 
     return { inviteId, rawToken, expiresAt: inviteItem.expiresAt };
+  }
+
+  async listInvitations(
+    actor: AuthoritativeActor,
+    filter: {
+      email?: string;
+      status?: AdminInvitationItem['status'];
+      limit?: number;
+      startKey?: string;
+    } = {}
+  ): Promise<
+    QueryPageResult<AdminInvitationItem> & {
+      queryStrategy: 'GSI_InviteEmailStatus' | 'AuditLogs_GSI_GlobalChronology_Hydrated';
+      indexLimitationNote?: string;
+    }
+  > {
+    this.assertPermission(actor, 'invitations:list');
+    const limit = Math.min(Math.max(1, filter.limit ?? 50), CATALYST_PLATFORM_LIMITS.MAX_QUERY_READ_ITEMS);
+    const normalizedEmail = filter.email?.toLowerCase().trim();
+
+    const sanitizeInvitation = (inv: AdminInvitationItem): AdminInvitationItem => {
+      const { tokenHash: _th, lockHolderOpId: _lho, lockExpiresAtMs: _lem, ...safe } = inv;
+      return safe as AdminInvitationItem;
+    };
+
+    if (normalizedEmail) {
+      const page = await this.db.queryIndex<AdminInvitationItem>('AdminInvitations', {
+        indexName: 'GSI_InviteEmailStatus',
+        partitionKeyValue: normalizedEmail,
+        sortKeyEquals: filter.status,
+        scanDescending: true,
+        limit,
+        startKey: filter.startKey,
+      });
+      return {
+        items: page.items.map(sanitizeInvitation),
+        nextStartKey: page.nextStartKey,
+        queryStrategy: 'GSI_InviteEmailStatus',
+      };
+    }
+
+    const nowMs = this.nowMsProvider();
+    const nowIso = new Date(nowMs).toISOString();
+    const currentYear = new Date(nowMs).getUTCFullYear();
+    const startYear = Math.max(2025, currentYear - 1);
+    const startIso = `${startYear}-01-01T00:00:00.000Z`;
+    const buckets = enumerateQuarterBuckets(startIso, nowIso);
+
+    const bucketPages = await Promise.all(
+      buckets.map(bucket =>
+        this.db.queryIndex<AuditLogItem>('AuditLogs', {
+          indexName: 'GSI_GlobalChronology',
+          partitionKeyValue: bucket,
+          scanDescending: true,
+          limit: CATALYST_PLATFORM_LIMITS.MAX_QUERY_READ_ITEMS,
+        })
+      )
+    );
+
+    const createdLogs = bucketPages
+      .flatMap(p => p.items)
+      .filter(entry => entry.action === 'invitation_created')
+      .sort((a, b) => b.globalChronologyKey.localeCompare(a.globalChronologyKey));
+
+    const orderedInviteIds: string[] = [];
+    const seenIds = new Set<string>();
+    for (const logEntry of createdLogs) {
+      const afterObj = (logEntry.changes as { after?: { inviteId?: unknown } } | undefined)?.after;
+      const fromChanges = typeof afterObj?.inviteId === 'string' ? afterObj.inviteId.trim() : '';
+      const fromTarget = logEntry.targetUid?.startsWith('inv_') ? logEntry.targetUid : '';
+      const inviteId = fromChanges || fromTarget;
+      if (inviteId && !seenIds.has(inviteId)) {
+        seenIds.add(inviteId);
+        orderedInviteIds.push(inviteId);
+      }
+    }
+
+    const hydrated: AdminInvitationItem[] = [];
+    if (typeof this.db.fetchItem === 'function') {
+      const batchSize = 25;
+      for (let i = 0; i < orderedInviteIds.length; i += batchSize) {
+        const chunk = orderedInviteIds.slice(i, i + batchSize);
+        const fetched = await Promise.all(
+          chunk.map(id =>
+            this.db.fetchItem<AdminInvitationItem>(
+              'AdminInvitations',
+              { pk: KeyBuilders.invitePk(id) },
+              { consistent_read: true }
+            )
+          )
+        );
+        for (const item of fetched) {
+          if (item && (!filter.status || item.status === filter.status)) {
+            hydrated.push(sanitizeInvitation(item));
+          }
+        }
+      }
+    }
+
+    hydrated.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+    const rawOffset = filter.startKey ? Number(Buffer.from(filter.startKey, 'base64url').toString('utf8')) : 0;
+    const offset = Number.isFinite(rawOffset) && rawOffset > 0 ? Math.floor(rawOffset) : 0;
+    const items = hydrated.slice(offset, offset + limit);
+    const hasMore = offset + limit < hydrated.length;
+    const nextStartKey = hasMore ? Buffer.from(String(offset + limit), 'utf8').toString('base64url') : undefined;
+
+    return {
+      items,
+      nextStartKey,
+      queryStrategy: 'AuditLogs_GSI_GlobalChronology_Hydrated',
+      indexLimitationNote:
+        'Frozen AdminInvitations schema exposes GSI_InviteEmailStatus (emailNormalized + status) only; global status listing hydrates invitation_created events from AuditLogs.GSI_GlobalChronology quarterly buckets.',
+    };
   }
 
   async revokeInvitation(
@@ -1046,6 +1168,9 @@ export class AdminGovernanceService {
     suspendedUsers: number;
     superadmins: number;
     admins: number;
+    pendingInvitations: number;
+    pendingVerificationUsers: number;
+    recentSignups30d: number;
   }> {
     this.assertPermission(actor, 'users:stats');
     const segmentUsersList = await Promise.all(
@@ -1094,12 +1219,30 @@ export class AdminGovernanceService {
       }
     }
     const users = Array.from(uniqueByPk.values());
+    const nowMs = this.nowMsProvider();
+    const nowSec = Math.floor(nowMs / 1000);
+    const cutoff30dIso = new Date(nowMs - 30 * 24 * 60 * 60 * 1000).toISOString();
+
+    let pendingInvitations = 0;
+    if (typeof this.db.fetchItem === 'function') {
+      const pendingPage = await this.listInvitations(actor, {
+        status: 'pending',
+        limit: CATALYST_PLATFORM_LIMITS.MAX_QUERY_READ_ITEMS,
+      });
+      pendingInvitations = pendingPage.items.filter(inv => inv.expiresAtEpochSec > nowSec).length;
+    }
+
     return {
       totalUsers: users.length,
       activeUsers: users.filter(u => u.accountStatus === 'active').length,
       suspendedUsers: users.filter(u => u.accountStatus === 'suspended').length,
       superadmins: users.filter(u => u.role === 'superadmin').length,
       admins: users.filter(u => u.role === 'admin').length,
+      pendingInvitations,
+      pendingVerificationUsers: users.filter(u => !u.emailVerified).length,
+      recentSignups30d: users.filter(
+        u => typeof u.createdAt === 'string' && u.createdAt >= cutoff30dIso
+      ).length,
     };
   }
 
@@ -1129,16 +1272,55 @@ export class AdminGovernanceService {
   /**
    * OBJECTIVE 3 — DISTRIBUTED DIRECTORY PAGINATION:
    * Queries all 4 `GSI_Directory` segments (`USER_SEG#0..3`) in parallel (`Promise.all`),
-   * sorts descending by `createdAt`, and paginates with a composite segment cursor.
+   * applies search/verification/status filters BEFORE pagination slicing,
+   * sorts cleanly, and paginates with a composite segment cursor.
    */
   async listDirectoryUsers(
     actor: AuthoritativeActor,
-    filter: { role?: UserRole; accountStatus?: 'active' | 'suspended'; limit?: number; startKey?: string } = {}
+    filter: {
+      role?: UserRole;
+      accountStatus?: 'active' | 'suspended';
+      emailVerified?: boolean;
+      searchQuery?: string;
+      sortBy?: 'createdAt' | 'displayName' | 'email';
+      sortOrder?: 'asc' | 'desc';
+      limit?: number;
+      startKey?: string;
+    } = {}
   ): Promise<QueryPageResult<UserAccountItem>> {
     this.assertPermission(actor, 'users:list');
-    const limit = Math.min(filter.limit ?? 50, CATALYST_PLATFORM_LIMITS.MAX_QUERY_READ_ITEMS);
+    const limit = Math.min(Math.max(1, filter.limit ?? 50), CATALYST_PLATFORM_LIMITS.MAX_QUERY_READ_ITEMS);
+    const needle = filter.searchQuery?.trim().toLowerCase();
+    const needsInMemoryFilterOrSort =
+      Boolean(needle) || filter.emailVerified !== undefined || filter.sortBy !== undefined || filter.sortOrder !== undefined;
 
-    if (filter.role) {
+    const applyDirectoryFiltersAndSort = (items: UserAccountItem[]): UserAccountItem[] => {
+      let out = items;
+      if (filter.accountStatus) {
+        out = out.filter(u => u.accountStatus === filter.accountStatus);
+      }
+      if (filter.emailVerified !== undefined) {
+        out = out.filter(u => Boolean(u.emailVerified) === filter.emailVerified);
+      }
+      if (needle) {
+        out = out.filter(
+          u =>
+            u.displayName.toLowerCase().includes(needle) ||
+            u.email.toLowerCase().includes(needle) ||
+            u.uid.toLowerCase().includes(needle)
+        );
+      }
+      const sortBy = filter.sortBy ?? 'createdAt';
+      const dir = filter.sortOrder === 'asc' ? 1 : -1;
+      out = [...out].sort((a, b) => {
+        const av = String((a as unknown as Record<string, unknown>)[sortBy] ?? '');
+        const bv = String((b as unknown as Record<string, unknown>)[sortBy] ?? '');
+        return av.localeCompare(bv) * dir;
+      });
+      return out;
+    };
+
+    if (filter.role && !needsInMemoryFilterOrSort) {
       return this.db.queryIndex<UserAccountItem>('Users', {
         indexName: 'GSI_RoleStatus',
         partitionKeyValue: filter.role,
@@ -1148,8 +1330,36 @@ export class AdminGovernanceService {
       });
     }
 
-    const offset = filter.startKey ? Number(Buffer.from(filter.startKey, 'base64url').toString('utf8')) : 0;
-    const perSegmentFetch = Math.min(offset + limit, CATALYST_PLATFORM_LIMITS.MAX_QUERY_READ_ITEMS);
+    const rawOffset = filter.startKey ? Number(Buffer.from(filter.startKey, 'base64url').toString('utf8')) : 0;
+    const offset = Number.isFinite(rawOffset) && rawOffset > 0 ? Math.floor(rawOffset) : 0;
+
+    if (filter.role) {
+      const collected: UserAccountItem[] = [];
+      let cursor: string | undefined;
+      let pages = 0;
+      do {
+        const page = await this.db.queryIndex<UserAccountItem>('Users', {
+          indexName: 'GSI_RoleStatus',
+          partitionKeyValue: filter.role,
+          sortKeyEquals: filter.accountStatus,
+          limit: CATALYST_PLATFORM_LIMITS.MAX_QUERY_READ_ITEMS,
+          startKey: cursor,
+        });
+        collected.push(...page.items);
+        cursor = page.nextStartKey;
+        pages++;
+      } while (cursor && pages < 5);
+
+      const filtered = applyDirectoryFiltersAndSort(collected);
+      const slice = filtered.slice(offset, offset + limit);
+      const hasMore = offset + limit < filtered.length || Boolean(cursor);
+      const nextStartKey = hasMore ? Buffer.from(String(offset + limit), 'utf8').toString('base64url') : undefined;
+      return { items: slice, nextStartKey };
+    }
+
+    const perSegmentFetch = needsInMemoryFilterOrSort
+      ? CATALYST_PLATFORM_LIMITS.MAX_QUERY_READ_ITEMS
+      : Math.min(offset + limit, CATALYST_PLATFORM_LIMITS.MAX_QUERY_READ_ITEMS);
 
     const segmentPages = await Promise.all(
       DIRECTORY_SEGMENTS.map(seg =>
@@ -1162,12 +1372,7 @@ export class AdminGovernanceService {
       )
     );
 
-    let merged = segmentPages.flatMap(p => p.items);
-    if (filter.accountStatus) {
-      merged = merged.filter(u => u.accountStatus === filter.accountStatus);
-    }
-    merged.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-
+    const merged = applyDirectoryFiltersAndSort(segmentPages.flatMap(p => p.items));
     const slice = merged.slice(offset, offset + limit);
     const hasMore = offset + limit < merged.length || segmentPages.some(p => Boolean(p.nextStartKey));
     const nextStartKey = hasMore ? Buffer.from(String(offset + limit), 'utf8').toString('base64url') : undefined;

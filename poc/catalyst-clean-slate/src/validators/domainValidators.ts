@@ -47,6 +47,19 @@ function isFiniteNumber(val: unknown, min: number, max: number): val is number {
   return typeof val === 'number' && Number.isFinite(val) && val >= min && val <= max;
 }
 
+export function isSafeAvatarUrl(val: unknown): boolean {
+  if (typeof val !== 'string') return false;
+  const trimmed = val.trim();
+  if (trimmed === '') return true;
+  if (trimmed.length > 512) return false;
+  try {
+    const parsed = new URL(trimmed);
+    return parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Prevents privilege escalation via self profile update.
  * `role`, `roleVersion`, `accountStatus`, `validAfterSec`, `uid`, `email`, `normalizedEmail`
@@ -83,6 +96,18 @@ export function validateProfileSelfUpdate(payload: Record<string, unknown>): voi
   if (payload.displayName !== undefined && !isNonEmptyString(payload.displayName, 120)) {
     throw new DomainValidationError('INVALID_PROFILE', 'displayName must be a non-empty string (<=120 chars).');
   }
+  if (payload.avatarUrl !== undefined && !isSafeAvatarUrl(payload.avatarUrl)) {
+    throw new DomainValidationError(
+      'INVALID_PROFILE',
+      'avatarUrl must be an empty string or a valid https:// URL (<=512 chars).'
+    );
+  }
+  if (payload.location !== undefined && (typeof payload.location !== 'string' || payload.location.length > 160)) {
+    throw new DomainValidationError('INVALID_PROFILE', 'location must be a string (<=160 chars).');
+  }
+  if (payload.goal !== undefined && !isNonEmptyString(payload.goal, 80)) {
+    throw new DomainValidationError('INVALID_PROFILE', 'goal must be a non-empty string (<=80 chars).');
+  }
   if (payload.onboardingStep !== undefined && !isFiniteNumber(payload.onboardingStep, 1, 6)) {
     throw new DomainValidationError('INVALID_PROFILE', 'onboardingStep must be between 1 and 6.');
   }
@@ -113,6 +138,15 @@ export function validateBiometricsPayload(payload: Record<string, unknown>): voi
   if (payload.fatPerKg !== undefined && !isFiniteNumber(payload.fatPerKg, 0.3, 3.0)) {
     throw new DomainValidationError('INVALID_BIOMETRICS', 'fatPerKg must be in [0.3, 3.0].');
   }
+  if (payload.bmr !== undefined && !isFiniteNumber(payload.bmr, 500, 10000)) {
+    throw new DomainValidationError('INVALID_BIOMETRICS', 'bmr must be in [500, 10000].');
+  }
+  if (payload.tdee !== undefined && !isFiniteNumber(payload.tdee, 500, 15000)) {
+    throw new DomainValidationError('INVALID_BIOMETRICS', 'tdee must be in [500, 15000].');
+  }
+  if (payload.targetCalories !== undefined && !isFiniteNumber(payload.targetCalories, 500, 15000)) {
+    throw new DomainValidationError('INVALID_BIOMETRICS', 'targetCalories must be in [500, 15000].');
+  }
 }
 
 export function validatePreferencesPayload(payload: Record<string, unknown>): void {
@@ -123,7 +157,8 @@ export function validatePreferencesPayload(payload: Record<string, unknown>): vo
 }
 
 export function validateOnboardingPayload(payload: Record<string, unknown>): void {
-  if (!isNonEmptyString(payload.displayName, 120)) {
+  const resolvedName = payload.displayName ?? payload.name;
+  if (!isNonEmptyString(resolvedName, 120)) {
     throw new DomainValidationError('INVALID_ONBOARDING', 'displayName is required (<=120 chars).');
   }
   if (!isNonEmptyString(payload.goal, 80)) {
@@ -139,6 +174,8 @@ export function validateOnboardingPayload(payload: Record<string, unknown>): voi
   validatePreferencesPayload(payload.preferences as Record<string, unknown>);
 }
 
+const VALID_GROCERY_STATUSES = ['pending', 'bought', 'in_pantry', 'completed'] as const;
+
 export function validateGroceryPayload(payload: Record<string, unknown>): void {
   if (!isNonEmptyString(payload.name, 200)) {
     throw new DomainValidationError('INVALID_GROCERY', 'Grocery item name is required.');
@@ -146,45 +183,101 @@ export function validateGroceryPayload(payload: Record<string, unknown>): void {
   if (payload.quantity !== undefined && !isFiniteNumber(payload.quantity, 0, 100000)) {
     throw new DomainValidationError('INVALID_GROCERY', 'Grocery quantity must be >= 0.');
   }
-  if (payload.status !== undefined && !['pending', 'bought', 'in_pantry'].includes(String(payload.status))) {
+  if (payload.status !== undefined && !VALID_GROCERY_STATUSES.includes(String(payload.status) as any)) {
     throw new DomainValidationError('INVALID_GROCERY', 'Invalid grocery status.');
   }
 }
 
 export function validateGroceryStatusPatch(payload: Record<string, unknown>): void {
-  if (payload.status !== undefined && !['pending', 'bought', 'in_pantry'].includes(String(payload.status))) {
+  if (payload.status !== undefined && !VALID_GROCERY_STATUSES.includes(String(payload.status) as any)) {
     throw new DomainValidationError(
       'INVALID_GROCERY',
-      "Grocery status must be 'pending', 'bought', or 'in_pantry'.",
+      "Grocery status must be 'pending', 'bought', 'in_pantry', or 'completed'.",
       400
     );
   }
+  if (payload.name !== undefined && !isNonEmptyString(payload.name, 200)) {
+    throw new DomainValidationError('INVALID_GROCERY', 'Grocery name must be a non-empty string (<=200 chars).', 400);
+  }
+  if (payload.quantity !== undefined && !isFiniteNumber(payload.quantity, 0, 100000)) {
+    throw new DomainValidationError('INVALID_GROCERY', 'Grocery quantity must be a finite number >= 0.', 400);
+  }
+  if (payload.calculatedQuantity !== undefined && !isFiniteNumber(payload.calculatedQuantity, 0, 100000)) {
+    throw new DomainValidationError('INVALID_GROCERY', 'Grocery calculatedQuantity must be a finite number >= 0.', 400);
+  }
+  if (payload.unit !== undefined && !isNonEmptyString(payload.unit, 40)) {
+    throw new DomainValidationError('INVALID_GROCERY', 'Grocery unit must be a non-empty string (<=40 chars).', 400);
+  }
+  if (payload.department !== undefined && !isNonEmptyString(payload.department, 60)) {
+    throw new DomainValidationError('INVALID_GROCERY', 'Grocery department must be a non-empty string.', 400);
+  }
+  if (payload.notes !== undefined && (typeof payload.notes !== 'string' || payload.notes.length > 500)) {
+    throw new DomainValidationError('INVALID_GROCERY', 'Grocery notes must be a string (<=500 chars).', 400);
+  }
+  if (payload.isCustomized !== undefined && typeof payload.isCustomized !== 'boolean') {
+    throw new DomainValidationError('INVALID_GROCERY', 'isCustomized must be a boolean.', 400);
+  }
+}
+
+export function normalizeMealLogInput(payload: Record<string, unknown>): {
+  name: unknown;
+  kcal: unknown;
+  protein: unknown;
+  carbs: unknown;
+  fat: unknown;
+} {
+  return {
+    name: payload.name ?? payload.title,
+    kcal: payload.kcal ?? payload.calories,
+    protein: payload.protein,
+    carbs: payload.carbs,
+    fat: payload.fat ?? payload.fats,
+  };
 }
 
 export function validateMealLogPayload(payload: Record<string, unknown>): void {
   if (!isNonEmptyString(payload.dateTime, 40) || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(payload.dateTime)) {
     throw new DomainValidationError('INVALID_MEAL_LOG', 'dateTime must match YYYY-MM-DDTHH:mm format.');
   }
-  if (!isNonEmptyString(payload.name, 200)) {
-    throw new DomainValidationError('INVALID_MEAL_LOG', 'Meal name is required.');
+  const normalized = normalizeMealLogInput(payload);
+  if (!isNonEmptyString(normalized.name, 200)) {
+    throw new DomainValidationError('INVALID_MEAL_LOG', 'Meal name (or title) is required.');
   }
-  if (!isFiniteNumber(payload.kcal, 0, 10000)) {
-    throw new DomainValidationError('INVALID_MEAL_LOG', 'kcal must be in [0, 10000].');
+  if (!isFiniteNumber(normalized.kcal, 0, 10000)) {
+    throw new DomainValidationError('INVALID_MEAL_LOG', 'kcal (or calories) must be in [0, 10000].');
   }
-  if (!isFiniteNumber(payload.protein, 0, 1000) || !isFiniteNumber(payload.carbs, 0, 1500) || !isFiniteNumber(payload.fat, 0, 1000)) {
+  if (
+    !isFiniteNumber(normalized.protein, 0, 1000) ||
+    !isFiniteNumber(normalized.carbs, 0, 1500) ||
+    !isFiniteNumber(normalized.fat, 0, 1000)
+  ) {
     throw new DomainValidationError('INVALID_MEAL_LOG', 'Macronutrients out of valid bounds.');
   }
 }
 
 export function validateCardioPayload(payload: Record<string, unknown>): void {
-  if (!isNonEmptyString(payload.date, 25)) {
-    throw new DomainValidationError('INVALID_CARDIO', 'Cardio date is required.');
+  if (!isNonEmptyString(payload.date, 40) || !/^\d{4}-\d{2}-\d{2}/.test(payload.date)) {
+    throw new DomainValidationError('INVALID_CARDIO', 'Cardio date (YYYY-MM-DD) is required.');
   }
   if (!isFiniteNumber(payload.durationMinutes, 1, 600)) {
     throw new DomainValidationError('INVALID_CARDIO', 'durationMinutes must be in [1, 600].');
   }
-  if (payload.avgHeartRate !== undefined && !isFiniteNumber(payload.avgHeartRate, 35, 240)) {
+  const avgHr = payload.avgHeartRate ?? payload.avgHr;
+  if (avgHr !== undefined && !isFiniteNumber(avgHr, 35, 240)) {
     throw new DomainValidationError('INVALID_CARDIO', 'avgHeartRate must be in [35, 240].');
+  }
+  const maxHr = payload.maxHeartRate ?? payload.maxHr;
+  if (maxHr !== undefined && !isFiniteNumber(maxHr, 40, 250)) {
+    throw new DomainValidationError('INVALID_CARDIO', 'maxHeartRate must be in [40, 250].');
+  }
+  if (payload.zone2Minutes !== undefined && !isFiniteNumber(payload.zone2Minutes, 0, 600)) {
+    throw new DomainValidationError('INVALID_CARDIO', 'zone2Minutes must be in [0, 600].');
+  }
+  if (payload.zone2Percentage !== undefined && !isFiniteNumber(payload.zone2Percentage, 0, 100)) {
+    throw new DomainValidationError('INVALID_CARDIO', 'zone2Percentage must be in [0, 100].');
+  }
+  if (payload.caloriesBurned !== undefined && !isFiniteNumber(payload.caloriesBurned, 0, 10000)) {
+    throw new DomainValidationError('INVALID_CARDIO', 'caloriesBurned must be in [0, 10000].');
   }
 }
 
@@ -246,6 +339,18 @@ export function validateExecutedWorkoutCreate(payload: Record<string, unknown>):
   assertPayloadSizeBudget(payload);
 }
 
+export function validateWorkoutCompleteSummary(summaryPatch: Record<string, unknown>): void {
+  if (summaryPatch.durationSeconds !== undefined && !isFiniteNumber(summaryPatch.durationSeconds, 0, 86400)) {
+    throw new DomainValidationError('INVALID_WORKOUT', 'durationSeconds must be in [0, 86400].', 400);
+  }
+  if (summaryPatch.sessionRpe !== undefined && !isFiniteNumber(summaryPatch.sessionRpe, 1, 10)) {
+    throw new DomainValidationError('INVALID_WORKOUT', 'sessionRpe must be in [1, 10].', 400);
+  }
+  if (summaryPatch.notes !== undefined && (typeof summaryPatch.notes !== 'string' || summaryPatch.notes.length > 2000)) {
+    throw new DomainValidationError('INVALID_WORKOUT', 'notes must be a string (<=2000 chars).', 400);
+  }
+}
+
 export function assertExecutedWorkoutMutable(existingStatus: string): void {
   if (existingStatus !== 'in_progress') {
     throw new DomainValidationError(
@@ -255,6 +360,8 @@ export function assertExecutedWorkoutMutable(existingStatus: string): void {
     );
   }
 }
+
+const VALID_WORKOUT_SET_TYPES = ['warmup', 'effective', 'dropset', 'failure'] as const;
 
 /**
  * Mirrors firestore.rules `isValidWorkoutSession` + `isLinkedWorkoutActive`:
@@ -284,6 +391,15 @@ export function validateWorkoutSetPayload(
   }
   if (!isNonEmptyString(payload.exerciseId, 120) || !isNonEmptyString(payload.exerciseName, 200)) {
     throw new DomainValidationError('INVALID_WORKOUT_SET', 'exerciseId and exerciseName are required.');
+  }
+  if (payload.type !== undefined && !VALID_WORKOUT_SET_TYPES.includes(String(payload.type) as any)) {
+    throw new DomainValidationError(
+      'INVALID_WORKOUT_SET',
+      "Workout set type must be 'warmup', 'effective', 'dropset', or 'failure'."
+    );
+  }
+  if (payload.completed !== undefined && typeof payload.completed !== 'boolean') {
+    throw new DomainValidationError('INVALID_WORKOUT_SET', 'completed must be a boolean.');
   }
   if (!isFiniteNumber(payload.weightKg, 0, 1000)) {
     throw new DomainValidationError('INVALID_WORKOUT_SET', 'weightKg must be in [0, 1000].');

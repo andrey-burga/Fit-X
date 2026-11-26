@@ -20,6 +20,8 @@
     "test:analytics": "tsx scripts/test_workout_analytics_e2e.ts",
     "test:autoregulation": "tsx scripts/test_workout_autoregulation_e2e.ts",
     "test:auth": "tsx scripts/test_auth_guard_and_session.ts",
+    "test:landing": "tsx scripts/test_landing_and_routing.ts",
+    "test:private-shell": "tsx scripts/test_private_shell_and_roles.ts",
     "test:mesocycle": "tsx scripts/test_mesocycle_generator.ts",
     "test:periodization": "tsx scripts/test_nutritional_periodization.ts",
     "test:rbac": "tsx scripts/test_admin_rbac_and_privileges.ts",

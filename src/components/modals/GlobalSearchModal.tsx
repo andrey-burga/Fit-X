@@ -90,7 +90,7 @@ export const GlobalSearchModal: React.FC<GlobalSearchModalProps> = ({ isOpen, on
         id: 'v-5',
         category: 'vista',
         title: 'Registro Diario (Protocolo 180 días)',
-        subtitle: 'Línea de tiempo, auditoría de adherencia, calidad de datos y SQL audit',
+        subtitle: 'Línea de tiempo, adherencia calórica, registros vacíos sin ceros ficticios',
         badge: 'Vista',
         icon: 'edit_calendar',
         action: () => {
@@ -149,8 +149,8 @@ export const GlobalSearchModal: React.FC<GlobalSearchModalProps> = ({ isOpen, on
       {
         id: 'v-10',
         category: 'vista',
-        title: 'Registro de Entrenamiento (Gym Mode)',
-        subtitle: 'Temporizador de descanso, steppers de kg/reps, cálculo 1RM en vivo',
+        title: 'Registro de Entrenamiento',
+        subtitle: 'Temporizador de descanso, registro de kg/reps/RIR y cálculo 1RM en vivo',
         badge: 'Vista',
         icon: 'format_list_bulleted',
         action: () => {
@@ -162,7 +162,7 @@ export const GlobalSearchModal: React.FC<GlobalSearchModalProps> = ({ isOpen, on
         id: 'v-11',
         category: 'vista',
         title: 'Cardio y HIIT',
-        subtitle: 'Polar H10 / Apple Watch, Zona 2 metabólica, ratio mTOR vs AMPK',
+        subtitle: 'Zonas de frecuencia cardíaca Z1–Z5, Zona 2 metabólica y sesiones HIIT',
         badge: 'Vista',
         icon: 'directions_run',
         action: () => {

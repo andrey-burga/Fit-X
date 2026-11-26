@@ -25,15 +25,15 @@ export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ children }) => {
     return (
       <div className="min-h-screen bg-surface flex flex-col items-center justify-center p-6 text-on-surface antialiased">
         <div className="flex flex-col items-center gap-4 max-w-sm text-center">
-          <div className="w-16 h-16 rounded-2xl bg-primary flex items-center justify-center text-on-primary shadow-lg shadow-primary/20 animate-pulse">
-            <span className="material-symbols-outlined text-4xl">vital_signs</span>
+          <div className="w-14 h-14 rounded-2xl bg-primary flex items-center justify-center text-on-primary shadow-md">
+            <span className="material-symbols-outlined text-3xl">vital_signs</span>
           </div>
           <div>
-            <h1 className="text-xl font-bold tracking-tight text-on-surface">VIGOR CORE</h1>
-            <p className="text-xs text-on-surface-variant mt-1">Verificando sesión segura y credenciales...</p>
+            <h1 className="text-xl font-bold tracking-tight text-on-surface font-landing-display">VigorCore</h1>
+            <p className="text-xs text-on-surface-variant mt-1">Verificando sesión y credenciales...</p>
           </div>
-          <div className="w-48 h-1 bg-surface-container-high rounded-full overflow-hidden mt-2">
-            <div className="w-full h-full bg-primary animate-pulse" />
+          <div className="w-40 h-1 bg-surface-container-high rounded-full overflow-hidden mt-1">
+            <div className="w-1/2 h-full bg-primary rounded-full" />
           </div>
         </div>
       </div>

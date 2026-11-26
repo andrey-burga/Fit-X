@@ -89,7 +89,7 @@ function assertSafeIdentifier(id: string, fieldName: string): string {
 }
 
 export class CatalystHttpAthleteRepository implements IAthleteWorkspaceRepository {
-  readonly modeLabel = 'Adaptador HTTP Clean-Slate (contrato Catalyst Advanced I/O — paridad 41 rutas)';
+  readonly modeLabel = 'Adaptador HTTP Clean-Slate (contrato Catalyst Advanced I/O — paridad 53 rutas)';
   readonly isLocalDevMock = false;
 
   private readonly transport: CatalystHttpTransport;
@@ -230,6 +230,21 @@ export class CatalystHttpAthleteRepository implements IAthleteWorkspaceRepositor
     return unwrapped;
   }
 
+  async listRecipes(
+    _actorUid: string,
+    options: { limit?: number; startKey?: string } = {}
+  ): Promise<{ items: RecipeRecord[]; nextStartKey?: string }> {
+    const res = await this.transport.request<{ items?: unknown[]; nextStartKey?: string }>({
+      method: 'GET',
+      path: '/api/v1/athlete/recipes',
+      query: {
+        limit: Math.min(CATALYST_BUDGET_LIMITS.MAX_QUERY_READ_ITEMS, options.limit ?? 100),
+        startKey: options.startKey,
+      },
+    });
+    return { items: unwrapItemList<RecipeRecord>(res.data?.items), nextStartKey: res.data?.nextStartKey };
+  }
+
   async saveRecipe(_actorUid: string, recipe: RecipeRecord): Promise<RecipeRecord> {
     validateRecipeInput(recipe as unknown as Record<string, unknown>);
     const recipeId = assertSafeIdentifier(recipe.id, 'recipeId');
@@ -241,6 +256,21 @@ export class CatalystHttpAthleteRepository implements IAthleteWorkspaceRepositor
     return res.data?.recipe ?? unwrapSinglePayload<RecipeRecord>(res.data?.item) ?? recipe;
   }
 
+  async listMealPlans(
+    _actorUid: string,
+    options: { limit?: number; startKey?: string } = {}
+  ): Promise<{ items: MealPlanRecord[]; nextStartKey?: string }> {
+    const res = await this.transport.request<{ items?: unknown[]; nextStartKey?: string }>({
+      method: 'GET',
+      path: '/api/v1/athlete/meal-plans',
+      query: {
+        limit: Math.min(CATALYST_BUDGET_LIMITS.MAX_QUERY_READ_ITEMS, options.limit ?? 100),
+        startKey: options.startKey,
+      },
+    });
+    return { items: unwrapItemList<MealPlanRecord>(res.data?.items), nextStartKey: res.data?.nextStartKey };
+  }
+
   async saveMealPlan(_actorUid: string, plan: MealPlanRecord): Promise<MealPlanRecord> {
     validateMealPlanInput(plan as unknown as Record<string, unknown>);
     const weekStart = assertSafeIdentifier(plan.weekStart, 'weekStart');
@@ -250,6 +280,22 @@ export class CatalystHttpAthleteRepository implements IAthleteWorkspaceRepositor
       body: plan,
     });
     return res.data?.mealPlan ?? unwrapSinglePayload<MealPlanRecord>(res.data?.item) ?? plan;
+  }
+
+  async listGroceries(
+    _actorUid: string,
+    options: { status?: string; limit?: number; startKey?: string } = {}
+  ): Promise<{ items: GroceryItemRecord[]; nextStartKey?: string }> {
+    const res = await this.transport.request<{ items?: unknown[]; nextStartKey?: string }>({
+      method: 'GET',
+      path: '/api/v1/athlete/groceries',
+      query: {
+        status: options.status,
+        limit: Math.min(CATALYST_BUDGET_LIMITS.MAX_QUERY_READ_ITEMS, options.limit ?? 100),
+        startKey: options.startKey,
+      },
+    });
+    return { items: unwrapItemList<GroceryItemRecord>(res.data?.items), nextStartKey: res.data?.nextStartKey };
   }
 
   /**
@@ -348,6 +394,24 @@ export class CatalystHttpAthleteRepository implements IAthleteWorkspaceRepositor
     });
   }
 
+  async listWorkoutRoutines(
+    _actorUid: string,
+    options: { limit?: number; startKey?: string } = {}
+  ): Promise<{ items: WorkoutRoutineRecord[]; nextStartKey?: string }> {
+    const res = await this.transport.request<{ items?: unknown[]; nextStartKey?: string }>({
+      method: 'GET',
+      path: '/api/v1/athlete/routines',
+      query: {
+        limit: Math.min(CATALYST_BUDGET_LIMITS.MAX_QUERY_READ_ITEMS, options.limit ?? 100),
+        startKey: options.startKey,
+      },
+    });
+    return {
+      items: unwrapItemList<WorkoutRoutineRecord>(res.data?.items),
+      nextStartKey: res.data?.nextStartKey,
+    };
+  }
+
   async saveWorkoutRoutine(
     _actorUid: string,
     routine: WorkoutRoutineRecord
@@ -360,6 +424,68 @@ export class CatalystHttpAthleteRepository implements IAthleteWorkspaceRepositor
       body: routine,
     });
     return res.data?.routine ?? unwrapSinglePayload<WorkoutRoutineRecord>(res.data?.item) ?? routine;
+  }
+
+  async deleteWorkoutRoutine(_actorUid: string, routineId: string): Promise<void> {
+    const safeId = assertSafeIdentifier(routineId, 'routineId');
+    await this.transport.request<{ deleted?: boolean }>({
+      method: 'DELETE',
+      path: `/api/v1/athlete/routines/${encodeURIComponent(safeId)}`,
+    });
+  }
+
+  async listExecutedWorkouts(
+    _actorUid: string,
+    options: {
+      startDate?: string;
+      endDate?: string;
+      status?: 'in_progress' | 'completed' | 'abandoned';
+      limit?: number;
+      startKey?: string;
+    } = {}
+  ): Promise<{ items: ExecutedWorkoutRecord[]; nextStartKey?: string }> {
+    const res = await this.transport.request<{ items?: unknown[]; nextStartKey?: string }>({
+      method: 'GET',
+      path: '/api/v1/athlete/workouts',
+      query: {
+        startDate: options.startDate,
+        endDate: options.endDate,
+        status: options.status,
+        limit: Math.min(CATALYST_BUDGET_LIMITS.MAX_QUERY_READ_ITEMS, options.limit ?? 50),
+        startKey: options.startKey,
+      },
+    });
+    return {
+      items: unwrapItemList<ExecutedWorkoutRecord>(res.data?.items),
+      nextStartKey: res.data?.nextStartKey,
+    };
+  }
+
+  async getExecutedWorkoutDetail(
+    _actorUid: string,
+    workoutId: string
+  ): Promise<{ workout: ExecutedWorkoutRecord; sets: WorkoutSetRecord[] }> {
+    const safeId = assertSafeIdentifier(workoutId, 'workoutId');
+    const res = await this.transport.request<{
+      workout?: unknown;
+      sets?: unknown[];
+    }>({
+      method: 'GET',
+      path: `/api/v1/athlete/workouts/${encodeURIComponent(safeId)}`,
+    });
+    const workout = unwrapSinglePayload<ExecutedWorkoutRecord>(res.data?.workout);
+    if (!workout) {
+      throw new CleanSlateRepositoryError(
+        'INVALID_WORKOUT_DETAIL_RESPONSE',
+        `GET /api/v1/athlete/workouts/${safeId} no devolvió el entrenamiento solicitado.`,
+        502,
+        { origin: 'client_synthetic' }
+      );
+    }
+    return {
+      workout,
+      sets: unwrapItemList<WorkoutSetRecord>(res.data?.sets),
+    };
   }
 
   async startExecutedWorkout(
@@ -541,12 +667,21 @@ export class CatalystHttpAthleteRepository implements IAthleteWorkspaceRepositor
     });
   }
 
-  async toggleGroceryStatus(_actorUid: string, groceryId: string): Promise<GroceryItemRecord> {
+  async toggleGroceryStatus(
+    _actorUid: string,
+    groceryId: string,
+    patch: Partial<
+      Pick<
+        GroceryItemRecord,
+        'status' | 'name' | 'quantity' | 'calculatedQuantity' | 'unit' | 'department' | 'notes' | 'isCustomized'
+      >
+    > = {}
+  ): Promise<GroceryItemRecord> {
     const safeId = assertSafeIdentifier(groceryId, 'groceryId');
     const res = await this.transport.request<{ item?: unknown; grocery?: GroceryItemRecord }>({
       method: 'PATCH',
       path: `/api/v1/athlete/groceries/${encodeURIComponent(safeId)}`,
-      body: {},
+      body: patch,
     });
     const unwrapped = res.data?.grocery ?? unwrapSinglePayload<GroceryItemRecord>(res.data?.item);
     if (!unwrapped) {
@@ -593,6 +728,17 @@ export class CatalystHttpAthleteRepository implements IAthleteWorkspaceRepositor
     });
   }
 
+  async clearCompletedGroceries(_actorUid: string): Promise<{ deletedCount: number; batchCalls: number }> {
+    const res = await this.transport.request<{ deletedCount?: number; batchCalls?: number }>({
+      method: 'DELETE',
+      path: '/api/v1/athlete/groceries/completed',
+    });
+    return {
+      deletedCount: res.data?.deletedCount ?? 0,
+      batchCalls: res.data?.batchCalls ?? 0,
+    };
+  }
+
   async setDefaultRoutine(_actorUid: string, routineId: string): Promise<WorkoutRoutineRecord[]> {
     const safeId = assertSafeIdentifier(routineId, 'routineId');
     const res = await this.transport.request<{ routines?: unknown[] }>({
@@ -603,12 +749,51 @@ export class CatalystHttpAthleteRepository implements IAthleteWorkspaceRepositor
     return unwrapItemList<WorkoutRoutineRecord>(res.data?.routines);
   }
 
+  async listCardioSessions(
+    _actorUid: string,
+    options: { startDate?: string; endDate?: string; limit?: number; startKey?: string } = {}
+  ): Promise<{ items: CardioSessionRecord[]; nextStartKey?: string }> {
+    const res = await this.transport.request<{ items?: unknown[]; nextStartKey?: string }>({
+      method: 'GET',
+      path: '/api/v1/athlete/cardio',
+      query: {
+        startDate: options.startDate,
+        endDate: options.endDate,
+        limit: Math.min(CATALYST_BUDGET_LIMITS.MAX_QUERY_READ_ITEMS, options.limit ?? 50),
+        startKey: options.startKey,
+      },
+    });
+    return {
+      items: unwrapItemList<CardioSessionRecord>(res.data?.items),
+      nextStartKey: res.data?.nextStartKey,
+    };
+  }
+
   async deleteCardioSession(_actorUid: string, cardioId: string): Promise<void> {
     const safeId = assertSafeIdentifier(cardioId, 'cardioId');
     await this.transport.request<{ deleted?: boolean }>({
       method: 'DELETE',
       path: `/api/v1/athlete/cardio/${encodeURIComponent(safeId)}`,
     });
+  }
+
+  async listNotifications(
+    _actorUid: string,
+    options: { unreadOnly?: boolean; limit?: number; startKey?: string } = {}
+  ): Promise<{ items: NotificationRecord[]; nextStartKey?: string }> {
+    const res = await this.transport.request<{ items?: unknown[]; nextStartKey?: string }>({
+      method: 'GET',
+      path: '/api/v1/athlete/notifications',
+      query: {
+        unreadOnly: options.unreadOnly ? 'true' : undefined,
+        limit: Math.min(CATALYST_BUDGET_LIMITS.MAX_QUERY_READ_ITEMS, options.limit ?? 50),
+        startKey: options.startKey,
+      },
+    });
+    return {
+      items: unwrapItemList<NotificationRecord>(res.data?.items),
+      nextStartKey: res.data?.nextStartKey,
+    };
   }
 
   async markNotificationRead(
@@ -642,5 +827,13 @@ export class CatalystHttpAthleteRepository implements IAthleteWorkspaceRepositor
       body: {},
     });
     return unwrapItemList<NotificationRecord>(res.data?.notifications);
+  }
+
+  async deleteNotification(_actorUid: string, notificationId: string): Promise<void> {
+    const safeId = assertSafeIdentifier(notificationId, 'notificationId');
+    await this.transport.request<{ deleted?: boolean }>({
+      method: 'DELETE',
+      path: `/api/v1/athlete/notifications/${encodeURIComponent(safeId)}`,
+    });
   }
 }

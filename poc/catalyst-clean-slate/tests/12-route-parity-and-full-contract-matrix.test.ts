@@ -81,10 +81,10 @@ function extractCookie(headers?: Record<string, string>): string {
   return m[1];
 }
 
-test('[PASS-UNIT] Single source of truth: 41 unique routes, OPTIONS contract, strict param validation & 404 legacy flat routes', async () => {
-  assert.equal(ROUTE_CONTRACT_SPECS.length, 41);
-  assert.equal(ROUTE_DEFINITIONS.length, 41);
-  assert.equal(CLEAN_SLATE_ENDPOINT_CATALOG.length, 41);
+test('[PASS-UNIT] Single source of truth: 53 unique routes, OPTIONS contract, strict param validation & 404 legacy flat routes', async () => {
+  assert.equal(ROUTE_CONTRACT_SPECS.length, 53);
+  assert.equal(ROUTE_DEFINITIONS.length, 53);
+  assert.equal(CLEAN_SLATE_ENDPOINT_CATALOG.length, 53);
   assert.equal(OPTIONS_PREFLIGHT_CONTRACT.method, 'OPTIONS');
 
   const seen = new Set<string>();
@@ -241,7 +241,7 @@ test('[PASS-MOCK / LOOPBACK] Full 41-route parity matrix: Auth, RBAC, Bound CSRF
     assert.equal(missingCsrf.status, 403);
     assert.equal(missingCsrf.body.error, 'CSRF_TOKEN_MISSING');
 
-    // 2. Unauthenticated check across ALL 41 cataloged routes -> 401 UNAUTHENTICATED
+    // 2. Unauthenticated check across ALL 53 cataloged routes -> 401 UNAUTHENTICATED
     for (const route of ROUTE_CONTRACT_SPECS) {
       const concrete = route.path
         .replace(':workoutId', 'wk_none')
@@ -506,6 +506,19 @@ test('[PASS-MOCK / LOOPBACK] Full 41-route parity matrix: Auth, RBAC, Bound CSRF
     assert.equal(okDelGrocery.body.deleted, true);
     markRoute('DELETE', '/api/v1/athlete/groceries/:groceryId');
 
+    const okListGroceries = await hit('GET', '/api/v1/athlete/groceries', {
+      cookie: athCookieRotated,
+    });
+    assert.equal(okListGroceries.status, 200);
+    markRoute('GET', '/api/v1/athlete/groceries');
+
+    const okClearGroceries = await hit('DELETE', '/api/v1/athlete/groceries/completed', {
+      cookie: athCookieRotated,
+      csrf: athCsrfRotated,
+    });
+    assert.equal(okClearGroceries.status, 200);
+    markRoute('DELETE', '/api/v1/athlete/groceries/completed');
+
     // 13-15. Workouts lifecycle: start -> sets -> complete -> terminal lock + mismatch checks
     const startWk = await hit('POST', '/api/v1/athlete/workouts/start', {
       cookie: athCookieRotated,
@@ -575,6 +588,20 @@ test('[PASS-MOCK / LOOPBACK] Full 41-route parity matrix: Auth, RBAC, Bound CSRF
     assert.equal(okComplete.status, 200);
     markRoute('POST', '/api/v1/athlete/workouts/:workoutId/complete');
 
+    const okListWorkouts = await hit('GET', '/api/v1/athlete/workouts?status=completed', {
+      cookie: athCookieRotated,
+    });
+    assert.equal(okListWorkouts.status, 200);
+    assert.equal((okListWorkouts.body.items as unknown[]).length, 1);
+    markRoute('GET', '/api/v1/athlete/workouts');
+
+    const okWorkoutDetail = await hit('GET', '/api/v1/athlete/workouts/wk_m_1', {
+      cookie: athCookieRotated,
+    });
+    assert.equal(okWorkoutDetail.status, 200);
+    assert.equal((okWorkoutDetail.body.sets as unknown[]).length, 1);
+    markRoute('GET', '/api/v1/athlete/workouts/:workoutId');
+
     // Replay complete -> 409 WORKOUT_TERMINAL_IMMUTABLE
     const replayComplete = await hit('POST', '/api/v1/athlete/workouts/wk_m_1/complete', {
       cookie: athCookieRotated,
@@ -593,6 +620,13 @@ test('[PASS-MOCK / LOOPBACK] Full 41-route parity matrix: Auth, RBAC, Bound CSRF
     assert.equal(okCardio.status, 201);
     markRoute('POST', '/api/v1/athlete/cardio');
 
+    const okCardioList = await hit('GET', '/api/v1/athlete/cardio', {
+      cookie: athCookieRotated,
+    });
+    assert.equal(okCardioList.status, 200);
+    assert.equal((okCardioList.body.items as unknown[]).length, 1);
+    markRoute('GET', '/api/v1/athlete/cardio');
+
     const okDelCardio = await hit('DELETE', '/api/v1/athlete/cardio/cardio_m_1', {
       cookie: athCookieRotated,
       csrf: athCsrfRotated,
@@ -601,7 +635,7 @@ test('[PASS-MOCK / LOOPBACK] Full 41-route parity matrix: Auth, RBAC, Bound CSRF
     assert.equal(okDelCardio.body.deleted, true);
     markRoute('DELETE', '/api/v1/athlete/cardio/:cardioId');
 
-    // 17. Notifications -> POST + PATCH read + POST read-all
+    // 17. Notifications -> POST + GET + PATCH read + POST read-all + DELETE
     const okNotif = await hit('POST', '/api/v1/athlete/notifications', {
       cookie: athCookieRotated,
       csrf: athCsrfRotated,
@@ -609,6 +643,13 @@ test('[PASS-MOCK / LOOPBACK] Full 41-route parity matrix: Auth, RBAC, Bound CSRF
     });
     assert.equal(okNotif.status, 201);
     markRoute('POST', '/api/v1/athlete/notifications');
+
+    const okListNotif = await hit('GET', '/api/v1/athlete/notifications?unreadOnly=true', {
+      cookie: athCookieRotated,
+    });
+    assert.equal(okListNotif.status, 200);
+    assert.equal((okListNotif.body.items as unknown[]).length, 1);
+    markRoute('GET', '/api/v1/athlete/notifications');
 
     const okMarkRead = await hit('PATCH', '/api/v1/athlete/notifications/notif_m_1/read', {
       cookie: athCookieRotated,
@@ -626,7 +667,15 @@ test('[PASS-MOCK / LOOPBACK] Full 41-route parity matrix: Auth, RBAC, Bound CSRF
     assert.equal(okReadAll.status, 200);
     markRoute('POST', '/api/v1/athlete/notifications/read-all');
 
-    // 18. Recipes PUT + DELETE
+    const okDelNotif = await hit('DELETE', '/api/v1/athlete/notifications/notif_m_1', {
+      cookie: athCookieRotated,
+      csrf: athCsrfRotated,
+    });
+    assert.equal(okDelNotif.status, 200);
+    assert.equal(okDelNotif.body.deleted, true);
+    markRoute('DELETE', '/api/v1/athlete/notifications/:notificationId');
+
+    // 18. Recipes PUT + GET + DELETE
     const mismatchRecipe = await hit('PUT', '/api/v1/athlete/recipes/rec_m_1', {
       cookie: athCookieRotated,
       csrf: athCsrfRotated,
@@ -650,6 +699,13 @@ test('[PASS-MOCK / LOOPBACK] Full 41-route parity matrix: Auth, RBAC, Bound CSRF
     assert.equal(okRecipe.status, 200);
     markRoute('PUT', '/api/v1/athlete/recipes/:recipeId');
 
+    const okListRecipes = await hit('GET', '/api/v1/athlete/recipes', {
+      cookie: athCookieRotated,
+    });
+    assert.equal(okListRecipes.status, 200);
+    assert.equal((okListRecipes.body.items as unknown[]).length, 1);
+    markRoute('GET', '/api/v1/athlete/recipes');
+
     const okDelRecipe = await hit('DELETE', '/api/v1/athlete/recipes/rec_m_1', {
       cookie: athCookieRotated,
       csrf: athCsrfRotated,
@@ -658,7 +714,7 @@ test('[PASS-MOCK / LOOPBACK] Full 41-route parity matrix: Auth, RBAC, Bound CSRF
     assert.equal(okDelRecipe.body.deleted, true);
     markRoute('DELETE', '/api/v1/athlete/recipes/:recipeId');
 
-    // 19. Meal Plans PUT -> PUT /api/v1/athlete/meal-plans/:weekStart
+    // 19. Meal Plans PUT + GET
     const okPlan = await hit('PUT', '/api/v1/athlete/meal-plans/2026-11-09', {
       cookie: athCookieRotated,
       csrf: athCsrfRotated,
@@ -667,7 +723,14 @@ test('[PASS-MOCK / LOOPBACK] Full 41-route parity matrix: Auth, RBAC, Bound CSRF
     assert.equal(okPlan.status, 200);
     markRoute('PUT', '/api/v1/athlete/meal-plans/:weekStart');
 
-    // 20. Routines PUT + POST default -> PUT & POST /api/v1/athlete/routines/:routineId/default
+    const okListPlans = await hit('GET', '/api/v1/athlete/meal-plans', {
+      cookie: athCookieRotated,
+    });
+    assert.equal(okListPlans.status, 200);
+    assert.equal((okListPlans.body.items as unknown[]).length, 1);
+    markRoute('GET', '/api/v1/athlete/meal-plans');
+
+    // 20. Routines PUT + GET + POST default + DELETE
     const okRoutine = await hit('PUT', '/api/v1/athlete/routines/rt_m_1', {
       cookie: athCookieRotated,
       csrf: athCsrfRotated,
@@ -675,6 +738,13 @@ test('[PASS-MOCK / LOOPBACK] Full 41-route parity matrix: Auth, RBAC, Bound CSRF
     });
     assert.equal(okRoutine.status, 200);
     markRoute('PUT', '/api/v1/athlete/routines/:routineId');
+
+    const okListRoutines = await hit('GET', '/api/v1/athlete/routines', {
+      cookie: athCookieRotated,
+    });
+    assert.equal(okListRoutines.status, 200);
+    assert.equal((okListRoutines.body.items as unknown[]).length, 1);
+    markRoute('GET', '/api/v1/athlete/routines');
 
     const okDefaultRoutine = await hit('POST', '/api/v1/athlete/routines/rt_m_1/default', {
       cookie: athCookieRotated,
@@ -684,11 +754,20 @@ test('[PASS-MOCK / LOOPBACK] Full 41-route parity matrix: Auth, RBAC, Bound CSRF
     assert.equal(okDefaultRoutine.status, 200);
     markRoute('POST', '/api/v1/athlete/routines/:routineId/default');
 
-    // Verify Athlete RBAC rejection across ALL 9 Admin/Superadmin routes -> 403 PERMISSION_DENIED
+    const okDelRoutine = await hit('DELETE', '/api/v1/athlete/routines/rt_m_1', {
+      cookie: athCookieRotated,
+      csrf: athCsrfRotated,
+    });
+    assert.equal(okDelRoutine.status, 200);
+    assert.equal(okDelRoutine.body.deleted, true);
+    markRoute('DELETE', '/api/v1/athlete/routines/:routineId');
+
+    // Verify Athlete RBAC rejection across ALL 10 Admin/Superadmin routes -> 403 PERMISSION_DENIED
     const adminRoutesForAthlete: Array<{ method: string; path: string; body?: unknown }> = [
       { method: 'GET', path: '/api/v1/admin/users' },
       { method: 'GET', path: '/api/v1/admin/stats' },
       { method: 'GET', path: '/api/v1/admin/users/ath_m_1' },
+      { method: 'GET', path: '/api/v1/admin/invitations' },
       { method: 'POST', path: '/api/v1/admin/invitations', body: { targetEmail: 'x@y.z', targetRole: 'athlete' } },
       { method: 'POST', path: '/api/v1/admin/invitations/inv_1/revoke', body: {} },
       { method: 'POST', path: '/api/v1/admin/users/ath_m_1/status', body: { newStatus: 'suspended' } },
@@ -890,6 +969,11 @@ test('[PASS-MOCK / LOOPBACK] Full 41-route parity matrix: Auth, RBAC, Bound CSRF
     assert.equal(okRevokeInv.status, 200);
     markRoute('POST', '/api/v1/admin/invitations/:inviteId/revoke');
 
+    const okListInvites = await hit('GET', '/api/v1/admin/invitations', { cookie: admCookie });
+    assert.equal(okListInvites.status, 200);
+    assert.ok((okListInvites.body.items as unknown[]).length >= 2);
+    markRoute('GET', '/api/v1/admin/invitations');
+
     // 27. POST /api/v1/invitations/redeem (second athlete redeems okInv1)
     authRuntime.setCurrentUser({
       zuid: 'z_ath2',
@@ -1014,12 +1098,12 @@ test('[PASS-MOCK / LOOPBACK] Full 41-route parity matrix: Auth, RBAC, Bound CSRF
     assert.equal((okSetRole.body.user as { role: string }).role, 'admin');
     markRoute('POST', '/api/v1/admin/users/:uid/role');
 
-    // FINAL ASSERTION: ALL 41 cataloged routes were exercised with passing canonical verification!
-    assert.equal(exercisedRoutes.size, 41, `Expected 41 exercised routes, got ${exercisedRoutes.size}`);
+    // FINAL ASSERTION: ALL 53 cataloged routes were exercised with passing canonical verification!
+    assert.equal(exercisedRoutes.size, 53, `Expected 53 exercised routes, got ${exercisedRoutes.size}`);
     for (const spec of ROUTE_CONTRACT_SPECS) {
       assert.ok(
         exercisedRoutes.has(`${spec.method} ${spec.path}`),
-        `Route missing from full 41-route matrix run: ${spec.method} ${spec.path}`
+        `Route missing from full 53-route matrix run: ${spec.method} ${spec.path}`
       );
     }
   } finally {

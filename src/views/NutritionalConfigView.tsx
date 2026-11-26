@@ -22,7 +22,7 @@ export const NutritionalConfigView: React.FC = () => {
       proteinPerKg: Number(proteinRate),
       fatPerKg: Number(fatRate),
     });
-    showToast('Parámetros guardados y sincronizados con Cloud Firestore');
+    showToast('Parámetros metabólicos guardados en tu perfil');
   };
 
   const handleReset = () => {
@@ -55,33 +55,33 @@ export const NutritionalConfigView: React.FC = () => {
         <div className="flex flex-col gap-space-xs">
           <div className="flex items-center gap-space-sm flex-wrap">
             <span className="font-label-sm text-label-sm text-primary tracking-widest uppercase bg-primary-fixed/30 px-2.5 py-0.5 rounded-full font-semibold">
-              Metabolismo &amp; Algoritmos
+              Metabolismo y Ecuaciones
             </span>
             <span className="flex items-center gap-1.5 font-code-data text-code-data text-on-surface-variant bg-surface-container-low px-2 py-0.5 rounded-full">
-              <span className="material-symbols-outlined text-xs text-primary">cloud_done</span>
-              Última sincronización: Hoy, 08:30 AM (COT)
+              <span className="material-symbols-outlined text-xs text-primary">verified</span>
+              Mifflin-St Jeor · Tiempo real (UTC-5)
             </span>
           </div>
           <h1 className="font-headline-lg text-headline-lg text-on-surface font-semibold tracking-tight">
             Configuración Nutricional
           </h1>
           <p className="font-body-md text-body-md text-on-surface-variant max-w-3xl">
-            Parámetros metabólicos, objetivos de macronutrientes y fórmulas maestras sincronizadas con el libro de Excel y Supabase.
+            Parámetros metabólicos, factores de actividad física (PAL) y distribución de macronutrientes sincronizados directamente con tu plan diario.
           </p>
         </div>
 
         <div className="flex items-center gap-space-sm shrink-0 self-start lg:self-center">
           <button
             onClick={handleReset}
-            className="flex items-center gap-space-xs px-space-md py-2 bg-surface-container-lowest hover:bg-surface-container-low text-on-surface font-label-md text-label-md rounded-lg shadow-xs transition-colors"
+            className="flex items-center gap-space-xs px-space-md py-2 bg-surface-container-lowest hover:bg-surface-container-low text-on-surface font-label-md text-label-md rounded-lg shadow-xs transition-colors border border-surface-container/60 cursor-pointer"
             type="button"
           >
             <span className="material-symbols-outlined text-base text-secondary">history</span>
-            <span>Restablecer Excel</span>
+            <span>Restablecer valores base</span>
           </button>
           <button
             onClick={handleApplyChanges}
-            className="flex items-center gap-space-xs px-space-lg py-2 bg-primary hover:bg-primary-container text-on-primary font-label-md text-label-md rounded-lg shadow-sm transition-all"
+            className="flex items-center gap-space-xs px-space-lg py-2 bg-primary hover:bg-primary-container text-on-primary font-label-md text-label-md rounded-lg shadow-sm transition-all cursor-pointer"
             type="button"
           >
             <span className="material-symbols-outlined text-base">check</span>
@@ -604,56 +604,43 @@ export const NutritionalConfigView: React.FC = () => {
             </div>
           </div>
 
-          {/* Database & Excel Mapping Card */}
+          {/* Active Model & Persistence Rules Card */}
           <div className="bg-surface-container-lowest rounded-xl p-space-lg shadow-xs border border-surface-container/50 flex flex-col gap-space-md">
             <div className="flex items-center justify-between pb-2 border-b border-surface-container/40">
               <div className="flex items-center gap-space-sm">
-                <span className="material-symbols-outlined text-secondary text-xl">database</span>
+                <span className="material-symbols-outlined text-secondary text-xl">calculate</span>
                 <h2 className="font-headline-sm text-headline-sm text-on-surface font-semibold">
-                  Mapeo Excel &amp; Supabase
+                  Modelo de Cálculo Activo
                 </h2>
               </div>
               <span className="font-label-sm text-label-sm bg-primary-fixed/30 text-on-primary-fixed-variant px-2 py-0.5 rounded-full font-semibold">
-                Integridad OK
+                Válido
               </span>
             </div>
 
             <div className="flex flex-col gap-space-sm font-body-md text-body-md">
               <div className="flex items-center justify-between py-1.5 border-b border-surface-container-low">
-                <span className="text-on-surface-variant font-label-md text-label-md">Hoja Maestra Vinculada</span>
+                <span className="text-on-surface-variant font-label-md text-label-md">Ecuación BMR</span>
                 <span className="font-code-data text-code-data text-on-surface font-semibold bg-surface-container-low px-2 py-1 rounded">
-                  Config_Nutricion_Master.xlsx
+                  Mifflin-St Jeor (Edad {biometrics.age || 30})
                 </span>
               </div>
               <div className="flex items-center justify-between py-1.5 border-b border-surface-container-low">
-                <span className="text-on-surface-variant font-label-md text-label-md">Frecuencia Sincronización</span>
-                <span className="font-label-md text-label-md text-on-surface font-medium flex items-center gap-1">
-                  <span className="material-symbols-outlined text-xs text-primary">schedule</span>
-                  Cada 30 min (Background Job)
+                <span className="text-on-surface-variant font-label-md text-label-md">Carbohidratos</span>
+                <span className="font-label-md text-label-md text-on-surface font-medium">
+                  Residual energético (4 kcal/g)
                 </span>
               </div>
               <div className="flex items-center justify-between py-1.5 border-b border-surface-container-low">
-                <span className="text-on-surface-variant font-label-md text-label-md">Zona Horaria Servidor</span>
+                <span className="text-on-surface-variant font-label-md text-label-md">Zona Horaria Base</span>
                 <span className="font-code-data text-code-data text-on-surface">America/Bogota (UTC-5)</span>
               </div>
               <div className="flex items-center justify-between py-1.5">
-                <span className="text-on-surface-variant font-label-md text-label-md">Manejo de Valores Vacíos</span>
+                <span className="text-on-surface-variant font-label-md text-label-md">Días sin registro</span>
                 <span className="font-label-sm text-label-sm text-primary font-medium bg-surface-container-low px-2 py-0.5 rounded-full">
-                  Conservar pendiente (sin ceros)
+                  Se conservan vacíos (sin ceros ficticios)
                 </span>
               </div>
-            </div>
-
-            <div className="flex items-center justify-between pt-space-xs">
-              <button
-                onClick={() => showToast('Log Supabase: 0 errores de esquema. 320 matrices en cache.')}
-                className="font-label-sm text-label-sm text-primary hover:underline font-semibold flex items-center gap-1 cursor-pointer"
-                type="button"
-              >
-                <span className="material-symbols-outlined text-sm">terminal</span>
-                Ver log de sincronizaciones Supabase
-              </button>
-              <span className="font-code-data text-code-data text-on-surface-variant/60">ID: sync_89f02a</span>
             </div>
           </div>
         </section>
