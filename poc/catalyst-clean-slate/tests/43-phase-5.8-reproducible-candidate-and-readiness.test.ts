@@ -32,6 +32,9 @@ import {
   PHASE_5_8_CANDIDATE_MANIFEST_NAME,
   PHASE_5_8_CANDIDATE_RELEASE_NAME,
   PHASE_5_8_CANDIDATE_ZIP_NAME,
+  PHASE_5_9_CANDIDATE_MANIFEST_NAME,
+  PHASE_5_9_CANDIDATE_RELEASE_NAME,
+  PHASE_5_9_CANDIDATE_ZIP_NAME,
   PRESERVED_HISTORICAL_ZIPS,
   REQUIRED_DIST_DIRS,
   RUNTIME_PACKAGES,
@@ -53,14 +56,15 @@ const __dirname = path.dirname(__filename);
 const POC_ROOT = path.resolve(__dirname, '..');
 const ARTIFACTS_DIR = path.join(POC_ROOT, 'artifacts');
 
-const CANDIDATE_ZIP_PATH = path.join(ARTIFACTS_DIR, PHASE_5_8_CANDIDATE_ZIP_NAME);
-const CANDIDATE_MANIFEST_PATH = path.join(ARTIFACTS_DIR, PHASE_5_8_CANDIDATE_MANIFEST_NAME);
-const CANDIDATE_RELEASE_PATH = path.join(ARTIFACTS_DIR, PHASE_5_8_CANDIDATE_RELEASE_NAME);
+const CANDIDATE_ZIP_PATH = path.join(ARTIFACTS_DIR, PHASE_5_9_CANDIDATE_ZIP_NAME);
+const CANDIDATE_MANIFEST_PATH = path.join(ARTIFACTS_DIR, PHASE_5_9_CANDIDATE_MANIFEST_NAME);
+const CANDIDATE_RELEASE_PATH = path.join(ARTIFACTS_DIR, PHASE_5_9_CANDIDATE_RELEASE_NAME);
 
+const EXPECTED_PHASE_5_8_SHA256 = '75db5ec6a516f6d5b349b80bf97ec443a798cf3b68cdc17a661d3e648e1d8354';
 const EXPECTED_CANDIDATE_ENTRY_COUNT = 905;
-const EXPECTED_CANDIDATE_SIZE_BYTES = 1_288_500;
-const EXPECTED_CANDIDATE_UNCOMPRESSED_BYTES = 3_826_002;
-const EXPECTED_CANDIDATE_SHA256 = '75db5ec6a516f6d5b349b80bf97ec443a798cf3b68cdc17a661d3e648e1d8354';
+const EXPECTED_CANDIDATE_SIZE_BYTES = 1_289_175;
+const EXPECTED_CANDIDATE_UNCOMPRESSED_BYTES = 3_829_683;
+const EXPECTED_CANDIDATE_SHA256 = '9379a10139614b334b5c757bb27a4670576cecd6dceef4707f477b89ca3191f7';
 
 const HISTORICAL_ARCHIVE_BASELINE: ReadonlyArray<{
   filename: string;
@@ -107,6 +111,11 @@ const HISTORICAL_ARCHIVE_BASELINE: ReadonlyArray<{
     sizeBytes: 1_281_449,
     sha256: '6b64d440aafbfc7c6e19ea4f5a8617b84056fc7f2494307e6685e04b76de618f',
   },
+  {
+    filename: 'vigor_api-phase-5.8-development-candidate.zip',
+    sizeBytes: 1_288_500,
+    sha256: '75db5ec6a516f6d5b349b80bf97ec443a798cf3b68cdc17a661d3e648e1d8354',
+  },
 ];
 
 function sha256File(filePath: string): string {
@@ -126,8 +135,8 @@ function walkRelativeFiles(dir: string, root: string = dir): string[] {
   return out;
 }
 
-test('Phase 5.8 [LOCAL_VERIFIED / PASS-STATIC] All 8 historical archives remain byte-for-byte untouched and overwrite guard fails closed', () => {
-  assert.equal(PRESERVED_HISTORICAL_ZIPS.size, 8);
+test('Phase 5.8/5.9 [LOCAL_VERIFIED / PASS-STATIC] All 9 historical archives remain byte-for-byte untouched and overwrite guard fails closed', () => {
+  assert.equal(PRESERVED_HISTORICAL_ZIPS.size, 9);
   for (const item of HISTORICAL_ARCHIVE_BASELINE) {
     const p = path.join(ARTIFACTS_DIR, item.filename);
     assert.equal(fs.existsSync(p), true, `Missing preserved historical archive ${item.filename}`);
@@ -241,8 +250,8 @@ test('Phase 5.8 [LOCAL_VERIFIED / PASS-STATIC] Manifest, release metadata, struc
     compiledEntrySha256s: Array<{ path: string; uncompressedSize: number; sha256: string }>;
   };
 
-  assert.equal(releaseMeta.candidateName, PHASE_5_8_CANDIDATE_ZIP_NAME);
-  assert.equal(releaseMeta.phase, '5.8');
+  assert.equal(releaseMeta.candidateName, PHASE_5_9_CANDIDATE_ZIP_NAME);
+  assert.equal(releaseMeta.phase, '5.9');
   assert.equal(releaseMeta.targetEnvironment, 'Development');
   assert.equal(releaseMeta.readinessStatus, 'READY_FOR_DEVELOPMENT_OPERATOR_REVIEW');
   assert.equal(releaseMeta.entryPoint, 'dist/server/catalystEntry.js');
@@ -485,7 +494,7 @@ test('Phase 5.8 [LOCAL_VERIFIED / PASS-STATIC] docs/50 and docs/51 capture requi
 
   for (const token of [
     PHASE_5_8_CANDIDATE_ZIP_NAME,
-    EXPECTED_CANDIDATE_SHA256,
+    EXPECTED_PHASE_5_8_SHA256,
     'READY_FOR_DEVELOPMENT_OPERATOR_REVIEW',
     'PHASE_5_8_REPRODUCIBLE_CANDIDATE_AND_DEVELOPMENT_RELEASE_READINESS_COMPLETE',
     'PRESERVED_HISTORICAL_ARCHIVE_IMMUTABLE',
@@ -496,7 +505,7 @@ test('Phase 5.8 [LOCAL_VERIFIED / PASS-STATIC] docs/50 and docs/51 capture requi
 
   for (const token of [
     PHASE_5_8_CANDIDATE_ZIP_NAME,
-    EXPECTED_CANDIDATE_SHA256,
+    EXPECTED_PHASE_5_8_SHA256,
     '6b64d440aafbfc7c6e19ea4f5a8617b84056fc7f2494307e6685e04b76de618f',
     '136967000000014024',
     '136967000000074001',

@@ -122,7 +122,11 @@ test('[PASS-STATIC] Public HTTP superadmin bootstrap route absent & all 11 areas
 test('[PASS-STATIC] Cookie & CORS hardening: zero wildcard Access-Control-Allow-Origin or automatic SameSite=None downgrade in auth/routes', () => {
   const authContent = fs.readFileSync(path.join(POC_ROOT, 'src/auth/cleanSlateAuthGuard.ts'), 'utf8');
   const routesContent = fs.readFileSync(path.join(POC_ROOT, 'src/routes/apiRouterSchema.ts'), 'utf8');
-  assert.equal(authContent.includes('SameSite=None'), false, 'Automatic SameSite=None downgrade is strictly forbidden');
+  assert.ok(authContent.includes('SameSite=Strict'), 'Default SameSite=Strict cookie policy must remain intact');
+  assert.ok(
+    authContent.includes("VIGOR_CROSS_SITE_COOKIES") && authContent.includes('this.crossSiteCookies ?'),
+    'SameSite=None must be strictly gated behind explicit VIGOR_CROSS_SITE_COOKIES=true opt-in (never automatic)'
+  );
   assert.equal(authContent.includes('vigorcore-poc-dev-hmac-secret'), false, 'Hardcoded dev HMAC secret literal must be removed');
   assert.equal(routesContent.includes("'Access-Control-Allow-Origin': '*'"), false, 'Wildcard CORS origin is forbidden');
 });

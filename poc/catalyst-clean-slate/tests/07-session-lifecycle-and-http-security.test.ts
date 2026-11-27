@@ -435,7 +435,7 @@ test('[PASS-UNIT / PASS-MOCK] Phase 4.0.5 Objective 3 & 5: CORS Credentials, All
     );
   }
 
-  // Cookie attribute enforcement
+  // Cookie attribute enforcement (default __Host-vigor_session; SameSite=Strict and cross-site vigor_session; SameSite=None)
   assert.doesNotThrow(() =>
     assertStrictCookieAttributes(`${SIGNED_SESSION_COOKIE_NAME}=abc.def; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=43200`)
   );
@@ -443,6 +443,26 @@ test('[PASS-UNIT / PASS-MOCK] Phase 4.0.5 Objective 3 & 5: CORS Credentials, All
   assert.throws(() => assertStrictCookieAttributes(`${SIGNED_SESSION_COOKIE_NAME}=abc.def; HttpOnly; SameSite=Strict; Path=/`), /Missing Secure/);
   assert.throws(() => assertStrictCookieAttributes(`${SIGNED_SESSION_COOKIE_NAME}=abc.def; HttpOnly; Secure; SameSite=None; Path=/`), /Missing SameSite=Strict/);
   assert.throws(() => assertStrictCookieAttributes(`${SIGNED_SESSION_COOKIE_NAME}=abc.def; HttpOnly; Secure; SameSite=Strict; Path=/; Domain=onslate.com`), /MUST NOT define a Domain/);
+
+  assert.doesNotThrow(() =>
+    assertStrictCookieAttributes('vigor_session=abc.def; HttpOnly; Secure; SameSite=None; Path=/; Max-Age=43200', {
+      crossSiteCookies: true,
+    })
+  );
+  assert.throws(
+    () =>
+      assertStrictCookieAttributes(`${SIGNED_SESSION_COOKIE_NAME}=abc.def; HttpOnly; Secure; SameSite=None; Path=/`, {
+        crossSiteCookies: true,
+      }),
+    /INVALID_COOKIE_NAME/
+  );
+  assert.throws(
+    () =>
+      assertStrictCookieAttributes('vigor_session=abc.def; HttpOnly; Secure; SameSite=Strict; Path=/', {
+        crossSiteCookies: true,
+      }),
+    /Missing SameSite=None/
+  );
 
   // Domain & Same-Site evaluation across Catalyst default, subdomain same-site (Alternative A), and same-origin proxy (Alternative C)
   assert.equal(extractRegistrableDomain('fit-x-bhnatsxl.onslate.com'), 'onslate.com');

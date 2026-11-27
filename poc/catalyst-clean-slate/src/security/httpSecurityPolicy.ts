@@ -15,7 +15,11 @@
  * 6. Honest browser/Slate vs Catalyst Advanced I/O origin/site topology evaluator.
  */
 
-import { SIGNED_SESSION_COOKIE_NAME, type IncomingHttpRequest } from '../auth/cleanSlateAuthGuard.js';
+import {
+  CROSS_SITE_SESSION_COOKIE_NAME,
+  SIGNED_SESSION_COOKIE_NAME,
+  type IncomingHttpRequest,
+} from '../auth/cleanSlateAuthGuard.js';
 
 export const DEFAULT_ALLOWED_ORIGINS = ['https://fit-x-bhnatsxl.onslate.com'] as const;
 
@@ -41,6 +45,7 @@ export interface HttpSecurityPolicyConfig {
   enforceFetchMetadata?: boolean;
   requireCsrfHeaderOnMutations?: boolean;
   enforceSignedCsrfTokens?: boolean;
+  crossSiteCookies?: boolean;
 }
 
 function readHeaderCaseInsensitive(
@@ -90,6 +95,7 @@ export class HttpSecurityPolicy {
   private readonly enforceFetchMetadata: boolean;
   private readonly requireCsrfHeaderOnMutations: boolean;
   private readonly enforceSignedCsrfTokens: boolean;
+  private readonly crossSiteCookies: boolean;
 
   constructor(config?: Partial<HttpSecurityPolicyConfig>) {
     const rawList = config?.allowedOrigins ?? [...DEFAULT_ALLOWED_ORIGINS];
@@ -109,6 +115,7 @@ export class HttpSecurityPolicy {
     this.enforceFetchMetadata = config?.enforceFetchMetadata ?? true;
     this.requireCsrfHeaderOnMutations = config?.requireCsrfHeaderOnMutations ?? false;
     this.enforceSignedCsrfTokens = config?.enforceSignedCsrfTokens ?? false;
+    this.crossSiteCookies = Boolean(config?.crossSiteCookies);
   }
 
   getCorsMode(): CorsHandlingMode {
@@ -117,6 +124,10 @@ export class HttpSecurityPolicy {
 
   isSignedCsrfEnforced(): boolean {
     return this.enforceSignedCsrfTokens;
+  }
+
+  isCrossSiteCookiesEnabled(): boolean {
+    return this.crossSiteCookies;
   }
 
   isOriginAllowed(originHeader: string): boolean {
@@ -154,7 +165,7 @@ export class HttpSecurityPolicy {
       'Access-Control-Allow-Origin': canonical,
       'Access-Control-Allow-Credentials': 'true',
       'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, X-Vigor-CSRF, X-Vigor-Requested-With',
+      'Access-Control-Allow-Headers': 'Content-Type, X-Vigor-CSRF, X-Vigor-Requested-With, Authorization',
       'Access-Control-Expose-Headers': 'X-Vigor-CSRF-Token',
       Vary: 'Origin',
     };
@@ -180,13 +191,20 @@ export class HttpSecurityPolicy {
     if (this.enforceFetchMetadata) {
       const secFetchSite = readHeaderCaseInsensitive(req.headers, 'sec-fetch-site')?.toLowerCase();
       if (secFetchSite === 'cross-site') {
-        throw new HttpSecurityError(
-          403,
-          'CSRF_CROSS_SITE_REJECTED',
-          `Cross-site state-changing request rejected by Fetch Metadata (Sec-Fetch-Site: ${secFetchSite}).`
-        );
-      }
-      if (secFetchSite && secFetchSite !== 'same-origin' && secFetchSite !== 'same-site' && secFetchSite !== 'none') {
+        const originForCrossSite = readHeaderCaseInsensitive(req.headers, 'origin');
+        if (!(this.crossSiteCookies && originForCrossSite && this.isOriginAllowed(originForCrossSite))) {
+          throw new HttpSecurityError(
+            403,
+            'CSRF_CROSS_SITE_REJECTED',
+            `Cross-site state-changing request rejected by Fetch Metadata (Sec-Fetch-Site: ${secFetchSite}).`
+          );
+        }
+      } else if (
+        secFetchSite &&
+        secFetchSite !== 'same-origin' &&
+        secFetchSite !== 'same-site' &&
+        secFetchSite !== 'none'
+      ) {
         throw new HttpSecurityError(
           403,
           'CSRF_FETCH_METADATA_REJECTED',
@@ -276,13 +294,23 @@ export class HttpSecurityPolicy {
 }
 
 /**
- * Verifies that any emitted session `Set-Cookie` header obeys strict `__Host-vigor_session` attributes.
+ * Verifies that any emitted session `Set-Cookie` header obeys strict cookie attributes:
+ * - Default (`crossSiteCookies = false`): `__Host-vigor_session` with `HttpOnly; Secure; SameSite=Strict; Path=/` and NO `Domain=`.
+ * - Cross-site (`crossSiteCookies = true`): `vigor_session` with `HttpOnly; Secure; SameSite=None; Path=/` and NO `Domain=`.
  */
-export function assertStrictCookieAttributes(setCookieHeader: string): void {
+export function assertStrictCookieAttributes(
+  setCookieHeader: string,
+  options?: { crossSiteCookies?: boolean }
+): void {
+  const crossSite = Boolean(options?.crossSiteCookies);
+  const expectedCookieName = crossSite ? CROSS_SITE_SESSION_COOKIE_NAME : SIGNED_SESSION_COOKIE_NAME;
+  const expectedSameSite = crossSite ? 'samesite=none' : 'samesite=strict';
+  const expectedSameSiteLabel = crossSite ? 'SameSite=None' : 'SameSite=Strict';
+
   const parts = setCookieHeader.split(';').map(p => p.trim());
   const [nameVal, ...attrs] = parts;
-  if (!nameVal || !nameVal.startsWith(`${SIGNED_SESSION_COOKIE_NAME}=`)) {
-    throw new Error(`INVALID_COOKIE_NAME: Must use host-bound prefix '${SIGNED_SESSION_COOKIE_NAME}'.`);
+  if (!nameVal || !nameVal.startsWith(`${expectedCookieName}=`)) {
+    throw new Error(`INVALID_COOKIE_NAME: Must use session cookie name '${expectedCookieName}'.`);
   }
 
   const lowerAttrs = new Set(attrs.map(a => a.toLowerCase()));
@@ -292,14 +320,14 @@ export function assertStrictCookieAttributes(setCookieHeader: string): void {
   if (!lowerAttrs.has('secure')) {
     throw new Error('INVALID_COOKIE_ATTR: Missing Secure.');
   }
-  if (!lowerAttrs.has('samesite=strict')) {
-    throw new Error('INVALID_COOKIE_ATTR: Missing SameSite=Strict.');
+  if (!lowerAttrs.has(expectedSameSite)) {
+    throw new Error(`INVALID_COOKIE_ATTR: Missing ${expectedSameSiteLabel}.`);
   }
   if (!lowerAttrs.has('path=/')) {
     throw new Error('INVALID_COOKIE_ATTR: Missing Path=/.');
   }
   if (attrs.some(a => a.toLowerCase().startsWith('domain='))) {
-    throw new Error('INVALID_COOKIE_ATTR: __Host- cookies MUST NOT define a Domain attribute.');
+    throw new Error('INVALID_COOKIE_ATTR: Session cookies MUST NOT define a Domain attribute.');
   }
 }
 

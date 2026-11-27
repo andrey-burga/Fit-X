@@ -30,9 +30,12 @@ export const ARTIFACTS_DIR = path.join(POC_ROOT, 'artifacts');
 export const PHASE_5_8_CANDIDATE_ZIP_NAME = 'vigor_api-phase-5.8-development-candidate.zip';
 export const PHASE_5_8_CANDIDATE_MANIFEST_NAME = 'vigor_api-phase-5.8-development-candidate.manifest.json';
 export const PHASE_5_8_CANDIDATE_RELEASE_NAME = 'vigor_api-phase-5.8-development-candidate.release.json';
-export const DEFAULT_OUTPUT_ZIP_PATH = path.join(ARTIFACTS_DIR, PHASE_5_8_CANDIDATE_ZIP_NAME);
-export const DEFAULT_OUTPUT_MANIFEST_PATH = path.join(ARTIFACTS_DIR, PHASE_5_8_CANDIDATE_MANIFEST_NAME);
-export const DEFAULT_OUTPUT_RELEASE_PATH = path.join(ARTIFACTS_DIR, PHASE_5_8_CANDIDATE_RELEASE_NAME);
+export const PHASE_5_9_CANDIDATE_ZIP_NAME = 'vigor_api-phase-5.9-cross-site-development-candidate.zip';
+export const PHASE_5_9_CANDIDATE_MANIFEST_NAME = 'vigor_api-phase-5.9-cross-site-development-candidate.manifest.json';
+export const PHASE_5_9_CANDIDATE_RELEASE_NAME = 'vigor_api-phase-5.9-cross-site-development-candidate.release.json';
+export const DEFAULT_OUTPUT_ZIP_PATH = path.join(ARTIFACTS_DIR, PHASE_5_9_CANDIDATE_ZIP_NAME);
+export const DEFAULT_OUTPUT_MANIFEST_PATH = path.join(ARTIFACTS_DIR, PHASE_5_9_CANDIDATE_MANIFEST_NAME);
+export const DEFAULT_OUTPUT_RELEASE_PATH = path.join(ARTIFACTS_DIR, PHASE_5_9_CANDIDATE_RELEASE_NAME);
 
 export const PRESERVED_HISTORICAL_ZIPS = new Set<string>([
   'vigor_api.zip',
@@ -43,6 +46,7 @@ export const PRESERVED_HISTORICAL_ZIPS = new Set<string>([
   'vigor_api-auth-reconciled-portable.zip',
   'vigor_api-auth-forensic-diagnostic-portable.zip',
   'vigor_api-hosted-admin-remediated-portable.zip',
+  'vigor_api-phase-5.8-development-candidate.zip',
 ]);
 
 // Canonical DOS epoch 1980-01-01 00:00:00
@@ -421,7 +425,7 @@ export function generateCandidateReleaseMetadata(params: {
 
   return {
     candidateName: path.basename(params.zipPath),
-    phase: '5.8',
+    phase: '5.9',
     targetEnvironment: 'Development',
     readinessStatus: 'READY_FOR_DEVELOPMENT_OPERATOR_REVIEW',
     sourceStateIdentifier: computeServerSourceStateFingerprint(POC_ROOT),
@@ -501,7 +505,7 @@ export function buildReproduciblePortablePackage(options: BuildPackageOptions = 
       version: '1.0.0',
       private: true,
       type: 'module',
-      description: 'VigorCore Advanced I/O API backend for Zoho Catalyst (Node.js 22) - Phase 5.8 Development Candidate',
+      description: 'VigorCore Advanced I/O API backend for Zoho Catalyst (Node.js 22) - Phase 5.9 Cross-Site Development Candidate',
       main: 'dist/server/catalystEntry.js',
       engines: { node: '>=22' },
       dependencies: prodDeps,

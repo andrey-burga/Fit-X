@@ -146,7 +146,7 @@ test('Phase 5.0 [PASS-LOOPBACK] Real Express HTTP loopback tests lifecycle, CORS
     assert.equal(optAllowed.headers.get('access-control-allow-credentials'), 'true');
     assert.equal(
       optAllowed.headers.get('access-control-allow-headers'),
-      'Content-Type, X-Vigor-CSRF, X-Vigor-Requested-With'
+      'Content-Type, X-Vigor-CSRF, X-Vigor-Requested-With, Authorization'
     );
 
     const optDenied = await fetch(`${baseUrl}/api/v1/athlete/meals`, {
@@ -410,5 +410,145 @@ test('Phase 5.0 [PASS-UNIT] Candidate non-applied Alternative A/B configs & env 
     const parsed = JSON.parse(raw);
     assert.equal(parsed._meta.status, 'CANDIDATE_NOT_APPLIED');
     assert.equal(/1000\.[A-Za-z0-9]{10,}/.test(raw), false);
+  }
+});
+
+test('Phase 5.9 [PASS-LOOPBACK] VIGOR_CROSS_SITE_COOKIES=true emits vigor_session (SameSite=None; Secure; HttpOnly; Path=/) and CORS preflight/POST with Authorization', async () => {
+  let nowSec = 1_760_000_000;
+  const hmacSecret = ServerSessionTokenManager.generateStrongSecret(32);
+  const adapter = new CleanSlateInMemoryNoSQLAdapter(() => nowSec);
+  const authRuntime = new MockCatalystAuthRuntime();
+
+  authRuntime.setCurrentUser({
+    zuid: 'z_cross_1',
+    user_id: 'u_cross_1',
+    email_id: 'cross@vigorcore.lat',
+    status: 'ACTIVE',
+    is_confirmed: true,
+    first_name: 'Cross',
+    last_name: 'Site',
+  });
+
+  const bundle = createVigorCoreProductionRuntimeFromEnv(
+    {
+      ...createBaseEnv(hmacSecret),
+      VIGOR_CORS_MODE: 'express_enforced',
+      VIGOR_CROSS_SITE_COOKIES: 'true',
+      VIGOR_ALLOWED_ORIGINS: 'https://app.vigorcore.lat',
+    },
+    {
+      allowInsecureLoopbackForTest: true,
+      adapterOverride: adapter,
+      authRuntimeOverride: authRuntime,
+      nowSecProvider: () => nowSec,
+      nowMsProvider: () => nowSec * 1000,
+    }
+  );
+
+  const server = http.createServer(bundle.app);
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', () => resolve()));
+  const port = (server.address() as { port: number }).port;
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const origin = 'https://app.vigorcore.lat';
+
+  try {
+    // 1. OPTIONS preflight for /auth/session/exchange with Authorization requested
+    const optRes = await fetch(`${baseUrl}/server/vigor_api/api/v1/auth/session/exchange`, {
+      method: 'OPTIONS',
+      headers: {
+        Origin: origin,
+        'Access-Control-Request-Method': 'POST',
+        'Access-Control-Request-Headers': 'authorization, content-type, x-vigor-requested-with',
+      },
+    });
+    assert.equal(optRes.status, 204);
+    assert.equal(optRes.headers.get('access-control-allow-origin'), origin);
+    assert.equal(optRes.headers.get('access-control-allow-credentials'), 'true');
+    assert.ok((optRes.headers.get('access-control-allow-headers') ?? '').includes('Authorization'));
+
+    // 2. GET /health includes exact CORS headers for allowlisted cross-site origin
+    const healthRes = await fetch(`${baseUrl}/server/vigor_api/health`, {
+      headers: { Origin: origin },
+    });
+    assert.equal(healthRes.status, 200);
+    assert.equal(healthRes.headers.get('access-control-allow-origin'), origin);
+    assert.equal(healthRes.headers.get('access-control-allow-credentials'), 'true');
+
+    // 3. Cross-site POST bootstrap-profile from allowlisted origin emits vigor_session; SameSite=None; Secure; HttpOnly; Path=/
+    const bootRes = await fetch(`${baseUrl}/server/vigor_api/api/v1/auth/session/bootstrap-profile`, {
+      method: 'POST',
+      headers: {
+        Origin: origin,
+        'Sec-Fetch-Site': 'cross-site',
+        'X-Vigor-Requested-With': 'VigorCore-CleanSlate',
+        Authorization: 'ephemeral_catalyst_token',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({}),
+    });
+    assert.equal(bootRes.status, 200);
+    assert.equal(bootRes.headers.get('access-control-allow-origin'), origin);
+    assert.equal(bootRes.headers.get('access-control-allow-credentials'), 'true');
+    const setCookie = bootRes.headers.get('set-cookie') ?? '';
+    assert.ok(setCookie.startsWith('vigor_session='));
+    assert.equal(setCookie.includes('__Host-vigor_session='), false);
+    assert.ok(setCookie.includes('HttpOnly'));
+    assert.ok(setCookie.includes('Secure'));
+    assert.ok(setCookie.includes('SameSite=None'));
+    assert.ok(setCookie.includes('Path=/'));
+    assert.equal(setCookie.includes('Domain='), false);
+
+    const cookieVal = extractCookieValue(setCookie);
+    const bootBody = (await bootRes.json()) as { csrfToken: string };
+    assert.ok(bootBody.csrfToken);
+
+    // 4. Unallowlisted origin is STILL rejected even with Sec-Fetch-Site: cross-site
+    const evilRes = await fetch(`${baseUrl}/server/vigor_api/api/v1/auth/session/exchange`, {
+      method: 'POST',
+      headers: {
+        Origin: 'https://evil.example.com',
+        'Sec-Fetch-Site': 'cross-site',
+        'X-Vigor-Requested-With': 'VigorCore-CleanSlate',
+      },
+      body: JSON.stringify({}),
+    });
+    assert.equal(evilRes.status, 403);
+    assert.equal(evilRes.headers.get('access-control-allow-origin'), null);
+
+    // 5. Cookie-only GET /auth/me & POST /athlete/meals work with vigor_session across sites
+    authRuntime.setCurrentUser(null);
+    const meRes = await fetch(`${baseUrl}/server/vigor_api/api/v1/auth/me`, {
+      headers: {
+        Origin: origin,
+        'Sec-Fetch-Site': 'cross-site',
+        Cookie: `vigor_session=${cookieVal}`,
+      },
+    });
+    assert.equal(meRes.status, 200);
+    assert.equal(meRes.headers.get('access-control-allow-origin'), origin);
+    assert.equal(meRes.headers.get('access-control-allow-credentials'), 'true');
+
+    const mealRes = await fetch(`${baseUrl}/server/vigor_api/api/v1/athlete/meals`, {
+      method: 'POST',
+      headers: {
+        Origin: origin,
+        'Sec-Fetch-Site': 'cross-site',
+        'X-Vigor-CSRF': bootBody.csrfToken,
+        Cookie: `vigor_session=${cookieVal}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        id: 'meal_cross_1',
+        dateTime: '2026-10-15T12:00:00.000Z',
+        name: 'Salmon Bowl',
+        kcal: 540,
+        protein: 45,
+        carbs: 48,
+        fat: 18,
+      }),
+    });
+    assert.equal(mealRes.status, 201);
+  } finally {
+    await new Promise<void>(resolve => server.close(() => resolve()));
   }
 });

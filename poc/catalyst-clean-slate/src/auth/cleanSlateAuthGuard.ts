@@ -48,6 +48,7 @@ export type CatalystIdentitySnapshot = Pick<
 export { USER_STATUS };
 
 export const SIGNED_SESSION_COOKIE_NAME = '__Host-vigor_session';
+export const CROSS_SITE_SESSION_COOKIE_NAME = 'vigor_session';
 
 export interface IncomingHttpRequest {
   method?: string;
@@ -102,6 +103,7 @@ export interface SessionTokenManagerConfig {
   maxTtlSec?: number;
   clockSkewSec?: number;
   nowSecProvider?: () => number;
+  crossSiteCookies?: boolean;
 }
 
 const CANONICAL_BASE64URL_RE = /^[A-Za-z0-9_-]+$/;
@@ -167,6 +169,8 @@ export class ServerSessionTokenManager {
   private readonly maxTtlSec: number;
   private readonly clockSkewSec: number;
   private readonly nowSecProvider: () => number;
+  private readonly crossSiteCookies: boolean;
+  private readonly sessionCookieName: string;
 
   static generateStrongSecret(byteLength = 32): string {
     if (!Number.isInteger(byteLength) || byteLength < MIN_HMAC_KEY_BYTES) {
@@ -198,11 +202,15 @@ export class ServerSessionTokenManager {
       }));
     }
 
+    const crossSiteCookies =
+      (envMap.VIGOR_CROSS_SITE_COOKIES || '').trim().toLowerCase() === 'true';
+
     return new ServerSessionTokenManager({
       activeSecret,
       activeKeyId: envMap.VIGOR_SESSION_ACTIVE_KID || 'k1',
       previousSecrets,
       environment,
+      crossSiteCookies,
     });
   }
 
@@ -247,6 +255,10 @@ export class ServerSessionTokenManager {
     this.defaultTtlSec = cfg.defaultTtlSec ?? 12 * 3600;
     this.clockSkewSec = cfg.clockSkewSec ?? 60;
     this.nowSecProvider = cfg.nowSecProvider ?? (() => Math.floor(Date.now() / 1000));
+    this.crossSiteCookies = Boolean(cfg.crossSiteCookies);
+    this.sessionCookieName = this.crossSiteCookies
+      ? CROSS_SITE_SESSION_COOKIE_NAME
+      : SIGNED_SESSION_COOKIE_NAME;
 
     if (this.defaultTtlSec <= 0 || this.defaultTtlSec > this.maxTtlSec) {
       throw new Error('INVALID_TTL_CONFIG: defaultTtlSec must be > 0 and <= maxTtlSec.');
@@ -259,6 +271,14 @@ export class ServerSessionTokenManager {
 
   getEnvironment(): string {
     return this.environment;
+  }
+
+  isCrossSiteCookiesEnabled(): boolean {
+    return this.crossSiteCookies;
+  }
+
+  getSessionCookieName(): string {
+    return this.sessionCookieName;
   }
 
   issueTokenWithClaims(
@@ -304,11 +324,13 @@ export class ServerSessionTokenManager {
   }
 
   buildHttpOnlySetCookieHeader(token: string, ttlSec = this.defaultTtlSec): string {
-    return `${SIGNED_SESSION_COOKIE_NAME}=${token}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=${ttlSec}`;
+    const sameSite = this.crossSiteCookies ? 'SameSite=None' : 'SameSite=Strict';
+    return `${this.sessionCookieName}=${token}; HttpOnly; Secure; ${sameSite}; Path=/; Max-Age=${ttlSec}`;
   }
 
   buildLogoutClearCookieHeader(): string {
-    return `${SIGNED_SESSION_COOKIE_NAME}=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT`;
+    const sameSite = this.crossSiteCookies ? 'SameSite=None' : 'SameSite=Strict';
+    return `${this.sessionCookieName}=; HttpOnly; Secure; ${sameSite}; Path=/; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT`;
   }
 
   issueCsrfToken(
@@ -744,9 +766,12 @@ export function assertNoIdentitySpoofing(
   }
 }
 
-function extractSignedSessionCookie(req: IncomingHttpRequest): string | undefined {
-  if (req.cookies && typeof req.cookies[SIGNED_SESSION_COOKIE_NAME] === 'string') {
-    const val = req.cookies[SIGNED_SESSION_COOKIE_NAME]?.trim();
+function extractSignedSessionCookie(
+  req: IncomingHttpRequest,
+  cookieName = SIGNED_SESSION_COOKIE_NAME
+): string | undefined {
+  if (req.cookies && typeof req.cookies[cookieName] === 'string') {
+    const val = req.cookies[cookieName]?.trim();
     return val ? val : undefined;
   }
   const rawCookieHeader = req.headers?.cookie ?? req.headers?.Cookie;
@@ -756,7 +781,7 @@ function extractSignedSessionCookie(req: IncomingHttpRequest): string | undefine
     if (eqIdx === -1) continue;
     const name = part.slice(0, eqIdx).trim();
     const val = part.slice(eqIdx + 1).trim();
-    if (name === SIGNED_SESSION_COOKIE_NAME && val) {
+    if (name === cookieName && val) {
       return val;
     }
   }
@@ -791,6 +816,8 @@ export class CleanSlateAuthGuard {
       this.sessionTokens = new ServerSessionTokenManager({
         activeSecret: envSecret || getProcessScopedTestSecret(),
         environment: envName,
+        crossSiteCookies:
+          (process.env.VIGOR_CROSS_SITE_COOKIES || '').trim().toLowerCase() === 'true',
       });
     }
   }
@@ -1019,7 +1046,7 @@ export class CleanSlateAuthGuard {
       allowAccountStatusFilterInQuery: Boolean(options.allowAccountStatusFilterInQuery),
     });
 
-    const signedCookie = extractSignedSessionCookie(req);
+    const signedCookie = extractSignedSessionCookie(req, this.sessionTokens.getSessionCookieName());
     const authPolicy = options.authPolicy ?? (options.requireSignedSession ? 'hmac_session' : 'catalyst_or_hmac_inspect');
 
     // Path 1: Pre-session Catalyst exchange (`catalyst_exchange`) MUST verify Catalyst session
@@ -1075,7 +1102,7 @@ export class CleanSlateAuthGuard {
         throw new AuthGuardError(
           401,
           'SIGNED_SESSION_REQUIRED',
-          'Se requiere cookie de sesión firmada por el servidor (__Host-vigor_session).'
+          `Se requiere cookie de sesión firmada por el servidor (${this.sessionTokens.getSessionCookieName()}).`
         );
       }
       return {

@@ -213,7 +213,9 @@ export const ROUTE_DEFINITIONS: readonly RouteDefinition[] = [
     ...specById('auth.session.bootstrapProfile'),
     handler: async ({ req, corsHeaders, authGuard }) => {
       const result = await authGuard.bootstrapAuthenticatedProfile(req);
-      assertStrictCookieAttributes(result.setCookieHeader);
+      assertStrictCookieAttributes(result.setCookieHeader, {
+        crossSiteCookies: authGuard.sessionTokens.isCrossSiteCookiesEnabled(),
+      });
       const {
         signedSessionCookie: _omitTok,
         setCookieHeader,
@@ -248,7 +250,9 @@ export const ROUTE_DEFINITIONS: readonly RouteDefinition[] = [
     handler: async ctx => {
       const actor = await authenticateForSpec(ctx);
       const issued = await ctx.authGuard.issueSignedSession(actor);
-      assertStrictCookieAttributes(issued.setCookieHeader);
+      assertStrictCookieAttributes(issued.setCookieHeader, {
+        crossSiteCookies: ctx.authGuard.sessionTokens.isCrossSiteCookiesEnabled(),
+      });
       return {
         status: 200,
         headers: {
@@ -286,7 +290,9 @@ export const ROUTE_DEFINITIONS: readonly RouteDefinition[] = [
         verifyBoundCsrfIfEnforced(ctx, preActor);
       }
       const rotated = await ctx.authGuard.refreshSignedSession(ctx.req);
-      assertStrictCookieAttributes(rotated.setCookieHeader);
+      assertStrictCookieAttributes(rotated.setCookieHeader, {
+        crossSiteCookies: ctx.authGuard.sessionTokens.isCrossSiteCookiesEnabled(),
+      });
       return {
         status: 200,
         headers: {
@@ -319,7 +325,9 @@ export const ROUTE_DEFINITIONS: readonly RouteDefinition[] = [
         verifyBoundCsrfIfEnforced(ctx, preActor);
       }
       const loggedOut = await ctx.authGuard.logoutSession(ctx.req);
-      assertStrictCookieAttributes(loggedOut.clearCookieHeader);
+      assertStrictCookieAttributes(loggedOut.clearCookieHeader, {
+        crossSiteCookies: ctx.authGuard.sessionTokens.isCrossSiteCookiesEnabled(),
+      });
       return {
         status: 200,
         headers: { ...ctx.corsHeaders, 'Set-Cookie': loggedOut.clearCookieHeader },
@@ -1512,7 +1520,7 @@ export class CleanSlateApiDispatcher {
       if (err instanceof HttpSecurityError) {
         return {
           status: err.statusCode,
-          headers: { Vary: 'Origin' },
+          headers: err.code === 'CORS_ORIGIN_REJECTED' ? { Vary: 'Origin' } : corsHeaders,
           body: { success: false, error: err.code, message: err.message },
         };
       }

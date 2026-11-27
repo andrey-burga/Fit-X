@@ -321,7 +321,7 @@ export function redactSecretsFromString(input: string, extraSecrets: string[] = 
   }
   out = out.replace(/Zoho-oauthtoken\s+[A-Za-z0-9._-]+/gi, 'Zoho-oauthtoken [REDACTED]');
   out = out.replace(/Bearer\s+[A-Za-z0-9._-]+/gi, 'Bearer [REDACTED]');
-  out = out.replace(/(__Host-vigor_session=)[^;\s]+/gi, '$1[REDACTED]');
+  out = out.replace(/((?:__Host-)?vigor_session=)[^;\s]+/gi, '$1[REDACTED]');
   out = out.replace(
     /((?:client_secret|refresh_token|access_token|hmac_?secret)=)[^&\s]+/gi,
     '$1[REDACTED]'

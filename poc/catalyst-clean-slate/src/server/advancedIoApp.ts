@@ -240,6 +240,27 @@ export function createVigorCoreExpressApp(
       req.method === 'GET' &&
       (normalizedPath === '/health' || normalizedPath === '/api/v1/health')
     ) {
+      if (deps.httpPolicy && req.headers.origin) {
+        try {
+          const healthCors = deps.httpPolicy.buildCorsHeaders({
+            method: 'GET',
+            route: normalizedPath,
+            headers: normalizeIncomingHeaders(req.headers),
+          });
+          for (const [hdrName, hdrVal] of Object.entries(healthCors)) {
+            res.setHeader(hdrName, hdrVal);
+          }
+        } catch (err) {
+          if (err instanceof HttpSecurityError) {
+            res.status(err.statusCode).json({
+              success: false,
+              error: err.code,
+              message: err.message,
+            });
+            return;
+          }
+        }
+      }
       res.status(200).json({
         success: true,
         service: deps.serviceName ?? 'vigorcore-advanced-io',
@@ -279,9 +300,10 @@ export function createVigorCoreExpressApp(
       );
 
       if (result.headers) {
+        const crossSiteCookies = deps.httpPolicy?.isCrossSiteCookiesEnabled() ?? false;
         for (const [hdrName, hdrVal] of Object.entries(result.headers)) {
           if (hdrName.toLowerCase() === 'set-cookie') {
-            assertStrictCookieAttributes(hdrVal);
+            assertStrictCookieAttributes(hdrVal, { crossSiteCookies });
           }
           res.setHeader(hdrName, hdrVal);
         }
@@ -493,6 +515,9 @@ export function createVigorCoreProductionRuntimeFromEnv(
       });
   }
 
+  const crossSiteCookies =
+    (envMap.VIGOR_CROSS_SITE_COOKIES || '').trim().toLowerCase() === 'true';
+
   const baseSessionTokens = ServerSessionTokenManager.fromEnvironment(envMap);
   const sessionTokens = overrides.nowSecProvider
     ? new ServerSessionTokenManager({
@@ -500,6 +525,7 @@ export function createVigorCoreProductionRuntimeFromEnv(
         activeKeyId: envMap.VIGOR_SESSION_ACTIVE_KID || 'k1',
         environment: baseSessionTokens.getEnvironment(),
         nowSecProvider: overrides.nowSecProvider,
+        crossSiteCookies,
       })
     : baseSessionTokens;
 
@@ -532,6 +558,7 @@ export function createVigorCoreProductionRuntimeFromEnv(
     enforceFetchMetadata: true,
     requireCsrfHeaderOnMutations: true,
     enforceSignedCsrfTokens: true,
+    crossSiteCookies,
   });
 
   const dispatcher = new CleanSlateApiDispatcher(

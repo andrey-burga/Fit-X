@@ -21,12 +21,22 @@ import {
   createBrowserCatalystWebAuthSdk,
 } from '../../poc/catalyst-clean-slate/src/frontend/adapters/index.ts';
 
+export const DEFAULT_REMOTE_VIGOR_API_URL =
+  'https://project-rainfall-943998020.development.catalystserverless.com/server/vigor_api/api/v1';
+
 /**
  * Resolves the Catalyst API base origin (without trailing `/api/v1`) required by
  * `CatalystHttpTransport` (all transport paths begin with `/api/v1/*`).
+ * - Uses `VITE_VIGOR_API_BASE_URL` when explicitly defined.
+ * - Keeps `/api/v1` when running on `localhost` so Vite's same-origin proxy handles dev traffic.
+ * - Defaults to the live Catalyst Development API Gateway URL on deployed/remote origins (e.g. `app.vigorcore.lat`).
  */
 export function resolveCatalystApiBaseUrl(): string {
-  const configured = (import.meta.env.VITE_VIGOR_API_BASE_URL || '/api/v1').trim();
+  const isLocalhost =
+    typeof window !== 'undefined' && window.location?.hostname === 'localhost';
+  const configuredEnv = (import.meta.env.VITE_VIGOR_API_BASE_URL || '').trim();
+  const configured =
+    configuredEnv || (isLocalhost ? '/api/v1' : DEFAULT_REMOTE_VIGOR_API_URL);
   const stripped = configured.replace(/\/api\/v1\/?$/i, '').replace(/\/+$/, '');
 
   if (stripped && /^https?:\/\//i.test(stripped)) {
