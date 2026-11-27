@@ -19,6 +19,14 @@ export default defineConfig(() => {
       // Disable file watching when DISABLE_HMR is true to save CPU during agent edits.
       watch: process.env.DISABLE_HMR === 'true' ? null : {},
       proxy: {
+        '/__catalyst': {
+          target: 'https://project-rainfall-943998020.development.catalystserverless.com',
+          changeOrigin: true,
+          secure: true,
+          xfwd: true,
+          cookieDomainRewrite: '',
+          cookiePathRewrite: '/',
+        },
         '/api/v1': {
           target: 'https://project-rainfall-943998020.development.catalystserverless.com/server/vigor_api',
           changeOrigin: true,

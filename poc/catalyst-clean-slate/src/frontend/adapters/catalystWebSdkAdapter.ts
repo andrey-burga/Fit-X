@@ -51,6 +51,42 @@ type CatalystWebModule = {
   zcAuth?: ICatalystWebAuthSdk;
 };
 
+type CatalystAuthClientModule = {
+  ConfigStore?: {
+    get(key: string): string;
+    set(key: string, value: string): void;
+  };
+  setDefaultProjectConfig?: () => void;
+  syncProjectSession?: (credentials: Record<string, string>) => boolean;
+};
+
+function readViteEnv(): Record<string, string | undefined> {
+  try {
+    return (typeof import.meta !== 'undefined' && (import.meta as { env?: Record<string, string | undefined> }).env) || {};
+  } catch {
+    return {};
+  }
+}
+
+function normalizeCatalystDomainUrl(rawDomain: string | undefined): string {
+  const trimmed = (rawDomain || '').trim();
+  if (!trimmed) return '';
+  if (/^https?:\/\//i.test(trimmed)) {
+    return trimmed.replace(/\/+$/, '');
+  }
+  return `https://${trimmed.replace(/^\/+|\/+$/g, '')}`;
+}
+
+function formatCredentialInitError(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err || 'Error desconocido');
+  if (
+    /Unexpected end of JSON input|Unexpected token|JSON\.parse|is not valid JSON/i.test(raw)
+  ) {
+    return 'El endpoint /__catalyst/sdk/init devolvió una respuesta vacía o no JSON. Configura el proxy /__catalyst en Vite o define VITE_CATALYST_PROJECT_ID y VITE_CATALYST_DOMAIN.';
+  }
+  return raw;
+}
+
 /**
  * Dynamically resolves Catalyst Web SDK (`@zcatalyst/auth/web`) in memory without importing it
  * eagerly at module startup (prevents unwanted `/__catalyst/sdk/init` fetches in `/` mock mode).
@@ -59,6 +95,7 @@ export function createBrowserCatalystWebAuthSdk(
   customLoader?: () => Promise<ICatalystWebAuthSdk | null>
 ): ICatalystWebAuthSdk {
   let cachedPromise: Promise<ICatalystWebAuthSdk> | null = null;
+  let fallbackConfigApplied = false;
 
   const ensureSdk = async (): Promise<ICatalystWebAuthSdk> => {
     if (!cachedPromise) {
@@ -87,14 +124,90 @@ export function createBrowserCatalystWebAuthSdk(
     return cachedPromise;
   };
 
+  const applyEnvFallbackConfig = async (): Promise<boolean> => {
+    const env = readViteEnv();
+    const projectId = (env.VITE_CATALYST_PROJECT_ID || '').trim();
+    const domainUrl = normalizeCatalystDomainUrl(env.VITE_CATALYST_DOMAIN);
+    if (!projectId || !domainUrl) {
+      return false;
+    }
+    try {
+      const clientMod = (await import('@zcatalyst/auth-client')) as unknown as CatalystAuthClientModule;
+      clientMod.setDefaultProjectConfig?.();
+      const zaid = (env.VITE_CATALYST_ZAID || projectId).trim();
+      const iamDomain = normalizeCatalystDomainUrl(env.VITE_CATALYST_IAM_DOMAIN) || 'https://accounts.zoho.com';
+      const environment = (env.VITE_CATALYST_ENVIRONMENT || 'development').trim();
+      const strippedDomainHost = domainUrl.replace(/^https?:\/\//i, '');
+
+      clientMod.ConfigStore?.set('PROJECT_ID', projectId);
+      clientMod.ConfigStore?.set('ZAID', zaid);
+      clientMod.ConfigStore?.set('PROJECT_DOMAIN', strippedDomainHost);
+      clientMod.ConfigStore?.set('CATALYST_DOMAIN', domainUrl);
+      clientMod.ConfigStore?.set('IAM_DOMAIN', iamDomain);
+      clientMod.ConfigStore?.set('ENVIRONMENT', environment);
+      clientMod.ConfigStore?.set('INITIALIZED', 'true');
+      clientMod.syncProjectSession?.({
+        project_id: projectId,
+        zaid,
+        project_domain: strippedDomainHost,
+        environment,
+      });
+      fallbackConfigApplied = true;
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
   return {
     async init(): Promise<void> {
       const sdk = await ensureSdk();
-      await sdk.init();
+      try {
+        await sdk.init();
+      } catch (err) {
+        const applied = await applyEnvFallbackConfig();
+        if (applied) {
+          return;
+        }
+        throw new CleanSlateRepositoryError(
+          'CATALYST_SDK_INIT_FAILED',
+          formatCredentialInitError(err),
+          503,
+          { origin: 'client_synthetic' }
+        );
+      }
     },
     async hostedSignIn(redirectUrl?: string): Promise<void> {
       const sdk = await ensureSdk();
-      await sdk.hostedSignIn(redirectUrl);
+      if (fallbackConfigApplied && typeof window !== 'undefined') {
+        const env = readViteEnv();
+        const domainUrl = normalizeCatalystDomainUrl(env.VITE_CATALYST_DOMAIN);
+        const safeRedirect = redirectUrl || '/auth/callback';
+        const loginUrl =
+          domainUrl && !domainUrl.includes('accounts.zoho.')
+            ? `${domainUrl}/__catalyst/auth/login?redirect_url=${encodeURIComponent(
+                new URL(safeRedirect, window.location.origin).toString()
+              )}`
+            : `/__catalyst/auth/login?redirect_url=${encodeURIComponent(safeRedirect)}`;
+        window.location.assign(loginUrl);
+        return;
+      }
+      try {
+        await sdk.hostedSignIn(redirectUrl);
+      } catch (err) {
+        const applied = await applyEnvFallbackConfig();
+        if (applied && typeof window !== 'undefined') {
+          const safeRedirect = redirectUrl || '/auth/callback';
+          window.location.assign(`/__catalyst/auth/login?redirect_url=${encodeURIComponent(safeRedirect)}`);
+          return;
+        }
+        throw new CleanSlateRepositoryError(
+          'CATALYST_HOSTED_LOGIN_FAILED',
+          formatCredentialInitError(err),
+          503,
+          { origin: 'client_synthetic' }
+        );
+      }
     },
     async generateAuthToken(feature: 'functions'): Promise<CatalystGeneratedAuthToken> {
       const sdk = await ensureSdk();
