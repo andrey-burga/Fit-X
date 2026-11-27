@@ -1,8 +1,10 @@
-import React, { useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useApp } from '../../context/AppContext';
 import { UserAvatar } from '../layout/UserAvatar';
 import { formatUserRoleLabel } from '../../utils/roleDisplay';
 import { authBridge } from '../../services/catalystClient';
+
+const EMBEDDED_CONTAINER_ID = 'vigor-catalyst-auth-container';
 
 function detectIframeHost(): boolean {
   if (typeof window === 'undefined') return false;
@@ -19,6 +21,7 @@ export const AuthModal: React.FC = () => {
     isAuthenticated,
     isDemoMode,
     startDemoMode,
+    completeCatalystSession,
     logout,
     isLoggingOut,
     isAuthModalOpen,
@@ -26,22 +29,70 @@ export const AuthModal: React.FC = () => {
     navigate,
   } = useApp();
 
-  const [isLoading, setIsLoading] = useState(false);
+  const [isMounting, setIsMounting] = useState(false);
+  const [isExchanging, setIsExchanging] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [mountNonce, setMountNonce] = useState(0);
   const isInIframe = useMemo(() => detectIframeHost(), []);
+
+  const handleEmbeddedSuccess = useCallback(async () => {
+    setIsExchanging(true);
+    setErrorMessage(null);
+    const res = await completeCatalystSession();
+    setIsExchanging(false);
+    if (res.success) {
+      closeAuthModal();
+    } else {
+      setErrorMessage(res.error || 'No se pudo completar el inicio de sesión en Catalyst.');
+    }
+  }, [closeAuthModal, completeCatalystSession]);
+
+  useEffect(() => {
+    if (!isAuthModalOpen || (isAuthenticated && !isDemoMode)) {
+      return;
+    }
+
+    let active = true;
+    const mountWidget = async () => {
+      setIsMounting(true);
+      setErrorMessage(null);
+      try {
+        await authBridge.mountEmbeddedSignIn(
+          EMBEDDED_CONTAINER_ID,
+          async () => {
+            if (!active) return;
+            await handleEmbeddedSuccess();
+          },
+          '/auth/callback'
+        );
+      } catch (err: any) {
+        if (!active) return;
+        setErrorMessage(
+          err?.message || 'No se pudo inicializar el acceso embebido de Zoho Catalyst.'
+        );
+      } finally {
+        if (active) {
+          setIsMounting(false);
+        }
+      }
+    };
+
+    void mountWidget();
+    return () => {
+      active = false;
+    };
+  }, [isAuthModalOpen, isAuthenticated, isDemoMode, handleEmbeddedSuccess, mountNonce]);
 
   if (!isAuthModalOpen) return null;
 
-  const handleCatalystHostedLogin = async () => {
-    setIsLoading(true);
+  const handleHostedFallback = async () => {
     setErrorMessage(null);
     try {
       await authBridge.startHostedLogin('/auth/callback');
     } catch (err: any) {
       setErrorMessage(
-        err?.message || 'No se pudo iniciar la autenticación con Zoho Catalyst.'
+        err?.message || 'No se pudo iniciar la redirección con Zoho Catalyst.'
       );
-      setIsLoading(false);
     }
   };
 
@@ -59,7 +110,7 @@ export const AuthModal: React.FC = () => {
       />
 
       {/* Modal Dialog */}
-      <div className="relative w-full max-w-md bg-surface-container-lowest rounded-2xl shadow-2xl border border-surface-container overflow-hidden z-10 flex flex-col max-h-[90vh]">
+      <div className="relative w-full max-w-md bg-surface-container-lowest rounded-2xl shadow-2xl border border-surface-container overflow-hidden z-10 flex flex-col max-h-[92vh]">
         {/* Header */}
         <div className="p-space-lg pb-space-md border-b border-surface-container/40 flex items-start justify-between">
           <div className="flex items-center gap-space-sm">
@@ -68,12 +119,12 @@ export const AuthModal: React.FC = () => {
             </div>
             <div>
               <h2 className="font-headline-sm text-headline-sm text-on-surface font-semibold">
-                {isAuthenticated ? 'Perfil de Usuario' : 'Acceso a VigorCore'}
+                {isAuthenticated && !isDemoMode ? 'Perfil de Usuario' : 'Acceso a VigorCore'}
               </h2>
               <p className="font-label-sm text-label-sm text-on-surface-variant">
-                {isAuthenticated
+                {isAuthenticated && !isDemoMode
                   ? 'Gestión de credenciales y sesión'
-                  : 'Autenticación oficial con Zoho Catalyst'}
+                  : 'Inicio de sesión embebido con Zoho Catalyst'}
               </p>
             </div>
           </div>
@@ -88,222 +139,163 @@ export const AuthModal: React.FC = () => {
         </div>
 
         {/* Content Body */}
-        <div className="p-space-lg overflow-y-auto">
-          {isAuthenticated && currentUser ? (
-            /* Authenticated User Profile Summary */
+        <div className="p-space-lg overflow-y-auto space-y-4">
+          {isAuthenticated && currentUser && (
             <div className="flex flex-col gap-space-md">
               <div className="flex items-center gap-space-md p-space-md bg-surface-container-low rounded-xl border border-surface-container">
                 <UserAvatar
                   name={currentUser.name}
                   avatarUrl={currentUser.avatarUrl}
-                  sizeClassName="w-16 h-16"
+                  sizeClassName="w-14 h-14"
                   className="rounded-full ring-2 ring-primary"
                 />
-                <div className="flex flex-col">
+                <div className="flex flex-col min-w-0">
                   <div className="flex items-center gap-2">
-                    <span className="font-headline-sm text-lg font-bold text-on-surface">
+                    <span className="font-headline-sm text-base font-bold text-on-surface truncate">
                       {currentUser.name}
                     </span>
-                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-primary-fixed text-on-primary-fixed">
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-primary-fixed text-on-primary-fixed shrink-0">
                       {formatUserRoleLabel(currentUser.role)}
                     </span>
                   </div>
-                  <span className="text-body-sm text-on-surface-variant">{currentUser.email}</span>
-                  <span className="text-label-sm text-on-surface-variant/80 mt-1 flex items-center gap-1">
-                    <span className="material-symbols-outlined text-xs text-primary">verified</span>
-                    Miembro desde {currentUser.joinedDate}
+                  <span className="text-body-sm text-on-surface-variant truncate">{currentUser.email}</span>
+                  <span className="text-label-sm text-on-surface-variant/80 mt-0.5 flex items-center gap-1">
+                    <span className="material-symbols-outlined text-xs text-primary">
+                      {isDemoMode ? 'science' : 'cloud_done'}
+                    </span>
+                    {isDemoMode ? 'Demostración local' : 'Zoho Catalyst NoSQL'}
                   </span>
                 </div>
               </div>
 
-              {/* Status details */}
-              <div className="grid grid-cols-2 gap-space-sm text-left">
-                <div className="p-space-sm bg-surface-container-low rounded-lg">
-                  <span className="text-[11px] text-on-surface-variant uppercase tracking-wider block font-semibold">
-                    Zona Horaria
-                  </span>
-                  <span className="text-sm font-semibold text-on-surface flex items-center gap-1 mt-0.5">
-                    <span className="material-symbols-outlined text-xs text-on-surface-variant">schedule</span>
-                    {currentUser.location}
-                  </span>
-                </div>
-                <div className="p-space-sm bg-surface-container-low rounded-lg">
-                  <span className="text-[11px] text-on-surface-variant uppercase tracking-wider block font-semibold">
-                    Persistencia
-                  </span>
-                  {isDemoMode ? (
-                    <span className="text-xs font-semibold text-amber-700 flex items-center gap-1 mt-0.5">
-                      <span className="material-symbols-outlined text-xs">storage</span>
-                      Demostración local
+              {!isDemoMode && (
+                <>
+                  <div className="p-space-sm bg-primary-container/10 border border-primary/20 rounded-xl text-xs text-on-surface-variant flex items-start gap-2">
+                    <span className="material-symbols-outlined text-primary text-base shrink-0 mt-0.5">
+                      security
                     </span>
-                  ) : (
-                    <span className="text-xs font-semibold text-primary flex items-center gap-1 mt-0.5">
-                      <span className="material-symbols-outlined text-xs">cloud_done</span>
-                      Zoho Catalyst NoSQL
+                    <span>
+                      Autenticado con Zoho Catalyst. Sesión cifrada HttpOnly y datos aislados por tu UID.
                     </span>
-                  )}
-                </div>
-              </div>
-
-              {isDemoMode ? (
-                <div className="p-space-sm bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-900 flex items-start gap-2">
-                  <span className="material-symbols-outlined text-amber-700 text-base shrink-0 mt-0.5">
-                    info
-                  </span>
-                  <div>
-                    <span className="font-semibold block mb-0.5">Sesión en Modo Demostración</span>
-                    Tus cambios se guardan localmente en este navegador. Inicia sesión con Zoho Catalyst para sincronizar en la nube.
                   </div>
-                </div>
-              ) : (
-                <div className="p-space-sm bg-primary-container/10 border border-primary/20 rounded-xl text-xs text-on-surface-variant flex items-start gap-2">
-                  <span className="material-symbols-outlined text-primary text-base shrink-0 mt-0.5">
-                    security
-                  </span>
-                  <span>
-                    Autenticado con Zoho Catalyst Hosted Login. Sesión cifrada HttpOnly y datos aislados por tu UID.
-                  </span>
-                </div>
-              )}
 
-              {errorMessage && (
-                <div className="p-space-sm bg-error-container/30 border border-error/30 rounded-xl text-error text-xs flex items-center gap-2">
-                  <span className="material-symbols-outlined text-base shrink-0">error</span>
-                  <span>{errorMessage}</span>
-                </div>
+                  <div className="flex flex-col gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        closeAuthModal();
+                        navigate('perfil-atleta');
+                      }}
+                      className="w-full py-2.5 px-4 bg-primary hover:bg-primary-container text-on-primary rounded-xl font-medium text-sm transition-colors flex items-center justify-center gap-2 shadow-xs"
+                    >
+                      <span className="material-symbols-outlined text-base">account_circle</span>
+                      Gestionar Perfil &amp; Preferencias
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        closeAuthModal();
+                        navigate('configuracion-nutricional');
+                      }}
+                      className="w-full py-2.5 px-4 bg-surface-container-low hover:bg-surface-container text-on-surface rounded-xl font-medium text-sm transition-colors flex items-center justify-center gap-2"
+                    >
+                      <span className="material-symbols-outlined text-base">tune</span>
+                      Ver Ajustes Nutricionales
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isLoggingOut}
+                      onClick={async () => {
+                        const res = await logout();
+                        if (res.success) {
+                          closeAuthModal();
+                        }
+                      }}
+                      className="w-full py-2.5 px-4 bg-error-container/20 hover:bg-error-container/40 text-error rounded-xl font-medium text-sm transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
+                    >
+                      <span className="material-symbols-outlined text-base">logout</span>
+                      {isLoggingOut ? 'Cerrando sesión...' : 'Cerrar Sesión'}
+                    </button>
+                  </div>
+                </>
               )}
-
-              {/* Action Buttons */}
-              <div className="flex flex-col gap-2 pt-2">
-                {isDemoMode && isInIframe && (
-                  <button
-                    type="button"
-                    onClick={handleOpenInNewTab}
-                    className="w-full py-2.5 px-4 bg-amber-600 hover:bg-amber-700 text-white rounded-xl font-medium text-xs transition-colors flex items-center justify-center gap-2 shadow-sm cursor-pointer"
-                  >
-                    <span className="material-symbols-outlined text-base">open_in_new</span>
-                    <span>Abrir en pestaña nueva para iniciar sesión</span>
-                  </button>
-                )}
-                {isDemoMode && (
-                  <button
-                    type="button"
-                    onClick={handleCatalystHostedLogin}
-                    disabled={isLoading || isInIframe}
-                    className="w-full py-2.5 px-4 bg-primary hover:bg-primary-container text-on-primary rounded-xl font-medium text-sm transition-colors flex items-center justify-center gap-2 shadow-sm disabled:opacity-50"
-                  >
-                    <span className="material-symbols-outlined text-base">cloud_sync</span>
-                    <span>{isLoading ? 'Redirigiendo...' : 'Continuar con Zoho Catalyst'}</span>
-                  </button>
-                )}
-                <button
-                  type="button"
-                  onClick={() => {
-                    closeAuthModal();
-                    navigate('perfil-atleta');
-                  }}
-                  className="w-full py-2.5 px-4 bg-primary hover:bg-primary-container text-on-primary rounded-xl font-medium text-sm transition-colors flex items-center justify-center gap-2 shadow-xs"
-                >
-                  <span className="material-symbols-outlined text-base">account_circle</span>
-                  Gestionar Perfil &amp; Preferencias
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    closeAuthModal();
-                    navigate('configuracion-nutricional');
-                  }}
-                  className="w-full py-2.5 px-4 bg-surface-container-low hover:bg-surface-container text-on-surface rounded-xl font-medium text-sm transition-colors flex items-center justify-center gap-2"
-                >
-                  <span className="material-symbols-outlined text-base">tune</span>
-                  Ver Ajustes Nutricionales
-                </button>
-                <button
-                  type="button"
-                  disabled={isLoggingOut}
-                  onClick={async () => {
-                    const res = await logout();
-                    if (res.success) {
-                      closeAuthModal();
-                    }
-                  }}
-                  className="w-full py-2.5 px-4 bg-error-container/20 hover:bg-error-container/40 text-error rounded-xl font-medium text-sm transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
-                >
-                  <span className="material-symbols-outlined text-base">logout</span>
-                  {isLoggingOut ? 'Cerrando sesión...' : 'Cerrar Sesión'}
-                </button>
-              </div>
             </div>
-          ) : (
-            /* Unauthenticated Zoho Catalyst Hosted Login Flow */
-            <div className="flex flex-col gap-space-md">
-              <p className="text-xs text-on-surface-variant leading-relaxed">
-                Inicia sesión mediante el portal oficial de Zoho Catalyst Authentication para acceder a tus registros y sincronización en la nube.
-              </p>
+          )}
 
-              {isInIframe && (
-                <div className="p-space-sm bg-amber-500/10 border border-amber-500/35 rounded-xl text-xs text-on-surface space-y-2.5">
+          {/* Embedded Sign-In for unauthenticated or Demo upgrade */}
+          {(!isAuthenticated || isDemoMode) && (
+            <div className="space-y-4">
+              {errorMessage && (
+                <div className="p-3 bg-error-container/25 border border-error/30 rounded-xl text-error text-xs space-y-2">
                   <div className="flex items-start gap-2">
-                    <span className="material-symbols-outlined text-amber-600 text-base shrink-0 mt-0.5">
-                      open_in_new
-                    </span>
-                    <div>
-                      <span className="font-semibold block text-amber-800">
-                        Preview en iFrame bloqueado por Zoho
-                      </span>
-                      <span className="text-on-surface-variant">
-                        Hosted Login requiere navegación top-level fuera del iframe.
-                      </span>
-                    </div>
+                    <span className="material-symbols-outlined text-base shrink-0 mt-0.5">error</span>
+                    <span className="font-medium">{errorMessage}</span>
                   </div>
+                  <div className="flex flex-wrap gap-2 pl-6">
+                    <button
+                      type="button"
+                      onClick={() => setMountNonce(n => n + 1)}
+                      className="px-2.5 py-1 rounded-lg bg-surface-container-lowest border border-surface-container text-on-surface font-semibold text-[11px] cursor-pointer"
+                    >
+                      Reintentar
+                    </button>
+                    {isInIframe ? (
+                      <button
+                        type="button"
+                        onClick={handleOpenInNewTab}
+                        className="px-2.5 py-1 rounded-lg bg-amber-600 text-white font-semibold text-[11px] cursor-pointer"
+                      >
+                        Abrir en pestaña nueva
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={handleHostedFallback}
+                        className="px-2.5 py-1 rounded-lg bg-primary text-on-primary font-semibold text-[11px] cursor-pointer"
+                      >
+                        Usar Hosted Login
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              <div className="relative rounded-2xl bg-surface-container-low/60 border border-surface-container overflow-hidden min-h-[400px]">
+                {(isMounting || isExchanging) && (
+                  <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-2.5 bg-surface-container-lowest/85 backdrop-blur-xs p-4 text-center">
+                    <span className="material-symbols-outlined text-2xl text-primary animate-spin">
+                      progress_activity
+                    </span>
+                    <span className="text-xs font-semibold text-on-surface">
+                      {isExchanging
+                        ? 'Activando sesión cifrada...'
+                        : 'Cargando acceso embebido...'}
+                    </span>
+                  </div>
+                )}
+                <div
+                  id={EMBEDDED_CONTAINER_ID}
+                  className="w-full min-h-[400px]"
+                />
+              </div>
+
+              <div className="pt-2 border-t border-surface-container/60 flex flex-col gap-2">
+                <p className="text-[11px] text-on-surface-variant text-center">
+                  Acceso exclusivo por invitación o cuenta autorizada de VigorCore.
+                </p>
+                {!isDemoMode && (
                   <button
                     type="button"
-                    onClick={handleOpenInNewTab}
-                    className="w-full py-2 px-3 bg-amber-600 hover:bg-amber-700 text-white rounded-lg font-semibold text-xs transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                    onClick={() => {
+                      startDemoMode('Atleta Pro', 'Camilo R. (Demo)', 'camilo@vigor.co');
+                      closeAuthModal();
+                    }}
+                    className="w-full py-2.5 px-3 bg-surface-container-low hover:bg-surface-container text-on-surface text-xs font-semibold rounded-xl border border-surface-container transition-colors flex items-center justify-center gap-2 cursor-pointer"
                   >
-                    <span className="material-symbols-outlined text-sm">open_in_new</span>
-                    <span>Abrir en pestaña nueva para iniciar sesión</span>
+                    <span className="material-symbols-outlined text-sm text-primary">science</span>
+                    <span>Explorar en Modo Demo</span>
                   </button>
-                </div>
-              )}
-
-              {errorMessage && (
-                <div className="p-space-sm bg-error-container/30 border border-error/30 rounded-xl text-error text-xs flex items-center gap-2">
-                  <span className="material-symbols-outlined text-base shrink-0">error</span>
-                  <span>{errorMessage}</span>
-                </div>
-              )}
-
-              <button
-                type="button"
-                onClick={handleCatalystHostedLogin}
-                disabled={isLoading || isInIframe}
-                className="w-full py-3 bg-primary hover:bg-primary-container text-on-primary rounded-xl font-semibold text-sm transition-colors shadow-sm flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer"
-              >
-                <span className={`material-symbols-outlined text-base ${isLoading ? 'animate-spin' : ''}`}>
-                  {isLoading ? 'progress_activity' : 'passkey'}
-                </span>
-                <span>
-                  {isLoading ? 'Redirigiendo...' : 'Continuar con Zoho Catalyst'}
-                </span>
-              </button>
-
-              {/* Demo shortcut */}
-              <div className="pt-3 border-t border-surface-container/60 space-y-2.5">
-                <span className="text-[11px] text-on-surface-variant font-medium block text-center">
-                  ¿Probando dentro del preview? Usa el sandbox local:
-                </span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    startDemoMode('Atleta Pro', 'Camilo R. (Demo)', 'camilo@vigor.co');
-                    closeAuthModal();
-                  }}
-                  className="w-full py-2.5 px-3 bg-surface-container-low hover:bg-surface-container text-on-surface text-xs font-semibold rounded-xl border border-surface-container transition-colors flex items-center justify-center gap-2 cursor-pointer"
-                >
-                  <span className="material-symbols-outlined text-sm text-primary">science</span>
-                  <span>Explorar en Modo Demo</span>
-                </button>
+                )}
               </div>
             </div>
           )}

@@ -134,14 +134,15 @@ export function createBrowserCatalystWebAuthSdk(
     try {
       const clientMod = (await import('@zcatalyst/auth-client')) as unknown as CatalystAuthClientModule;
       clientMod.setDefaultProjectConfig?.();
-      const zaid = (env.VITE_CATALYST_ZAID || projectId).trim();
-      const iamDomain = normalizeCatalystDomainUrl(env.VITE_CATALYST_IAM_DOMAIN) || 'https://accounts.zoho.com';
+      const zaid = (env.VITE_CATALYST_ZAID || '10137226527').trim();
+      const iamDomain =
+        normalizeCatalystDomainUrl(env.VITE_CATALYST_IAM_DOMAIN) || 'https://accounts.zohoportal.com';
       const environment = (env.VITE_CATALYST_ENVIRONMENT || 'development').trim();
       const strippedDomainHost = domainUrl.replace(/^https?:\/\//i, '');
 
       clientMod.ConfigStore?.set('PROJECT_ID', projectId);
       clientMod.ConfigStore?.set('ZAID', zaid);
-      clientMod.ConfigStore?.set('PROJECT_DOMAIN', strippedDomainHost);
+      clientMod.ConfigStore?.set('PROJECT_DOMAIN', domainUrl);
       clientMod.ConfigStore?.set('CATALYST_DOMAIN', domainUrl);
       clientMod.ConfigStore?.set('IAM_DOMAIN', iamDomain);
       clientMod.ConfigStore?.set('ENVIRONMENT', environment);
@@ -149,7 +150,7 @@ export function createBrowserCatalystWebAuthSdk(
       clientMod.syncProjectSession?.({
         project_id: projectId,
         zaid,
-        project_domain: strippedDomainHost,
+        project_domain: domainUrl,
         environment,
       });
       fallbackConfigApplied = true;
@@ -159,7 +160,7 @@ export function createBrowserCatalystWebAuthSdk(
     }
   };
 
-  return {
+  const sdkInstance: ICatalystWebAuthSdk = {
     async init(): Promise<void> {
       const sdk = await ensureSdk();
       try {
@@ -209,6 +210,80 @@ export function createBrowserCatalystWebAuthSdk(
         );
       }
     },
+    async mountEmbeddedSignIn(
+      containerId: string,
+      onSuccess?: () => void | Promise<void>,
+      options?: { redirectUrl?: string }
+    ): Promise<void> {
+      if (typeof document === 'undefined') return;
+      const container = document.getElementById(containerId);
+      if (!container) {
+        throw new CleanSlateRepositoryError(
+          'EMBEDDED_SIGNIN_CONTAINER_MISSING',
+          `No se encontró el contenedor DOM #${containerId} para montar el acceso de Zoho Catalyst.`,
+          400,
+          { origin: 'client_synthetic' }
+        );
+      }
+
+      const sdk = await ensureSdk();
+      await sdkInstance.init();
+
+      const existingUser = await sdk.isUserAuthenticated().catch(() => false);
+      if (existingUser) {
+        if (typeof existingUser === 'object' && existingUser.is_confirmed === false) {
+          throw new CleanSlateRepositoryError(
+            'EMAIL_VERIFICATION_REQUIRED',
+            'Tu cuenta aún requiere confirmar el correo electrónico en Zoho Catalyst.',
+            403,
+            { origin: 'client_synthetic' }
+          );
+        }
+        if (onSuccess) {
+          await onSuccess();
+          return;
+        }
+      }
+
+      if (typeof sdk.signIn !== 'function') {
+        throw new CleanSlateRepositoryError(
+          'EMBEDDED_SIGNIN_UNAVAILABLE',
+          'La función signIn() no está disponible en @zcatalyst/auth/web.',
+          501,
+          { origin: 'client_synthetic' }
+        );
+      }
+
+      const redirectUrl = options?.redirectUrl || '/auth/callback';
+      try {
+        await sdk.signIn(containerId, {
+          redirectUrl,
+          serviceUrl: redirectUrl,
+          signinButtonLabel: 'Continuar con Zoho Catalyst',
+        });
+
+        const iframeEl = container.querySelector('iframe') as HTMLIFrameElement | null;
+        if (iframeEl) {
+          iframeEl.style.width = '100%';
+          iframeEl.style.minHeight = '400px';
+          iframeEl.style.border = 'none';
+          iframeEl.style.borderRadius = '12px';
+        }
+
+        const authedAfterMount = await sdk.isUserAuthenticated().catch(() => false);
+        if (authedAfterMount && onSuccess) {
+          await onSuccess();
+        }
+      } catch (err) {
+        const message = formatCredentialInitError(err);
+        const spanishMsg = /popup|iframe|blocked|not allowed/i.test(message)
+          ? 'El navegador o el preview en iFrame bloqueó el widget embebido de Zoho Catalyst. Abre en pestaña nueva o usa Hosted Login.'
+          : message || 'No se pudo cargar el acceso embebido de Zoho Catalyst.';
+        throw new CleanSlateRepositoryError('EMBEDDED_SIGNIN_FAILED', spanishMsg, 503, {
+          origin: 'client_synthetic',
+        });
+      }
+    },
     async generateAuthToken(feature: 'functions'): Promise<CatalystGeneratedAuthToken> {
       const sdk = await ensureSdk();
       return sdk.generateAuthToken(feature);
@@ -222,4 +297,14 @@ export function createBrowserCatalystWebAuthSdk(
       await sdk.signOut(redirectUrl);
     },
   };
+
+  return sdkInstance;
+}
+
+export async function mountEmbeddedSignIn(
+  containerId: string,
+  onSuccess?: () => void | Promise<void>
+): Promise<void> {
+  const sdk = createBrowserCatalystWebAuthSdk();
+  await sdk.mountEmbeddedSignIn?.(containerId, onSuccess, { redirectUrl: '/auth/callback' });
 }

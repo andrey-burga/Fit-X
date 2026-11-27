@@ -60,6 +60,12 @@ export interface CatalystWebUserSnapshot {
 export interface ICatalystWebAuthSdk {
   init(): Promise<void>;
   hostedSignIn(redirectUrl?: string): Promise<void>;
+  signIn?(elementId: string, config?: Record<string, unknown>): Promise<unknown>;
+  mountEmbeddedSignIn?(
+    containerId: string,
+    onSuccess?: () => void | Promise<void>,
+    options?: { redirectUrl?: string }
+  ): Promise<void>;
   generateAuthToken(feature: 'functions'): Promise<CatalystGeneratedAuthToken>;
   isUserAuthenticated(orgId?: string): Promise<CatalystWebUserSnapshot | false>;
   signOut(redirectUrl?: string): Promise<void>;
@@ -227,6 +233,30 @@ export class CatalystHostedAuthBridge {
 
     await this.sdk.init();
     await this.sdk.hostedSignIn(safeCallbackPath);
+    return safeCallbackPath;
+  }
+
+  async mountEmbeddedSignIn(
+    containerId: string,
+    onSuccess?: () => void | Promise<void>,
+    redirectPath?: string
+  ): Promise<string> {
+    const safeCallbackPath = resolveSafeSameOriginRedirect(
+      redirectPath,
+      this.expectedOrigin,
+      this.defaultCallbackPath
+    );
+    if (!this.sdk.mountEmbeddedSignIn) {
+      throw new CleanSlateRepositoryError(
+        'EMBEDDED_SIGNIN_UNSUPPORTED',
+        'El adaptador SDK actual no implementa mountEmbeddedSignIn().',
+        501,
+        { origin: 'client_synthetic' }
+      );
+    }
+    await this.sdk.mountEmbeddedSignIn(containerId, onSuccess, {
+      redirectUrl: safeCallbackPath,
+    });
     return safeCallbackPath;
   }
 

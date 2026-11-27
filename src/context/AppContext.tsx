@@ -126,6 +126,7 @@ interface AppContextType {
   unverifiedEmail: string | null;
   isLoggingOut: boolean;
   loginWithGoogle: () => Promise<{ success: boolean; error?: string }>;
+  completeCatalystSession: () => Promise<{ success: boolean; error?: string }>;
   loginWithEmail: (email: string, password: string) => Promise<{ success: boolean; error?: string; verificationRequired?: boolean }>;
   registerWithEmail: (email: string, password: string, fullName: string, role?: 'Atleta Pro' | 'Coach' | 'Nutricionista') => Promise<{ success: boolean; error?: string }>;
   resetPassword: (email: string) => Promise<{ success: boolean; error?: string }>;
@@ -1506,7 +1507,66 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
-  // Authentication Operations (Zoho Catalyst Native Hosted Login)
+  const completeCatalystSession = useCallback(async (): Promise<{ success: boolean; error?: string }> => {
+    try {
+      setIsDemoMode(false);
+      localStorage.setItem('vigor_is_demo', 'false');
+      let sessionResult;
+      try {
+        sessionResult = await authBridge.establishVigorSession({ mode: 'exchange' });
+      } catch (exchangeErr) {
+        if (
+          exchangeErr instanceof CleanSlateRepositoryError &&
+          exchangeErr.code === 'USER_PROFILE_NOT_REGISTERED'
+        ) {
+          sessionResult = await authBridge.establishVigorSession({ mode: 'bootstrap' });
+        } else {
+          throw exchangeErr;
+        }
+      }
+
+      const uid = String(sessionResult.actor?.uid || sessionResult.actor?.user_id || '');
+      if (!uid) {
+        throw new CleanSlateRepositoryError(
+          'INVALID_SESSION_RESPONSE',
+          'La sesión devuelta por Catalyst no contiene UID de usuario.',
+          502
+        );
+      }
+
+      const profile = await hydrateRemoteWorkspace(uid, sessionResult.actor);
+      const targetPath: NavigationPath =
+        profile.onboardingCompleted === false
+          ? 'onboarding'
+          : redirectPath && isPrivatePath(redirectPath)
+          ? redirectPath
+          : 'dashboard-nutricional';
+
+      setRedirectPath(null);
+      setCurrentPath(targetPath);
+      if (typeof window !== 'undefined') {
+        window.location.hash = `#/${targetPath}`;
+      }
+      showToast('¡Sesión verificada con Zoho Catalyst!', 'success');
+      return { success: true };
+    } catch (err: any) {
+      if (err instanceof CleanSlateRepositoryError && err.code === 'EMAIL_VERIFICATION_REQUIRED') {
+        setUnverifiedEmail(null);
+        setCurrentUser(null);
+        setAuthStatus('email_verification_required');
+        setAuthError(null);
+        return {
+          success: false,
+          error: 'Tu correo electrónico aún requiere verificación en Zoho Catalyst.',
+        };
+      }
+      const message =
+        err?.message || 'No se pudo completar el intercambio de sesión con Zoho Catalyst.';
+      setAuthError(message);
+      return { success: false, error: message };
+    }
+  }, [hydrateRemoteWorkspace, redirectPath, showToast]);
+
   const loginWithGoogle = async (): Promise<{ success: boolean; error?: string }> => {
     try {
       setIsDemoMode(false);
@@ -3770,6 +3830,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         unverifiedEmail,
         isLoggingOut,
         loginWithGoogle,
+        completeCatalystSession,
         loginWithEmail,
         registerWithEmail,
         resetPassword,

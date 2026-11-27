@@ -27,6 +27,14 @@ export default defineConfig(() => {
           cookieDomainRewrite: '',
           cookiePathRewrite: '/',
         },
+        '/accounts': {
+          target: 'https://project-rainfall-943998020.development.catalystserverless.com',
+          changeOrigin: true,
+          secure: true,
+          xfwd: true,
+          cookieDomainRewrite: '',
+          cookiePathRewrite: '/',
+        },
         '/api/v1': {
           target: 'https://project-rainfall-943998020.development.catalystserverless.com/server/vigor_api',
           changeOrigin: true,
