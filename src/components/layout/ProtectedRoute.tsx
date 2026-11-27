@@ -18,7 +18,7 @@ interface ProtectedRouteProps {
 }
 
 export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ children }) => {
-  const { authStatus, authError, isAuthenticated, logout, isLoggingOut } = useApp();
+  const { authStatus, authError, isAuthenticated, logout, isLoggingOut, navigate } = useApp();
 
   // 1. Initializing state: Do not reveal ANY private content while checking session
   if (authStatus === 'initializing') {
@@ -56,7 +56,7 @@ export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ children }) => {
             {isLogoutFailure ? 'Bloqueo Preventivo: Cierre de Sesión Incompleto' : 'Error de Autenticación'}
           </h2>
           <p className="text-xs text-on-surface-variant mt-2 mb-4 leading-relaxed">
-            {authError || 'No se pudo verificar el estado de la sesión de Firebase.'}
+            {authError || 'No se pudo verificar el estado de la sesión en Zoho Catalyst.'}
           </p>
 
           <div className="flex flex-col gap-2">
@@ -72,7 +72,7 @@ export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ children }) => {
                   <span className={`material-symbols-outlined text-sm ${isLoggingOut ? 'animate-spin' : ''}`}>
                     {isLoggingOut ? 'progress_activity' : 'lock_reset'}
                   </span>
-                  {isLoggingOut ? 'Cerrando sesión en Firebase...' : 'Reintentar Cierre de Sesión'}
+                  {isLoggingOut ? 'Cerrando sesión en Zoho Catalyst...' : 'Reintentar Cierre de Sesión'}
                 </button>
                 <button
                   type="button"
@@ -83,13 +83,25 @@ export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ children }) => {
                 </button>
               </>
             ) : (
-              <button
-                type="button"
-                onClick={() => window.location.reload()}
-                className="w-full py-2 px-4 bg-primary text-on-primary text-xs font-semibold rounded-lg hover:bg-primary-container transition-colors"
-              >
-                Reintentar Conexión
-              </button>
+              <>
+                <button
+                  type="button"
+                  onClick={() => window.location.reload()}
+                  className="w-full py-2 px-4 bg-primary text-on-primary text-xs font-semibold rounded-lg hover:bg-primary-container transition-colors"
+                >
+                  Reintentar Conexión
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigate('login');
+                    window.location.reload();
+                  }}
+                  className="w-full py-2 px-4 bg-surface-container-high text-on-surface text-xs font-semibold rounded-lg hover:bg-surface-container-highest transition-colors"
+                >
+                  Volver al Inicio de Sesión
+                </button>
+              </>
             )}
           </div>
         </div>

@@ -2,36 +2,113 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
  *
- * VigorCore — Client Administrative User Service (Increment 7D)
- * Connects frontend UI to backend Cloud Functions v2 and manages administrative data.
- * Zero privileged credentials or service account keys in the browser.
+ * VigorCore — Client Administrative User Service (Catalyst HTTP Migration)
+ * Connects frontend UI directly to Zoho Catalyst HTTP repositories (`adminRepo` & `authRepo`)
+ * with zero Firebase dependencies and local simulated fallback in demo mode.
  */
 
-import { getFunctions, httpsCallable } from 'firebase/functions';
-import { auth, db } from '../firebase';
+import type {
+  AuditLogModel,
+  UserAccountModel,
+} from '../../poc/catalyst-clean-slate/src/frontend/contracts/cleanSlateModels.ts';
+import { adminRepo, authRepo } from './catalystClient';
 import {
   AdminUserSummary,
   AdminUserDirectoryFilter,
   AdminUserDirectoryResult,
   AdminPlatformStats,
-  AdminInvitation,
   AdminAuditLog,
   AdminAuditLogFilter,
+  AdminAuditAction,
   AccountAccessRecord,
   UserRole,
 } from '../types/admin';
 
-// Initialize Firebase Functions with default region
-let functionsInstance: ReturnType<typeof getFunctions> | null = null;
-function getFunctionsInstance() {
-  if (!functionsInstance) {
+function resolveActorContext(): {
+  actorUid: string;
+  isDemo: boolean;
+  email: string;
+  displayName: string;
+} {
+  if (typeof localStorage === 'undefined') {
+    return {
+      actorUid: 'demo-user',
+      isDemo: true,
+      email: 'camilo@vigor.co',
+      displayName: 'Camilo R. (Demo)',
+    };
+  }
+
+  const isDemo = localStorage.getItem('vigor_is_demo') === 'true';
+  const rawUser = localStorage.getItem('vigor_demo_user') || localStorage.getItem('vigor_auth_user');
+  if (rawUser) {
     try {
-      functionsInstance = getFunctions(undefined, 'us-central1');
-    } catch (err) {
-      console.warn('Firebase Functions client initialization note:', err);
+      const parsed = JSON.parse(rawUser) as {
+        id?: string;
+        uid?: string;
+        email?: string;
+        name?: string;
+        displayName?: string;
+      };
+      const uid = parsed.id || parsed.uid || (isDemo ? 'demo-user' : 'session_actor');
+      return {
+        actorUid: uid,
+        isDemo: isDemo || uid === 'demo-user',
+        email: parsed.email || 'camilo@vigor.co',
+        displayName: parsed.name || parsed.displayName || 'Camilo R. (Demo)',
+      };
+    } catch {
+      // Ignore malformed JSON in localStorage
     }
   }
-  return functionsInstance;
+
+  return {
+    actorUid: isDemo ? 'demo-user' : 'session_actor',
+    isDemo,
+    email: 'camilo@vigor.co',
+    displayName: 'Camilo R. (Demo)',
+  };
+}
+
+function mapAuthProvider(raw?: string): AdminUserSummary['authProvider'] {
+  if (raw === 'google.com' || raw === 'password' || raw === 'demo') {
+    return raw;
+  }
+  return 'password';
+}
+
+function mapAccountToSummary(model: UserAccountModel): AdminUserSummary {
+  return {
+    uid: model.uid,
+    email: model.email,
+    normalizedEmail: model.normalizedEmail,
+    displayName: model.displayName,
+    avatarUrl: model.avatarUrl,
+    role: model.role,
+    accountStatus: model.accountStatus,
+    emailVerified: model.emailVerified,
+    authProvider: mapAuthProvider(model.authProvider),
+    createdAt: model.createdAt,
+    lastSignInAt: model.lastSignInAt,
+    updatedAt: model.updatedAt,
+    suspendedAt: model.suspendedAt,
+    suspensionReason: model.suspensionReason,
+  };
+}
+
+function mapAuditLog(model: AuditLogModel): AdminAuditLog {
+  return {
+    eventId: model.eventId,
+    action: model.action as AdminAuditAction,
+    actorUid: model.actorUid,
+    actorRole: model.actorRole === 'system' ? 'superadmin' : model.actorRole,
+    actorEmail: model.actorEmail,
+    targetUid: model.targetUid,
+    targetEmail: model.targetEmail,
+    timestamp: model.timestamp,
+    reason: model.reason,
+    changes: model.changes as AdminAuditLog['changes'],
+  };
 }
 
 /**
@@ -40,22 +117,60 @@ function getFunctionsInstance() {
 export async function fetchAdminUserDirectory(
   filter: AdminUserDirectoryFilter = {}
 ): Promise<AdminUserDirectoryResult> {
-  const fns = getFunctionsInstance();
-  if (fns) {
-    try {
-      const callable = httpsCallable<{ filter: AdminUserDirectoryFilter }, AdminUserDirectoryResult>(
-        fns,
-        'listAdminUsers'
-      );
-      const res = await callable({ filter });
-      return res.data;
-    } catch (err: any) {
-      console.warn('Cloud Functions listAdminUsers call failed, falling back to local simulation:', err);
-    }
+  const { actorUid, isDemo } = resolveActorContext();
+  if (isDemo || actorUid === 'demo-user') {
+    return getSimulatedDirectory(filter);
   }
 
-  // Graceful client fallback for sandbox or pending function deployment
-  return getSimulatedDirectory(filter);
+  const remoteAccountStatus =
+    filter.accountStatus === 'active' || filter.accountStatus === 'suspended'
+      ? filter.accountStatus
+      : undefined;
+
+  const [rawUsers, rawStats] = await Promise.all([
+    adminRepo.listUsers(actorUid, {
+      searchQuery: filter.searchQuery,
+      role: filter.role,
+      accountStatus: remoteAccountStatus ?? 'all',
+      emailVerified: filter.emailVerified,
+      sortBy: filter.sortBy,
+      sortOrder: filter.sortOrder,
+    }),
+    adminRepo.getStats(actorUid),
+  ]);
+
+  let users = rawUsers.map(mapAccountToSummary);
+  if (filter.accountStatus && filter.accountStatus !== 'all' && !remoteAccountStatus) {
+    users = users.filter(u => u.accountStatus === filter.accountStatus);
+  }
+  if (filter.dateFrom) {
+    users = users.filter(u => u.createdAt >= filter.dateFrom!);
+  }
+  if (filter.dateTo) {
+    users = users.filter(u => u.createdAt <= filter.dateTo!);
+  }
+
+  const page = Math.max(1, filter.page ?? 1);
+  const pageSize = Math.max(1, filter.pageSize ?? 20);
+  const totalCount = users.length;
+  const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+  const pagedUsers = users.slice((page - 1) * pageSize, page * pageSize);
+
+  return {
+    users: pagedUsers,
+    totalCount,
+    page,
+    pageSize,
+    totalPages,
+    stats: {
+      totalUsers: rawStats.totalUsers,
+      activeUsers: rawStats.activeUsers,
+      suspendedUsers: rawStats.suspendedUsers,
+      pendingVerificationUsers: rawStats.pendingVerificationUsers ?? 0,
+      pendingInvitations: rawStats.pendingInvitations ?? 0,
+      recentSignups30d: rawStats.recentSignups30d ?? 0,
+    },
+  };
 }
 
 /**
@@ -64,32 +179,33 @@ export async function fetchAdminUserDirectory(
 export async function fetchAdminUserDetail(
   targetUid: string
 ): Promise<{ user: AdminUserSummary; accessRecord?: AccountAccessRecord; recentLogs: AdminAuditLog[] }> {
-  const fns = getFunctionsInstance();
-  if (fns) {
-    try {
-      const callable = httpsCallable<
-        { targetUid: string },
-        { user: AdminUserSummary; accessRecord?: AccountAccessRecord; recentLogs: AdminAuditLog[] }
-      >(fns, 'getAdminUserDetail');
-      const res = await callable({ targetUid });
-      return res.data;
-    } catch (err: any) {
-      console.warn('Cloud Functions getAdminUserDetail call failed:', err);
-    }
+  const { actorUid, isDemo } = resolveActorContext();
+  if (isDemo || actorUid === 'demo-user') {
+    const directory = getSimulatedDirectory({});
+    const found = directory.users.find(u => u.uid === targetUid);
+    if (!found) throw new Error('Usuario no encontrado en el directorio.');
+    return {
+      user: found,
+      accessRecord: {
+        uid: targetUid,
+        status: found.accountStatus === 'suspended' ? 'suspended' : 'active',
+        updatedAt: found.updatedAt,
+      },
+      recentLogs: [],
+    };
   }
 
-  // Fallback
-  const directory = await fetchAdminUserDirectory({});
-  const found = directory.users.find(u => u.uid === targetUid);
-  if (!found) throw new Error('Usuario no encontrado en el directorio.');
+  const detail = await adminRepo.getUserDetail(actorUid, targetUid);
+  const summary = mapAccountToSummary(detail.user);
   return {
-    user: found,
+    user: summary,
     accessRecord: {
-      uid: targetUid,
-      status: found.accountStatus === 'suspended' ? 'suspended' : 'active',
-      updatedAt: found.updatedAt,
+      uid: summary.uid,
+      status: summary.accountStatus,
+      updatedAt: summary.updatedAt,
+      suspendedAt: summary.suspendedAt,
     },
-    recentLogs: [],
+    recentLogs: detail.recentLogs.map(mapAuditLog),
   };
 }
 
@@ -100,41 +216,40 @@ export async function createInvitation(
   targetEmail: string,
   targetRole: 'athlete' | 'admin'
 ): Promise<{ inviteId: string; rawToken: string; inviteLink: string; expiresAt: string }> {
-  const fns = getFunctionsInstance();
-  if (fns) {
-    try {
-      const callable = httpsCallable<
-        { targetEmail: string; targetRole: 'athlete' | 'admin' },
-        { inviteId: string; rawToken: string; inviteLink: string; expiresAt: string }
-      >(fns, 'createAdminInvitation');
-      const res = await callable({ targetEmail, targetRole });
-      return res.data;
-    } catch (err: any) {
-      throw new Error(err.message || 'Error al generar la invitación administrativa.');
-    }
+  const { actorUid, isDemo } = resolveActorContext();
+  const origin =
+    typeof window !== 'undefined' && window.location?.origin
+      ? window.location.origin
+      : 'https://fit-x-bhnatsxl.onslate.com';
+
+  if (isDemo || actorUid === 'demo-user') {
+    const rawToken = Math.random().toString(36).substring(2) + Math.random().toString(36).substring(2);
+    const inviteId = `inv_${Date.now()}`;
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    const inviteLink = `${origin}/#/aceptar-invitacion?inviteId=${inviteId}&token=${rawToken}`;
+    return { inviteId, rawToken, inviteLink, expiresAt };
   }
 
-  // Fallback simulation for local development
-  const rawToken = Math.random().toString(36).substring(2) + Math.random().toString(36).substring(2);
-  const inviteId = `inv_${Date.now()}`;
-  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
-  const inviteLink = `https://fit-x-bhnatsxl.onslate.com/#/aceptar-invitacion?inviteId=${inviteId}&token=${rawToken}`;
-  return { inviteId, rawToken, inviteLink, expiresAt };
+  const inv = await adminRepo.createInvitation(actorUid, targetEmail, targetRole);
+  const rawToken = inv.rawTokenPreview ?? '';
+  const inviteLink = `${origin}/#/aceptar-invitacion?inviteId=${encodeURIComponent(inv.inviteId)}&token=${encodeURIComponent(rawToken)}`;
+  return {
+    inviteId: inv.inviteId,
+    rawToken,
+    inviteLink,
+    expiresAt: inv.expiresAt,
+  };
 }
 
 /**
  * Revoke an active invitation
  */
 export async function revokeInvitation(inviteId: string, reason?: string): Promise<void> {
-  const fns = getFunctionsInstance();
-  if (fns) {
-    const callable = httpsCallable<{ inviteId: string; reason?: string }, { success: boolean }>(
-      fns,
-      'revokeAdminInvitation'
-    );
-    await callable({ inviteId, reason });
+  const { actorUid, isDemo } = resolveActorContext();
+  if (isDemo || actorUid === 'demo-user') {
     return;
   }
+  await adminRepo.revokeInvitation(actorUid, inviteId, reason);
 }
 
 /**
@@ -144,20 +259,21 @@ export async function acceptInvitation(
   inviteId: string,
   token: string
 ): Promise<{ success: boolean; assignedRole: UserRole; message: string }> {
-  const fns = getFunctionsInstance();
-  if (fns) {
-    const callable = httpsCallable<
-      { inviteId: string; token: string },
-      { success: boolean; assignedRole: UserRole; message: string }
-    >(fns, 'acceptAdminInvitation');
-    const res = await callable({ inviteId, token });
-    return res.data;
+  const { actorUid, isDemo } = resolveActorContext();
+  if (isDemo || actorUid === 'demo-user') {
+    return {
+      success: true,
+      assignedRole: 'athlete',
+      message: 'Invitación canjeada exitosamente en entorno local.',
+    };
   }
 
+  const res = await authRepo.redeemInvitation(inviteId, token);
+  const assignedRole = res.assignedRole as UserRole;
   return {
     success: true,
-    assignedRole: 'athlete',
-    message: 'Invitación canjeada exitosamente en entorno local.',
+    assignedRole,
+    message: `Invitación canjeada exitosamente con rol [${assignedRole}].`,
   };
 }
 
@@ -169,15 +285,11 @@ export async function updateUserRole(
   newRole: UserRole,
   reason?: string
 ): Promise<void> {
-  const fns = getFunctionsInstance();
-  if (fns) {
-    const callable = httpsCallable<{ targetUid: string; newRole: UserRole; reason?: string }, { success: boolean }>(
-      fns,
-      'setAdminUserRole'
-    );
-    await callable({ targetUid, newRole, reason });
+  const { actorUid, isDemo } = resolveActorContext();
+  if (isDemo || actorUid === 'demo-user') {
     return;
   }
+  await adminRepo.setUserRole(actorUid, targetUid, newRole, reason);
 }
 
 /**
@@ -188,15 +300,11 @@ export async function updateUserStatus(
   newStatus: 'active' | 'suspended',
   reason?: string
 ): Promise<void> {
-  const fns = getFunctionsInstance();
-  if (fns) {
-    const callable = httpsCallable<
-      { targetUid: string; newStatus: 'active' | 'suspended'; reason?: string },
-      { success: boolean }
-    >(fns, 'setAdminUserStatus');
-    await callable({ targetUid, newStatus, reason });
+  const { actorUid, isDemo } = resolveActorContext();
+  if (isDemo || actorUid === 'demo-user') {
     return;
   }
+  await adminRepo.setUserStatus(actorUid, targetUid, newStatus, reason);
 }
 
 /**
@@ -205,41 +313,42 @@ export async function updateUserStatus(
 export async function requestUserPasswordReset(
   targetUid: string
 ): Promise<{ success: boolean; emailSentTo: string }> {
-  const fns = getFunctionsInstance();
-  if (fns) {
-    const callable = httpsCallable<{ targetUid: string }, { success: boolean; emailSentTo: string }>(
-      fns,
-      'requestAdminPasswordReset'
-    );
-    const res = await callable({ targetUid });
-    return res.data;
+  const { actorUid, isDemo } = resolveActorContext();
+  if (isDemo || actorUid === 'demo-user') {
+    return { success: true, emailSentTo: 'usuario@vigorcore.com' };
   }
 
-  return { success: true, emailSentTo: 'usuario@vigorcore.com' };
+  const res = await adminRepo.requestPasswordReset(actorUid, targetUid);
+  return {
+    success: true,
+    emailSentTo: res.emailSentTo,
+  };
 }
 
 /**
  * Fetch platform stats
  */
 export async function fetchPlatformStats(): Promise<AdminPlatformStats> {
-  const fns = getFunctionsInstance();
-  if (fns) {
-    try {
-      const callable = httpsCallable<void, AdminPlatformStats>(fns, 'getAdminStats');
-      const res = await callable();
-      return res.data;
-    } catch (err) {
-      console.warn('getAdminStats call failed:', err);
-    }
+  const { actorUid, isDemo } = resolveActorContext();
+  if (isDemo || actorUid === 'demo-user') {
+    return {
+      totalUsers: 1,
+      activeUsers: 1,
+      suspendedUsers: 0,
+      pendingVerificationUsers: 0,
+      pendingInvitations: 0,
+      recentSignups30d: 1,
+    };
   }
 
+  const stats = await adminRepo.getStats(actorUid);
   return {
-    totalUsers: 1,
-    activeUsers: 1,
-    suspendedUsers: 0,
-    pendingVerificationUsers: 0,
-    pendingInvitations: 0,
-    recentSignups30d: 1,
+    totalUsers: stats.totalUsers,
+    activeUsers: stats.activeUsers,
+    suspendedUsers: stats.suspendedUsers,
+    pendingVerificationUsers: stats.pendingVerificationUsers ?? 0,
+    pendingInvitations: stats.pendingInvitations ?? 0,
+    recentSignups30d: stats.recentSignups30d ?? 0,
   };
 }
 
@@ -249,41 +358,51 @@ export async function fetchPlatformStats(): Promise<AdminPlatformStats> {
 export async function fetchAuditLogs(
   filter: AdminAuditLogFilter = {}
 ): Promise<{ logs: AdminAuditLog[]; totalCount: number }> {
-  const fns = getFunctionsInstance();
-  if (fns) {
-    try {
-      const callable = httpsCallable<
-        { filter: AdminAuditLogFilter },
-        { logs: AdminAuditLog[]; totalCount: number }
-      >(fns, 'getAdminAuditLogs');
-      const res = await callable({ filter });
-      return res.data;
-    } catch (err) {
-      console.warn('getAdminAuditLogs call failed:', err);
-    }
+  const { actorUid, isDemo } = resolveActorContext();
+  if (isDemo || actorUid === 'demo-user') {
+    return { logs: [], totalCount: 0 };
   }
 
-  return { logs: [], totalCount: 0 };
+  const rawLogs = await adminRepo.listAuditLogs(actorUid, {
+    action: filter.action && filter.action !== 'all' ? filter.action : undefined,
+    actorUid: filter.actorUid,
+    targetUid: filter.targetUid,
+    month: filter.dateFrom ? filter.dateFrom.slice(0, 7) : undefined,
+  });
+
+  let mapped = rawLogs.map(mapAuditLog);
+  if (filter.dateFrom) {
+    mapped = mapped.filter(l => l.timestamp >= filter.dateFrom!);
+  }
+  if (filter.dateTo) {
+    mapped = mapped.filter(l => l.timestamp <= filter.dateTo!);
+  }
+
+  const totalCount = mapped.length;
+  if (filter.page && filter.pageSize) {
+    const start = (Math.max(1, filter.page) - 1) * filter.pageSize;
+    mapped = mapped.slice(start, start + filter.pageSize);
+  }
+
+  return { logs: mapped, totalCount };
 }
 
 // ---------------------------------------------------------------------------
 // Simulated directory for demo or offline sandbox
 // ---------------------------------------------------------------------------
-function getSimulatedDirectory(filter: AdminUserDirectoryFilter): AdminUserDirectoryResult {
-  const currentUser = auth.currentUser;
-  const currentEmail = currentUser?.email || 'camilo@vigor.co';
-  const currentName = currentUser?.displayName || 'Camilo R. (Demo)';
+function getSimulatedDirectory(_filter: AdminUserDirectoryFilter): AdminUserDirectoryResult {
+  const { actorUid, email, displayName } = resolveActorContext();
 
   const users: AdminUserSummary[] = [
     {
-      uid: currentUser?.uid || 'usr_camilo_demo',
-      email: currentEmail,
-      normalizedEmail: currentEmail.toLowerCase(),
-      displayName: currentName,
+      uid: actorUid === 'demo-user' ? 'usr_camilo_demo' : actorUid,
+      email,
+      normalizedEmail: email.toLowerCase(),
+      displayName,
       role: 'athlete',
       accountStatus: 'active',
       emailVerified: true,
-      authProvider: 'google.com',
+      authProvider: 'demo',
       createdAt: '2024-10-01T12:00:00Z',
       lastSignInAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),

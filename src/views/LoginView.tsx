@@ -18,6 +18,7 @@ export const LoginView: React.FC = () => {
     resetPassword,
     startDemoMode,
     redirectPath,
+    authError,
     showToast,
     navigate,
   } = useApp();
@@ -196,10 +197,10 @@ export const LoginView: React.FC = () => {
         )}
 
         {/* Error Alert */}
-        {errorMessage && (
+        {(errorMessage || authError) && (
           <div className="mb-4 p-3.5 bg-error-container/20 border border-error/30 rounded-xl text-xs text-error flex items-start gap-2.5">
             <span className="material-symbols-outlined text-error text-lg shrink-0 mt-0.5">error</span>
-            <div className="flex-1 font-medium">{errorMessage}</div>
+            <div className="flex-1 font-medium">{errorMessage || authError}</div>
           </div>
         )}
 
@@ -243,7 +244,7 @@ export const LoginView: React.FC = () => {
             </button>
             <div className="flex items-center gap-1.5 justify-center text-[11px] text-on-surface-variant font-medium">
               <span className="material-symbols-outlined text-xs text-primary">cloud_done</span>
-              <span>Sincronización multi-dispositivo en Cloud Firestore</span>
+              <span>Sesión segura con Zoho Catalyst Authentication</span>
             </div>
           </div>
 

@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
-import { testConnection } from '../firebase';
+import { checkBackendHealth } from '../services/catalystClient';
 import { MealMoment, MealLogItem } from '../types';
 import {
   getLocalDateString,
@@ -152,9 +152,13 @@ export const NutritionalDashboardView: React.FC = () => {
     setIsSyncing(true);
     showToast('Sincronizando datos de perfil y registros...');
     try {
-      await testConnection();
+      const health = await checkBackendHealth();
       setIsSyncing(false);
-      showToast('Datos consolidados y verificados con éxito.', 'success');
+      if (health.ok) {
+        showToast('Datos consolidados y verificados con éxito.', 'success');
+      } else {
+        showToast('Verificación completada en almacenamiento local');
+      }
     } catch {
       setIsSyncing(false);
       showToast('Verificación completada en almacenamiento local');

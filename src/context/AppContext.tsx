@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useMemo, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, useMemo, useCallback, useRef, ReactNode } from 'react';
 import {
   NavigationPath,
   AuthStatus,
@@ -25,7 +25,6 @@ import {
   TEMPLATE_RECIPES,
   createDefaultWeeklyPlan,
 } from '../data/templateRecipes';
-import { getFoodById } from '../services/nutritionMath';
 import {
   aggregateWeeklyMealPlan,
   computeIdempotentGrocerySync,
@@ -40,7 +39,6 @@ import {
 import {
   WorkoutRoutine,
   PlannedExerciseConfig,
-  MasterWorkoutTemplate,
   ExecutedWorkout,
   LiveExerciseSession,
   LiveWorkoutSet,
@@ -48,7 +46,6 @@ import {
   RoutineDay,
 } from '../types/workout';
 import {
-  MASTER_WORKOUT_TEMPLATES,
   instantiateRoutineFromTemplate,
 } from '../data/workoutTemplates';
 import {
@@ -58,40 +55,15 @@ import {
 } from '../utils/workoutCalculations';
 import { getExerciseById } from '../data/exerciseCatalog';
 import { createDemoExecutedWorkoutsHistory } from '../data/demoWorkoutsSeed';
-import { UserProfile, AppNotification, NotificationPreferences, AthletePreferences, DEFAULT_ATHLETE_PREFERENCES } from '../types/auth';
+import {
+  UserProfile,
+  AppNotification,
+  NotificationPreferences,
+  AthletePreferences,
+  DEFAULT_ATHLETE_PREFERENCES,
+} from '../types/auth';
 import { MesocycleRoutine } from '../types/mesocycle';
 import { updateMesocycleWeekProgress } from '../services/mesocycleGeneratorService';
-import {
-  auth,
-  db,
-  googleProvider,
-  signInWithPopup,
-  fbSignOut,
-  signInWithEmailAndPassword,
-  createUserWithEmailAndPassword,
-  sendEmailVerification,
-  sendPasswordResetEmail,
-  updateProfile,
-  handleFirestoreError,
-  OperationType,
-} from '../firebase';
-import {
-  onAuthStateChanged,
-  User as FirebaseUser,
-} from 'firebase/auth';
-import {
-  collection,
-  doc,
-  setDoc,
-  updateDoc,
-  deleteDoc,
-  writeBatch,
-  onSnapshot,
-  getDoc,
-  query,
-  orderBy,
-  limit,
-} from 'firebase/firestore';
 import {
   enqueueOfflineSet,
   syncOfflineSetsForUser,
@@ -99,6 +71,45 @@ import {
   migrateLegacyPendingSets,
 } from '../services/workoutSyncQueue';
 import { UserRole } from '../types/admin';
+import {
+  authRepo,
+  athleteRepo,
+  authBridge,
+  parseAppRoute,
+  navigateBrowserPath,
+  CleanSlateRepositoryError,
+  ROUTE_CHANGE_EVENT,
+  type ParsedAppRoute,
+} from '../services/catalystClient';
+import {
+  DEFAULT_AVATAR_URL,
+  buildProfileSelfPatch,
+  fromCleanBiometrics,
+  fromCleanCardioSession,
+  fromCleanExecutedWorkout,
+  fromCleanGrocery,
+  fromCleanMealLog,
+  fromCleanMealPlan,
+  fromCleanNotification,
+  fromCleanPreferences,
+  fromCleanProfile,
+  fromCleanRecipe,
+  fromCleanWorkoutRoutine,
+  fromCleanWorkoutSet,
+  resolveUserRole,
+  toCleanActionView,
+  toCleanBiometrics,
+  toCleanCardioSession,
+  toCleanExercisesSnapshot,
+  toCleanGrocery,
+  toCleanMealLog,
+  toCleanMealPlan,
+  toCleanMuscleGroup,
+  toCleanPreferences,
+  toCleanRecipe,
+  toCleanWorkoutRoutine,
+} from '../services/catalystMappers';
+import type { UserAccountModel } from '../../poc/catalyst-clean-slate/src/frontend/contracts/cleanSlateModels';
 
 interface AppContextType {
   currentPath: NavigationPath;
@@ -292,8 +303,7 @@ const defaultUser: UserProfile = {
   id: 'usr_camilo_demo',
   name: 'Camilo R. (Demo)',
   email: 'camilo@vigor.co',
-  avatarUrl:
-    'https://lh3.googleusercontent.com/aida-public/AB6AXuC3zYYPzD9Eg1BywRiP3hzgyQ9n12VK96fEiziXHs-SE5lgZckF16Ex8AnLcoP5xUVQI23OuQeC85_8rc9LQh3Mno4oDFfLAbBhhd-74a0Ecng6QNtWpExkHXOQK3860qtFG_389p9yG0FUrVX5ddZJNrZijrnRwe_fFwtE2CwikU5Ei4pARC6kHkQUykjTboNxyLz-v-3LFdaY9XK72BdUBEqTBZUv94DHR1WdVYUO',
+  avatarUrl: DEFAULT_AVATAR_URL,
   role: 'Atleta Pro',
   location: 'Bogotá (UTC-5)',
   joinedDate: 'Octubre 2024',
@@ -544,36 +554,88 @@ const defaultMealPartition: MealMomentPartition = {
   cenaPct: 25,
 };
 
-const getScopedKey = (baseKey: string, user: UserProfile | null, isDemo: boolean): string => {
-  if (isDemo || !user || !user.id) {
-    const demoId = (user?.name || '').toLowerCase().includes('sof') ? 'demo_sofia' : 'demo_camilo';
-    return `${baseKey}_${demoId}`;
-  }
-  return `${baseKey}_uid_${user.id}`;
-};
-
 const loadScopedPreference = <T,>(baseKey: string, scopeKey: string, fallback: T): T => {
   try {
     const scopedVal = localStorage.getItem(scopeKey);
     if (scopedVal) return JSON.parse(scopedVal);
-    // Safe legacy fallback without overwriting other accounts: only if legacy key exists
     const legacyVal = localStorage.getItem(baseKey);
     if (legacyVal) return JSON.parse(legacyVal);
   } catch {}
   return fallback;
 };
 
+function isNetworkOrUnavailableError(err: unknown): boolean {
+  if (err instanceof CleanSlateRepositoryError) {
+    return (
+      err.statusCode === 0 ||
+      err.statusCode === 401 ||
+      err.statusCode === 502 ||
+      err.statusCode === 503 ||
+      err.code === 'UNAUTHENTICATED' ||
+      err.code === 'SESSION_EXPIRED' ||
+      err.code === 'NETWORK_ERROR' ||
+      err.code === 'CATALYST_USER_NOT_AUTHENTICATED' ||
+      err.code === 'CATALYST_WEB_SDK_UNAVAILABLE'
+    );
+  }
+  return false;
+}
+
+function resolveEffectiveAuthRoute(): ParsedAppRoute {
+  if (typeof window === 'undefined') {
+    return parseAppRoute({ pathname: '/', search: '', origin: 'http://localhost' });
+  }
+  const directRoute = parseAppRoute(window.location);
+  if (directRoute.routeId === 'auth-login' || directRoute.routeId === 'auth-callback') {
+    return directRoute;
+  }
+
+  const rawHash = (window.location.hash || '').replace(/^#/, '');
+  if (rawHash) {
+    const normalizedHash = rawHash.startsWith('/') ? rawHash : `/${rawHash}`;
+    const qIndex = normalizedHash.indexOf('?');
+    const hashPathname = qIndex >= 0 ? normalizedHash.slice(0, qIndex) : normalizedHash;
+    const hashSearch = qIndex >= 0 ? normalizedHash.slice(qIndex) : '';
+    const hashRoute = parseAppRoute({
+      pathname: hashPathname,
+      search: hashSearch,
+      origin: window.location.origin,
+    });
+    if (hashRoute.routeId === 'auth-login' || hashRoute.routeId === 'auth-callback') {
+      return hashRoute;
+    }
+  }
+
+  return directRoute;
+}
+
+function resolveTargetPathFromSafeNext(safeNextPath: string): NavigationPath {
+  const cleanCandidate = (safeNextPath || '/')
+    .split('?')[0]
+    .replace(/^#?\/+/, '')
+    .trim();
+  if (cleanCandidate && isPrivatePath(cleanCandidate)) {
+    return cleanCandidate;
+  }
+  return 'dashboard-nutricional';
+}
+
 const AppContext = createContext<AppContextType | null>(null);
 
 export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const getInitialPath = (): NavigationPath => {
-    if (typeof window !== 'undefined' && window.location.hash) {
-      const hash = window.location.hash.replace(/^#\/?/, '');
-      if (!hash) {
-        return 'landing';
+    if (typeof window !== 'undefined') {
+      const parsed = resolveEffectiveAuthRoute();
+      if (parsed.routeId === 'auth-login') return 'login';
+      if (parsed.routeId === 'auth-callback') {
+        return resolveTargetPathFromSafeNext(parsed.safeNextPath);
       }
-      if (isPrivatePath(hash) || PUBLIC_NAVIGATION_PATHS.includes(hash as any)) {
-        return hash as NavigationPath;
+      if (window.location.hash) {
+        const hash = window.location.hash.replace(/^#\/?/, '').split('?')[0];
+        if (!hash) return 'landing';
+        if (isPrivatePath(hash) || PUBLIC_NAVIGATION_PATHS.includes(hash as any)) {
+          return hash as NavigationPath;
+        }
       }
     }
     return 'landing';
@@ -581,9 +643,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const [currentPath, setCurrentPath] = useState<NavigationPath>(getInitialPath);
   const [redirectPath, setRedirectPath] = useState<NavigationPath | null>(null);
+  const callbackAttemptedRef = useRef<string | null>(null);
 
-  // Firebase Auth State
-  const [fbUser, setFbUser] = useState<FirebaseUser | null>(null);
+  // Catalyst Auth State (replaces Firebase User)
+  const [sessionUid, setSessionUid] = useState<string | null>(null);
   const [isDemoMode, setIsDemoMode] = useState<boolean>(() => {
     return localStorage.getItem('vigor_is_demo') === 'true';
   });
@@ -591,10 +654,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [authError, setAuthError] = useState<string | null>(null);
   const [unverifiedEmail, setUnverifiedEmail] = useState<string | null>(null);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
-  const isLogoutInProgressRef = React.useRef(false);
   const [pendingOfflineSetsCount, setPendingOfflineSetsCount] = useState<number>(0);
 
-  // Lazy migration of any legacy shared pending queue on mount
   useEffect(() => {
     migrateLegacyPendingSets();
   }, []);
@@ -613,23 +674,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   });
 
   const [currentUserRole, setCurrentUserRole] = useState<UserRole>('athlete');
-
-  const refreshUserClaims = async (): Promise<UserRole> => {
-    if (!auth.currentUser || isDemoMode) {
-      setCurrentUserRole('athlete');
-      return 'athlete';
-    }
-    try {
-      const tokenResult = await auth.currentUser.getIdTokenResult(true);
-      const roleClaim = tokenResult.claims.role;
-      const verifiedRole: UserRole = (roleClaim === 'superadmin' || roleClaim === 'admin') ? roleClaim : 'athlete';
-      setCurrentUserRole(verifiedRole);
-      return verifiedRole;
-    } catch {
-      return 'athlete';
-    }
-  };
-
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
 
   // Notifications State
@@ -673,7 +717,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     return loadScopedPreference('vigor_meal_partition', `vigor_meal_partition_${uid}`, defaultMealPartition);
   });
 
-  // Athlete Preferences (Units, Timezone, Experience, Goals, Onboarding State)
   const [athletePreferences, setAthletePreferences] = useState<AthletePreferences>(() => {
     const isDemo = localStorage.getItem('vigor_is_demo') === 'true';
     const savedUser = localStorage.getItem('vigor_auth_user');
@@ -742,7 +785,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [isRestTimerRunning, setIsRestTimerRunning] = useState<boolean>(true);
   const [cardioSessions, setCardioSessions] = useState<CardioSession[]>(initialCardioSessions);
 
-  // Live Workout Execution Engine (Increment 6C)
+  // Live Workout Execution Engine
   const [activeLiveWorkout, setActiveLiveWorkout] = useState<ExecutedWorkout | null>(() => {
     try {
       const saved = localStorage.getItem('vigor_active_live_session');
@@ -781,7 +824,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         }
         const saved = localStorage.getItem(`vigor_executed_workouts_${uid}`) || localStorage.getItem('vigor_executed_workouts_demo');
         if (saved) return JSON.parse(saved);
-        // Default Demo Seed (Increment 6F)
         const demoSeed = createDemoExecutedWorkoutsHistory(uid);
         localStorage.setItem(`vigor_executed_workouts_${uid}`, JSON.stringify(demoSeed));
         return demoSeed;
@@ -790,7 +832,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     return [];
   });
 
-  // Workout Routines (Increment 6B)
+  // Workout Routines
   const [workoutRoutines, setWorkoutRoutines] = useState<WorkoutRoutine[]>(() => {
     const isDemo = localStorage.getItem('vigor_is_demo') === 'true';
     if (isDemo) {
@@ -809,14 +851,13 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           return JSON.parse(saved);
         } catch {}
       }
-      // Demo initial routine
       const defaultDemo = instantiateRoutineFromTemplate('template_torso_pierna_4d', uid);
       return [defaultDemo];
     }
     return [];
   });
 
-  const [activeRoutineId, setActiveRoutineId] = useState<string | null>(() => {
+  const [activeRoutineIdState, setActiveRoutineIdState] = useState<string | null>(() => {
     const isDemo = localStorage.getItem('vigor_is_demo') === 'true';
     if (isDemo) {
       const savedUser = localStorage.getItem('vigor_auth_user');
@@ -837,13 +878,32 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const activeRoutine = useMemo<WorkoutRoutine | null>(() => {
     if (workoutRoutines.length === 0) return null;
-    if (activeRoutineId) {
-      const found = workoutRoutines.find(r => r.id === activeRoutineId);
+    if (activeRoutineIdState) {
+      const found = workoutRoutines.find(r => r.id === activeRoutineIdState);
       if (found) return found;
     }
     const def = workoutRoutines.find(r => r.isDefault);
     return def || workoutRoutines[0];
-  }, [workoutRoutines, activeRoutineId]);
+  }, [workoutRoutines, activeRoutineIdState]);
+
+  const setActiveRoutineId = (id: string) => {
+    setActiveRoutineIdState(id);
+    if (id) {
+      setWorkoutRoutines(prev => prev.map(r => ({ ...r, isDefault: r.id === id })));
+    }
+    if (sessionUid && !isDemoMode && id) {
+      athleteRepo
+        .setDefaultRoutine(sessionUid, id)
+        .then(updated => {
+          if (Array.isArray(updated) && updated.length > 0) {
+            setWorkoutRoutines(updated.map(r => fromCleanWorkoutRoutine(r, sessionUid)));
+          }
+        })
+        .catch(err => console.warn('Aviso al establecer rutina predeterminada:', err));
+    } else if (currentUser?.id && id) {
+      localStorage.setItem(`vigor_active_routine_${currentUser.id}`, id);
+    }
+  };
 
   // Date Selection for Nutrition & Diary
   const [selectedDate, setSelectedDate] = useState<string>(() => {
@@ -851,12 +911,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     return isDemo ? '2024-10-24' : getTodayLocalDateString();
   });
   const [hasBiometricsConfigured, setHasBiometricsConfigured] = useState<boolean>(() => {
-    const isDemo = localStorage.getItem('vigor_is_demo') === 'true';
-    return isDemo;
+    return localStorage.getItem('vigor_is_demo') === 'true';
   });
   const [mealDrawerMoment, setMealDrawerMoment] = useState<MealMoment | undefined>(undefined);
 
-  // Recipe Library & Weekly Meal Plans (Increment 4)
+  // Recipe Library & Weekly Meal Plans
   const [recipes, setRecipes] = useState<Recipe[]>(() => {
     const isDemo = localStorage.getItem('vigor_is_demo') === 'true';
     if (isDemo) {
@@ -883,7 +942,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     };
   });
 
-  // Modals for Recipes & Assigning
+  // Modals
   const [isRecipeModalOpen, setIsRecipeModalOpen] = useState(false);
   const [recipeModalData, setRecipeModalData] = useState<{
     mode: 'create' | 'edit';
@@ -898,57 +957,75 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     currentRecipeId?: string;
   } | null>(null);
 
-  // Modals & Feedback
   const [isMealDrawerOpen, setIsMealDrawerOpen] = useState(false);
   const [isWorkoutModalOpen, setIsWorkoutModalOpen] = useState(false);
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   const [toast, setToast] = useState<ToastMessage | null>(null);
 
-  const showToast = (text: string, type: 'success' | 'info' | 'warning' = 'success') => {
+  const showToast = useCallback((text: string, type: 'success' | 'info' | 'warning' = 'success') => {
     const id = Date.now().toString();
     setToast({ id, text, type });
     setTimeout(() => {
       setToast(current => (current?.id === id ? null : current));
     }, 3000);
-  };
+  }, []);
 
-  const navigate = (path: NavigationPath) => {
-    // Check if trying to navigate to private route without authentication
-    if (isPrivatePath(path) && authStatus !== 'authenticated') {
-      setRedirectPath(path);
-      setCurrentPath('login');
+  const navigate = useCallback(
+    (path: NavigationPath) => {
+      if (isPrivatePath(path) && authStatus !== 'authenticated') {
+        setRedirectPath(path);
+        setCurrentPath('login');
+        if (typeof window !== 'undefined') {
+          window.location.hash = '#/login';
+        }
+        setIsMobileSidebarOpen(false);
+        return;
+      }
+
+      if (authStatus === 'authenticated' && currentUser?.onboardingCompleted === false && path !== 'onboarding') {
+        setCurrentPath('onboarding');
+        if (typeof window !== 'undefined') {
+          window.location.hash = '#/onboarding';
+        }
+        setIsMobileSidebarOpen(false);
+        showToast('Por favor completa la configuración inicial para ingresar a tu dashboard personalizado.', 'info');
+        return;
+      }
+
+      setCurrentPath(path);
       if (typeof window !== 'undefined') {
-        window.location.hash = '#/login';
+        window.location.hash = path === 'landing' ? '#/' : `#/${path}`;
       }
       setIsMobileSidebarOpen(false);
-      return;
-    }
-
-    // If user is authenticated but onboarding is incomplete, restrict navigation to onboarding
-    if (authStatus === 'authenticated' && currentUser?.onboardingCompleted === false && path !== 'onboarding') {
-      setCurrentPath('onboarding');
       if (typeof window !== 'undefined') {
-        window.location.hash = '#/onboarding';
+        window.scrollTo({ top: 0, behavior: 'smooth' });
       }
-      setIsMobileSidebarOpen(false);
-      showToast('Por favor completa la configuración inicial para ingresar a tu dashboard personalizado.', 'info');
-      return;
-    }
+    },
+    [authStatus, currentUser?.onboardingCompleted, showToast]
+  );
 
-    setCurrentPath(path);
-    if (typeof window !== 'undefined') {
-      window.location.hash = path === 'landing' ? '#/' : `#/${path}`;
-    }
-    setIsMobileSidebarOpen(false);
-    if (typeof window !== 'undefined') {
-      window.scrollTo({ top: 0, behavior: 'smooth' });
-    }
-  };
-
-  // Synchronize hash with currentPath and enforce route protection on Back/Forward buttons
   useEffect(() => {
     const handleHashChange = () => {
-      const rawHash = window.location.hash.replace(/^#\/?/, '');
+      const effectiveAuthRoute = resolveEffectiveAuthRoute();
+      if (effectiveAuthRoute.routeId === 'auth-login') {
+        if (authStatus === 'authenticated') {
+          const target: NavigationPath =
+            currentUser?.onboardingCompleted === false ? 'onboarding' : 'dashboard-nutricional';
+          navigateBrowserPath('/', { replace: true });
+          window.location.hash = `#/${target}`;
+          setCurrentPath(target);
+        } else {
+          setCurrentPath('login');
+        }
+        return;
+      }
+
+      if (effectiveAuthRoute.routeId === 'auth-callback') {
+        setCurrentPath(resolveTargetPathFromSafeNext(effectiveAuthRoute.safeNextPath));
+        return;
+      }
+
+      const rawHash = window.location.hash.replace(/^#\/?/, '').split('?')[0];
       if (!rawHash) {
         setCurrentPath('landing');
         return;
@@ -978,7 +1055,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     return () => window.removeEventListener('hashchange', handleHashChange);
   }, [authStatus, currentUser?.onboardingCompleted]);
 
-  // Handle route redirection when authStatus transitions
   useEffect(() => {
     if (authStatus === 'unauthenticated') {
       if (isPrivatePath(currentPath)) {
@@ -990,13 +1066,20 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       }
     } else if (authStatus === 'authenticated') {
       if (currentUser?.onboardingCompleted === false) {
-        // Direct new or partially completed users to onboarding
         setCurrentPath('onboarding');
         if (typeof window !== 'undefined') {
           window.location.hash = '#/onboarding';
         }
-      } else if (currentPath === 'login' || currentPath === 'registro' || currentPath === 'recuperar-password' || currentPath === 'onboarding') {
-        const target = redirectPath && isPrivatePath(redirectPath) && redirectPath !== 'onboarding' ? redirectPath : 'dashboard-nutricional';
+      } else if (
+        currentPath === 'login' ||
+        currentPath === 'registro' ||
+        currentPath === 'recuperar-password' ||
+        currentPath === 'onboarding'
+      ) {
+        const target =
+          redirectPath && isPrivatePath(redirectPath) && redirectPath !== 'onboarding'
+            ? redirectPath
+            : 'dashboard-nutricional';
         setRedirectPath(null);
         setCurrentPath(target);
         if (typeof window !== 'undefined') {
@@ -1004,454 +1087,342 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         }
       }
     }
-  }, [authStatus, currentUser?.onboardingCompleted]);
+  }, [authStatus, currentUser?.onboardingCompleted, currentPath, redirectPath]);
 
-  // Uniform Cloud Firestore User Profile & Subcollection Initializer
-  // Ensures identical multi-device cloud persistence for Google OAuth and Email/Password athletes
-  const ensureUserProfile = async (user: FirebaseUser): Promise<UserProfile> => {
-    const userRef = doc(db, 'users', user.uid);
-    const snap = await getDoc(userRef);
-    let prof: UserProfile;
+  const hydrateRemoteWorkspace = useCallback(async (uid: string, actorFallback?: Record<string, unknown>) => {
+    const snap = await athleteRepo.hydrateWorkspace(uid);
+    const mappedProfile = fromCleanProfile(snap.profile);
+    const role = resolveUserRole(snap.profile as unknown as Record<string, unknown>) || resolveUserRole(actorFallback);
 
-    const providerId = user.providerData?.[0]?.providerId === 'google.com' ? 'google.com' : 'password';
+    setSessionUid(uid);
+    setIsDemoMode(false);
+    localStorage.setItem('vigor_is_demo', 'false');
+    localStorage.removeItem('vigor_demo_user');
 
-    if (snap.exists()) {
-      const data = snap.data();
-      // Existing user: preserve backward compatibility. Default onboardingCompleted to true if not explicitly false.
-      const onboardingCompleted = data.onboardingCompleted !== undefined ? Boolean(data.onboardingCompleted) : true;
-      const onboardingStep = typeof data.onboardingStep === 'number' ? data.onboardingStep : (onboardingCompleted ? 6 : 1);
-      prof = {
-        id: user.uid,
-        name: data.name || user.displayName || 'Atleta Vigor',
-        email: data.email || user.email || '',
-        avatarUrl: data.avatarUrl || user.photoURL || defaultUser.avatarUrl,
-        role: data.role || 'Atleta Pro',
-        location: data.location || Intl.DateTimeFormat().resolvedOptions().timeZone || 'Bogotá (UTC-5)',
-        joinedDate: data.createdAt ? new Date(data.createdAt).toLocaleDateString('es-ES', { month: 'long', year: 'numeric' }) : 'Octubre 2024',
-        emailVerified: user.emailVerified,
-        authProvider: providerId,
-        onboardingCompleted,
-        onboardingStep,
-        goal: data.goal || 'ganancia_muscular',
-      };
+    setCurrentUser(mappedProfile);
+    setCurrentUserRole(role);
+    setUnverifiedEmail(null);
+
+    if (snap.biometrics) {
+      setBiometrics(fromCleanBiometrics(snap.biometrics));
+      setHasBiometricsConfigured(true);
     } else {
-      // New user registration in Cloud Firestore (requires incoming().role == 'Atleta Pro' per firestore.rules)
-      prof = {
-        id: user.uid,
-        name: user.displayName || user.email?.split('@')[0] || 'Atleta Vigor',
-        email: user.email || '',
-        avatarUrl: user.photoURL || defaultUser.avatarUrl,
-        role: 'Atleta Pro',
-        location: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Bogotá (UTC-5)',
-        joinedDate: new Date().toLocaleDateString('es-ES', { month: 'long', year: 'numeric' }),
-        emailVerified: user.emailVerified,
-        authProvider: providerId,
-        onboardingCompleted: false, // Brand-new user: onboarding required
-        onboardingStep: 1,
-        goal: 'ganancia_muscular',
-      };
-
-      // 1. Create root user profile document
-      await setDoc(userRef, {
-        id: prof.id,
-        name: prof.name,
-        email: prof.email,
-        avatarUrl: prof.avatarUrl,
-        role: prof.role,
-        location: prof.location,
-        joinedDate: prof.joinedDate,
-        onboardingCompleted: false,
-        onboardingStep: 1,
-        goal: 'ganancia_muscular',
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      });
-
-      // 2. Seed initial biometrics in Firestore so calculation engines function immediately
-      const bioRef = doc(db, 'users', user.uid, 'biometrics', 'current');
-      const bioSnap = await getDoc(bioRef);
-      if (!bioSnap.exists()) {
-        await setDoc(bioRef, {
-          ...defaultBiometrics,
-          userId: user.uid,
-          updatedAt: new Date().toISOString(),
-        });
-      }
+      setBiometrics(defaultBiometrics);
+      setHasBiometricsConfigured(false);
     }
 
-    // 3. Load or initialize isolated user preferences from Cloud Firestore
+    const fallbackNotif = loadScopedPreference(
+      'vigor_notif_prefs',
+      `vigor_notif_prefs_uid_${uid}`,
+      initialNotificationPreferences
+    );
+    const fallbackPart = loadScopedPreference(
+      'vigor_meal_partition',
+      `vigor_meal_partition_uid_${uid}`,
+      defaultMealPartition
+    );
+    const fallbackAthlete = loadScopedPreference(
+      'vigor_athlete_prefs',
+      `vigor_athlete_prefs_uid_${uid}`,
+      {
+        ...DEFAULT_ATHLETE_PREFERENCES,
+        onboardingCompleted: mappedProfile.onboardingCompleted ?? true,
+        onboardingStep: mappedProfile.onboardingStep ?? 1,
+        timezone: mappedProfile.location || 'America/Bogota',
+      }
+    );
+
+    if (snap.preferences) {
+      const mappedPrefs = fromCleanPreferences(
+        snap.preferences,
+        fallbackAthlete,
+        fallbackNotif,
+        fallbackPart
+      );
+      setAthletePreferences(mappedPrefs.athletePreferences);
+      setNotificationPreferences(mappedPrefs.notificationPreferences);
+      setMealPartition(mappedPrefs.mealPartition);
+      localStorage.setItem(`vigor_athlete_prefs_uid_${uid}`, JSON.stringify(mappedPrefs.athletePreferences));
+      localStorage.setItem(`vigor_notif_prefs_uid_${uid}`, JSON.stringify(mappedPrefs.notificationPreferences));
+      localStorage.setItem(`vigor_meal_partition_uid_${uid}`, JSON.stringify(mappedPrefs.mealPartition));
+    } else {
+      setAthletePreferences(fallbackAthlete);
+      setNotificationPreferences(fallbackNotif);
+      setMealPartition(fallbackPart);
+    }
+
+    setGroceries(snap.groceries.map(fromCleanGrocery));
+    setMealLogs(snap.mealLogs.map(fromCleanMealLog));
+
+    const mappedRecipes = snap.recipes.length > 0 ? snap.recipes.map(r => fromCleanRecipe(r, uid)) : TEMPLATE_RECIPES;
+    setRecipes(mappedRecipes);
+
+    const mappedPlans: Record<string, WeeklyMealPlan> = {};
+    for (const p of snap.mealPlans) {
+      const plan = fromCleanMealPlan(p, uid, mappedRecipes);
+      mappedPlans[plan.weekStart] = plan;
+      mappedPlans[plan.id] = plan;
+    }
+    setMealPlans(mappedPlans);
+
+    const mappedRoutines = snap.workoutRoutines.map(r => fromCleanWorkoutRoutine(r, uid));
+    setWorkoutRoutines(mappedRoutines);
+    const defRoutine = mappedRoutines.find(r => r.isDefault) || mappedRoutines[0] || null;
+    setActiveRoutineIdState(defRoutine?.id || null);
+    setRoutineSyncStatus('synced');
+
+    setWorkoutHistory(snap.workoutSets.map(s => fromCleanWorkoutSet(s, uid)));
+    const mappedExecuted = snap.executedWorkouts.map(w =>
+      fromCleanExecutedWorkout(w, snap.workoutSets, uid)
+    );
+    setExecutedWorkoutsHistory(mappedExecuted);
+
+    const remoteInProgress = mappedExecuted.find(w => w.status === 'in_progress');
+    if (remoteInProgress) {
+      setActiveLiveWorkout(prev => prev ?? remoteInProgress);
+      setHasRecoveredLiveSession(true);
+    }
+
+    if (snap.cardioSessions.length > 0) {
+      setCardioSessions(snap.cardioSessions.map(fromCleanCardioSession));
+    }
+
+    setNotifications(snap.notifications.map(fromCleanNotification));
+    setAuthStatus('authenticated');
+    setAuthError(null);
+    return mappedProfile;
+  }, []);
+
+  const refreshUserClaims = async (): Promise<UserRole> => {
+    if (!sessionUid || isDemoMode) {
+      setCurrentUserRole('athlete');
+      return 'athlete';
+    }
     try {
-      const prefRef = doc(db, 'users', user.uid, 'preferences', 'settings');
-      const prefSnap = await getDoc(prefRef);
-      if (prefSnap.exists()) {
-        const pdata = prefSnap.data();
-        if (pdata.notificationPreferences) {
-          setNotificationPreferences(pdata.notificationPreferences);
-          localStorage.setItem(`vigor_notif_prefs_uid_${user.uid}`, JSON.stringify(pdata.notificationPreferences));
-        }
-        if (pdata.mealPartition) {
-          setMealPartition(pdata.mealPartition);
-          localStorage.setItem(`vigor_meal_partition_uid_${user.uid}`, JSON.stringify(pdata.mealPartition));
-        }
-        if (pdata.athletePreferences) {
-          setAthletePreferences(pdata.athletePreferences);
-          localStorage.setItem(`vigor_athlete_prefs_uid_${user.uid}`, JSON.stringify(pdata.athletePreferences));
-        }
-      } else {
-        const currentNotif = loadScopedPreference('vigor_notif_prefs', `vigor_notif_prefs_uid_${user.uid}`, initialNotificationPreferences);
-        const currentMeal = loadScopedPreference('vigor_meal_partition', `vigor_meal_partition_uid_${user.uid}`, defaultMealPartition);
-        const currentAthlete = loadScopedPreference('vigor_athlete_prefs', `vigor_athlete_prefs_uid_${user.uid}`, {
-          ...DEFAULT_ATHLETE_PREFERENCES,
-          onboardingCompleted: prof.onboardingCompleted ?? true,
-          onboardingStep: prof.onboardingStep ?? 1,
-          timezone: prof.location || 'America/Bogota',
-        });
-        setNotificationPreferences(currentNotif);
-        setMealPartition(currentMeal);
-        setAthletePreferences(currentAthlete);
-        await setDoc(prefRef, {
-          notificationPreferences: currentNotif,
-          mealPartition: currentMeal,
-          athletePreferences: currentAthlete,
-          userId: user.uid,
-          updatedAt: new Date().toISOString(),
-        });
-        localStorage.setItem(`vigor_notif_prefs_uid_${user.uid}`, JSON.stringify(currentNotif));
-        localStorage.setItem(`vigor_meal_partition_uid_${user.uid}`, JSON.stringify(currentMeal));
-        localStorage.setItem(`vigor_athlete_prefs_uid_${user.uid}`, JSON.stringify(currentAthlete));
-      }
-    } catch (prefErr) {
-      console.error('Error fetching user preferences from Firestore:', prefErr);
+      const me = await authRepo.getMe();
+      const verifiedRole = resolveUserRole(me.actor);
+      setCurrentUserRole(verifiedRole);
+      return verifiedRole;
+    } catch {
+      return 'athlete';
     }
-
-    return prof;
   };
 
-  // 1. Firebase Auth State Listener
+  const handleHostedCallbackRoute = useCallback(
+    async (route: ParsedAppRoute, isStillMounted: () => boolean = () => true) => {
+      const attemptKey = `${route.pathname}${route.search}`;
+      if (callbackAttemptedRef.current === attemptKey) {
+        return;
+      }
+      callbackAttemptedRef.current = attemptKey;
+
+      if (route.cancelled) {
+        if (!isStillMounted()) return;
+        setSessionUid(null);
+        setCurrentUser(null);
+        setCurrentUserRole('athlete');
+        setIsDemoMode(false);
+        setAuthStatus('unauthenticated');
+        setAuthError('Inicio de sesión cancelado en Zoho Catalyst.');
+        navigateBrowserPath('/', { replace: true });
+        if (typeof window !== 'undefined') {
+          window.location.hash = '#/login';
+        }
+        setCurrentPath('login');
+        showToast('Inicio de sesión cancelado en Zoho Catalyst.', 'info');
+        return;
+      }
+
+      if (route.catalystErrorCode) {
+        if (!isStillMounted()) return;
+        const msg =
+          route.catalystErrorMessage ||
+          `Error en autenticación Catalyst (${route.catalystErrorCode}).`;
+        setAuthError(msg);
+        setAuthStatus('error');
+        navigateBrowserPath('/', { replace: true });
+        return;
+      }
+
+      setAuthStatus('initializing');
+      setAuthError(null);
+
+      try {
+        let sessionResult;
+        try {
+          sessionResult = await authBridge.establishVigorSession({ mode: 'exchange' });
+        } catch (exchangeErr) {
+          if (
+            exchangeErr instanceof CleanSlateRepositoryError &&
+            exchangeErr.code === 'USER_PROFILE_NOT_REGISTERED'
+          ) {
+            sessionResult = await authBridge.establishVigorSession({ mode: 'bootstrap' });
+          } else {
+            throw exchangeErr;
+          }
+        }
+
+        if (!isStillMounted()) return;
+        const uid = String(sessionResult.actor?.uid || sessionResult.actor?.user_id || '');
+        if (!uid) {
+          throw new CleanSlateRepositoryError(
+            'INVALID_SESSION_RESPONSE',
+            'La sesión devuelta por Catalyst no contiene UID de usuario.',
+            502
+          );
+        }
+
+        const profile = await hydrateRemoteWorkspace(uid, sessionResult.actor);
+        if (!isStillMounted()) return;
+
+        const targetPath: NavigationPath =
+          profile.onboardingCompleted === false
+            ? 'onboarding'
+            : resolveTargetPathFromSafeNext(route.safeNextPath);
+
+        navigateBrowserPath('/', { replace: true });
+        if (typeof window !== 'undefined') {
+          window.location.hash = `#/${targetPath}`;
+        }
+        setRedirectPath(null);
+        setCurrentPath(targetPath);
+        showToast('¡Sesión verificada con Zoho Catalyst!', 'success');
+      } catch (err: any) {
+        if (!isStillMounted()) return;
+        if (err instanceof CleanSlateRepositoryError && err.code === 'EMAIL_VERIFICATION_REQUIRED') {
+          setUnverifiedEmail(null);
+          setCurrentUser(null);
+          setAuthStatus('email_verification_required');
+          setAuthError(null);
+          navigateBrowserPath('/', { replace: true });
+          return;
+        }
+        const errorMsg =
+          err?.message || 'No se pudo completar el intercambio de sesión con Zoho Catalyst.';
+        setSessionUid(null);
+        setCurrentUser(null);
+        setCurrentUserRole('athlete');
+        setAuthStatus('unauthenticated');
+        setAuthError(errorMsg);
+        navigateBrowserPath('/', { replace: true });
+        if (typeof window !== 'undefined') {
+          window.location.hash = '#/login';
+        }
+        setCurrentPath('login');
+        showToast(errorMsg, 'warning');
+      }
+    },
+    [hydrateRemoteWorkspace, showToast]
+  );
+
+  // Initial Auth Session Hydration (Catalyst HTTP + Hosted Login Callback)
   useEffect(() => {
     let isMounted = true;
-    const unsubscribe = onAuthStateChanged(
-      auth,
-      async user => {
-        if (!isMounted) return;
-        setFbUser(user);
+    const isStillMounted = () => isMounted;
 
-        if (user) {
-          setIsDemoMode(false);
-          localStorage.setItem('vigor_is_demo', 'false');
-          localStorage.removeItem('vigor_demo_user');
+    const initAuthSession = async () => {
+      const route = typeof window !== 'undefined' ? resolveEffectiveAuthRoute() : null;
 
-          // Strict Security Verification Check:
-          // Users with unverified emails are blocked from private Firestore documents
-          // to prevent PERMISSION_DENIED security rule violations.
-          if (!user.emailVerified) {
-            setUnverifiedEmail(user.email || null);
-            setCurrentUser(null);
-            setAuthStatus('email_verification_required');
+      // 1. Handle Catalyst Hosted Login return callback (`/auth/callback` or `#/auth/callback`)
+      if (route?.routeId === 'auth-callback') {
+        await handleHostedCallbackRoute(route, isStillMounted);
+        return;
+      }
+
+      // 2. Explicit local Demo Mode
+      const isExplicitDemo = localStorage.getItem('vigor_is_demo') === 'true';
+      const savedDemo = localStorage.getItem('vigor_demo_user');
+      if (isExplicitDemo && savedDemo) {
+        try {
+          const parsed = JSON.parse(savedDemo);
+          if (parsed?.id) {
+            if (!isMounted) return;
+            setSessionUid(null);
+            setCurrentUser(parsed);
+            setCurrentUserRole('athlete');
+            setIsDemoMode(true);
+            setAuthStatus('authenticated');
             setAuthError(null);
             return;
           }
-
-          // Force ID token renewal to guarantee request.auth.token.email_verified == true in Firestore RPCs
-          try {
-            let tokenResult = await user.getIdTokenResult(false);
-            if (tokenResult.claims.email_verified !== true) {
-              tokenResult = await user.getIdTokenResult(true);
-            }
-
-            if (tokenResult.claims.email_verified !== true) {
-              setUnverifiedEmail(user.email || null);
-              setCurrentUser(null);
-              setCurrentUserRole('athlete');
-              setAuthStatus('email_verification_required');
-              setAuthError(null);
-              return;
-            }
-
-            const roleClaim = tokenResult.claims.role;
-            const verifiedRole: UserRole = (roleClaim === 'superadmin' || roleClaim === 'admin') ? roleClaim : 'athlete';
-            if (isMounted) {
-              setCurrentUserRole(verifiedRole);
-            }
-          } catch (tokenErr) {
-            console.warn('ID token claims inspection warning:', tokenErr);
-          }
-
-          // Email is confirmed verified and ID token is refreshed
-          setUnverifiedEmail(null);
-          try {
-            const prof = await ensureUserProfile(user);
-            if (isMounted) {
-              setCurrentUser(prof);
-              setAuthStatus('authenticated');
-              setAuthError(null);
-            }
-          } catch (err: any) {
-            console.error('Error in user profile verification:', err);
-            if (isMounted) {
-              setAuthError(err.message || 'Error al verificar credenciales en Cloud Firestore.');
-              setAuthStatus('error');
-            }
-          }
-        } else {
-          // No Firebase user
-          if (!isMounted) return;
-          const isExplicitDemo = localStorage.getItem('vigor_is_demo') === 'true';
-          const savedDemo = localStorage.getItem('vigor_demo_user');
-          if (isExplicitDemo && savedDemo) {
-            try {
-              const parsed = JSON.parse(savedDemo);
-              if (parsed?.id) {
-                setCurrentUser(parsed);
-                setCurrentUserRole('athlete');
-                setIsDemoMode(true);
-                setAuthStatus('authenticated');
-                setAuthError(null);
-                return;
-              }
-            } catch {}
-          }
-
-          // Genuine unauthenticated state
-          setFbUser(null);
-          setCurrentUser(null);
-          setCurrentUserRole('athlete');
-          setIsDemoMode(false);
-          localStorage.removeItem('vigor_is_demo');
-          localStorage.removeItem('vigor_auth_user');
-          localStorage.removeItem('vigor_demo_user');
-          setAuthStatus('unauthenticated');
-          setAuthError(null);
-        }
-      },
-      error => {
-        if (!isMounted) return;
-        console.error('onAuthStateChanged fatal error:', error);
-        setAuthError(error.message);
-        setAuthStatus('error');
+        } catch {}
       }
-    );
+
+      // 3. Check existing HTTP HMAC session cookie (`GET /api/v1/auth/me`)
+      try {
+        const me = await authRepo.getMe();
+        if (!isMounted) return;
+        const uid = String(me.actor?.uid || '');
+        if (!uid) {
+          throw new CleanSlateRepositoryError('UNAUTHENTICATED', 'Sesión sin UID.', 401);
+        }
+        const profile = await hydrateRemoteWorkspace(uid, me.actor);
+        if (!isMounted) return;
+        if (route?.routeId === 'auth-login') {
+          const targetPath: NavigationPath =
+            profile.onboardingCompleted === false
+              ? 'onboarding'
+              : resolveTargetPathFromSafeNext(route.safeNextPath);
+          navigateBrowserPath('/', { replace: true });
+          window.location.hash = `#/${targetPath}`;
+          setCurrentPath(targetPath);
+        }
+      } catch (err) {
+        if (!isMounted) return;
+        if (err instanceof CleanSlateRepositoryError && err.code === 'EMAIL_VERIFICATION_REQUIRED') {
+          setUnverifiedEmail(null);
+          setCurrentUser(null);
+          setAuthStatus('email_verification_required');
+          setAuthError(null);
+          return;
+        }
+
+        // Anonymous landing or unauthenticated session — never trap landing in error wall
+        if (!isNetworkOrUnavailableError(err)) {
+          console.warn('Session check status:', err);
+        }
+        setSessionUid(null);
+        setCurrentUser(null);
+        setCurrentUserRole('athlete');
+        setIsDemoMode(false);
+        localStorage.removeItem('vigor_is_demo');
+        localStorage.removeItem('vigor_auth_user');
+        localStorage.removeItem('vigor_demo_user');
+        setAuthStatus('unauthenticated');
+        setAuthError(null);
+        if (route?.routeId === 'auth-login') {
+          navigateBrowserPath('/', { replace: true });
+          window.location.hash = '#/login';
+          setCurrentPath('login');
+        }
+      }
+    };
+
+    void initAuthSession();
+
+    const handleRuntimeAuthNavigation = () => {
+      if (!isMounted) return;
+      const route = resolveEffectiveAuthRoute();
+      if (route.routeId === 'auth-callback') {
+        void handleHostedCallbackRoute(route, isStillMounted);
+      } else if (route.routeId === 'auth-login') {
+        navigateBrowserPath('/', { replace: true });
+        window.location.hash = '#/login';
+        setCurrentPath('login');
+      }
+    };
+
+    window.addEventListener('popstate', handleRuntimeAuthNavigation);
+    window.addEventListener('hashchange', handleRuntimeAuthNavigation);
+    window.addEventListener(ROUTE_CHANGE_EVENT, handleRuntimeAuthNavigation);
 
     return () => {
       isMounted = false;
-      unsubscribe();
+      window.removeEventListener('popstate', handleRuntimeAuthNavigation);
+      window.removeEventListener('hashchange', handleRuntimeAuthNavigation);
+      window.removeEventListener(ROUTE_CHANGE_EVENT, handleRuntimeAuthNavigation);
     };
-  }, []);
-
-  // 2. Real-time Firestore Listeners (Attached ONLY when authenticated with real UID)
-  useEffect(() => {
-    const activeUid = fbUser?.uid;
-    if (!activeUid || isDemoMode || authStatus !== 'authenticated') {
-      return;
-    }
-
-    // A. Biometrics
-    const bioRef = doc(db, 'users', activeUid, 'biometrics', 'current');
-    const unsubBio = onSnapshot(
-      bioRef,
-      snap => {
-        if (snap.exists()) {
-          setBiometrics(snap.data() as BiometricConfig);
-          setHasBiometricsConfigured(true);
-        } else {
-          setHasBiometricsConfigured(false);
-        }
-      },
-      error => {
-        handleFirestoreError(error, OperationType.GET, `users/${activeUid}/biometrics/current`);
-      }
-    );
-
-    // B. Groceries (Reads ONLY real user data, does NOT auto-seed when empty)
-    const grocRef = collection(db, 'users', activeUid, 'groceries');
-    const unsubGroc = onSnapshot(
-      grocRef,
-      snap => {
-        const list: GroceryItem[] = [];
-        snap.forEach(docSnap => {
-          list.push({ id: docSnap.id, ...docSnap.data() } as GroceryItem);
-        });
-        setGroceries(list);
-      },
-      error => {
-        handleFirestoreError(error, OperationType.LIST, `users/${activeUid}/groceries`);
-      }
-    );
-
-    // C. Meal Logs (Reads ONLY real user data, does NOT auto-seed when empty)
-    const mealsRef = collection(db, 'users', activeUid, 'mealLogs');
-    const unsubMeals = onSnapshot(
-      mealsRef,
-      snap => {
-        const list: MealLogItem[] = [];
-        snap.forEach(docSnap => {
-          list.push({ id: docSnap.id, ...docSnap.data() } as MealLogItem);
-        });
-        setMealLogs(list);
-      },
-      error => {
-        handleFirestoreError(error, OperationType.LIST, `users/${activeUid}/mealLogs`);
-      }
-    );
-
-    // D. Workout Sessions
-    const workoutRef = collection(db, 'users', activeUid, 'workoutSessions');
-    const unsubWorkout = onSnapshot(
-      workoutRef,
-      snap => {
-        const list: WorkoutSessionRecord[] = [];
-        snap.forEach(docSnap => {
-          list.push({ id: docSnap.id, ...docSnap.data() } as WorkoutSessionRecord);
-        });
-        setWorkoutHistory(list);
-      },
-      error => {
-        handleFirestoreError(error, OperationType.LIST, `users/${activeUid}/workoutSessions`);
-      }
-    );
-
-    // E. Cardio Sessions
-    const cardioRef = collection(db, 'users', activeUid, 'cardioSessions');
-    const unsubCardio = onSnapshot(
-      cardioRef,
-      snap => {
-        if (!snap.empty) {
-          const list: CardioSession[] = [];
-          snap.forEach(docSnap => {
-            list.push({ id: docSnap.id, ...docSnap.data() } as CardioSession);
-          });
-          setCardioSessions(list);
-        }
-      },
-      error => {
-        handleFirestoreError(error, OperationType.LIST, `users/${activeUid}/cardioSessions`);
-      }
-    );
-
-    // F. Notifications
-    const notifsRef = collection(db, 'users', activeUid, 'notifications');
-    const unsubNotifs = onSnapshot(
-      notifsRef,
-      snap => {
-        const list: AppNotification[] = [];
-        snap.forEach(docSnap => {
-          list.push({ id: docSnap.id, ...docSnap.data() } as AppNotification);
-        });
-        setNotifications(list);
-      },
-      error => {
-        handleFirestoreError(error, OperationType.LIST, `users/${activeUid}/notifications`);
-      }
-    );
-
-    // G. Preferences Real-time Sync
-    const prefRef = doc(db, 'users', activeUid, 'preferences', 'settings');
-    const unsubPref = onSnapshot(
-      prefRef,
-      snap => {
-        if (snap.exists()) {
-          const pdata = snap.data();
-          if (pdata.notificationPreferences) {
-            setNotificationPreferences(pdata.notificationPreferences);
-            localStorage.setItem(`vigor_notif_prefs_uid_${activeUid}`, JSON.stringify(pdata.notificationPreferences));
-          }
-          if (pdata.mealPartition) {
-            setMealPartition(pdata.mealPartition);
-            localStorage.setItem(`vigor_meal_partition_uid_${activeUid}`, JSON.stringify(pdata.mealPartition));
-          }
-          if (pdata.athletePreferences) {
-            setAthletePreferences(pdata.athletePreferences);
-            localStorage.setItem(`vigor_athlete_prefs_uid_${activeUid}`, JSON.stringify(pdata.athletePreferences));
-          }
-        }
-      },
-      error => {
-        handleFirestoreError(error, OperationType.GET, `users/${activeUid}/preferences/settings`);
-      }
-    );
-
-    // H. Recipe Library (Increment 4)
-    const recipesRef = collection(db, 'users', activeUid, 'recipes');
-    const unsubRecipes = onSnapshot(
-      recipesRef,
-      snap => {
-        const list: Recipe[] = [];
-        snap.forEach(docSnap => {
-          list.push({ id: docSnap.id, ...docSnap.data() } as Recipe);
-        });
-        setRecipes(list.length > 0 ? list : TEMPLATE_RECIPES);
-      },
-      error => {
-        handleFirestoreError(error, OperationType.LIST, `users/${activeUid}/recipes`);
-      }
-    );
-
-    // I. Weekly Meal Plans (Increment 4)
-    const mealPlansRef = collection(db, 'users', activeUid, 'mealPlans');
-    const unsubMealPlans = onSnapshot(
-      mealPlansRef,
-      snap => {
-        const plans: Record<string, WeeklyMealPlan> = {};
-        snap.forEach(docSnap => {
-          const plan = { id: docSnap.id, ...docSnap.data() } as WeeklyMealPlan;
-          plans[plan.weekStart] = plan;
-          plans[plan.id] = plan;
-        });
-        setMealPlans(plans);
-      },
-      error => {
-        handleFirestoreError(error, OperationType.LIST, `users/${activeUid}/mealPlans`);
-      }
-    );
-
-    // J. Workout Routines (Increment 6B)
-    const routinesRef = collection(db, 'users', activeUid, 'workoutRoutines');
-    const unsubRoutines = onSnapshot(
-      routinesRef,
-      snap => {
-        const list: WorkoutRoutine[] = [];
-        snap.forEach(docSnap => {
-          list.push({ id: docSnap.id, ...docSnap.data() } as WorkoutRoutine);
-        });
-        setWorkoutRoutines(list);
-        setRoutineSyncStatus('synced');
-      },
-      error => {
-        handleFirestoreError(error, OperationType.LIST, `users/${activeUid}/workoutRoutines`);
-        setRoutineSyncStatus('error');
-      }
-    );
-
-    // K. Executed Workouts History (Increment 6C)
-    const executedRef = collection(db, 'users', activeUid, 'executedWorkouts');
-    const unsubExecuted = onSnapshot(
-      executedRef,
-      snap => {
-        const list: ExecutedWorkout[] = [];
-        snap.forEach(docSnap => {
-          list.push({ id: docSnap.id, ...docSnap.data() } as ExecutedWorkout);
-        });
-        setExecutedWorkoutsHistory(list);
-      },
-      error => {
-        handleFirestoreError(error, OperationType.LIST, `users/${activeUid}/executedWorkouts`);
-      }
-    );
-
-    return () => {
-      unsubBio();
-      unsubGroc();
-      unsubMeals();
-      unsubWorkout();
-      unsubCardio();
-      unsubNotifs();
-      unsubPref();
-      unsubRecipes();
-      unsubMealPlans();
-      unsubRoutines();
-      unsubExecuted();
-    };
-  }, [fbUser, isDemoMode, authStatus]);
+  }, [handleHostedCallbackRoute, hydrateRemoteWorkspace]);
 
   // Synchronize local state backup for offline demo resilience and user isolation
   useEffect(() => {
@@ -1503,30 +1474,30 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     return () => clearInterval(interval);
   }, [isRestTimerRunning, restTimerSeconds]);
 
-  // Explicit Template Loader (Only invoked when user explicitly requests sample data)
+  // Explicit Template Loader
   const loadDemoTemplates = async () => {
-    if (fbUser?.uid && !isDemoMode) {
-      showToast('Cargando plantilla maestra a tu cuenta Cloud Firestore...');
+    if (sessionUid && !isDemoMode) {
+      showToast('Importando plantilla maestra a tu cuenta Zoho Catalyst...');
       try {
-        // Groceries
-        for (const item of templateGroceries) {
-          await setDoc(doc(db, 'users', fbUser.uid, 'groceries', item.id), {
-            ...item,
-            userId: fbUser.uid,
-            createdAt: new Date().toISOString(),
-          });
-        }
-        // Meal logs
+        await athleteRepo.syncGroceries(
+          sessionUid,
+          templateGroceries.map(g => toCleanGrocery({ ...g, origin: 'manual' })),
+          { replaceExisting: false }
+        );
+        const createdLogs: MealLogItem[] = [];
         for (const log of templateMealLogs) {
-          await setDoc(doc(db, 'users', fbUser.uid, 'mealLogs', log.id), {
-            ...log,
-            userId: fbUser.uid,
-            createdAt: new Date().toISOString(),
-          });
+          const saved = await athleteRepo.logMeal(sessionUid, toCleanMealLog(log));
+          createdLogs.push(fromCleanMealLog(saved));
         }
-        showToast('¡Plantilla de comidas e insumos importada en Cloud Firestore!', 'success');
-      } catch (err) {
-        handleFirestoreError(err, OperationType.WRITE, `users/${fbUser.uid}/templates`);
+        setGroceries(prev => {
+          const existingIds = new Set(prev.map(i => i.id));
+          const additions = templateGroceries.filter(t => !existingIds.has(t.id));
+          return [...additions, ...prev];
+        });
+        setMealLogs(prev => [...createdLogs, ...prev]);
+        showToast('¡Plantilla de comidas e insumos importada en Zoho Catalyst!', 'success');
+      } catch (err: any) {
+        showToast(err?.message || 'Error al importar plantillas en el servidor.', 'warning');
       }
     } else {
       setGroceries(templateGroceries);
@@ -1535,187 +1506,94 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
-  // Authentication Operations
+  // Authentication Operations (Zoho Catalyst Native Hosted Login)
   const loginWithGoogle = async (): Promise<{ success: boolean; error?: string }> => {
     try {
-      const result = await signInWithPopup(auth, googleProvider);
-      const user = result.user;
       setIsDemoMode(false);
       localStorage.setItem('vigor_is_demo', 'false');
-      showToast(`¡Sesión iniciada con Google (${user.displayName || user.email})!`, 'success');
+      await authBridge.startHostedLogin('/auth/callback');
       return { success: true };
     } catch (err: any) {
-      console.error('Google Sign In error:', err);
-      return { success: false, error: err.message || 'Error al iniciar sesión con Google' };
+      return {
+        success: false,
+        error: err?.message || 'Error al iniciar Zoho Catalyst Hosted Login.',
+      };
     }
   };
 
   const loginWithEmail = async (
-    email: string,
-    password: string
+    _email: string,
+    _password: string
   ): Promise<{ success: boolean; error?: string; verificationRequired?: boolean }> => {
     try {
-      const result = await signInWithEmailAndPassword(auth, email.trim(), password);
-      const user = result.user;
       setIsDemoMode(false);
       localStorage.setItem('vigor_is_demo', 'false');
-
-      if (!user.emailVerified) {
-        setUnverifiedEmail(user.email || email.trim());
-        setAuthStatus('email_verification_required');
-        return { success: true, verificationRequired: true };
-      }
-
-      // Force ID token renewal to guarantee request.auth.token.email_verified == true in Firestore
-      const tokenResult = await user.getIdTokenResult(true);
-      if (tokenResult.claims.email_verified !== true) {
-        setUnverifiedEmail(user.email || email.trim());
-        setAuthStatus('email_verification_required');
-        return {
-          success: true,
-          verificationRequired: true,
-          error: 'El token de seguridad aún no refleja la confirmación del correo. Por favor reintenta en unos instantes.',
-        };
-      }
-
-      setUnverifiedEmail(null);
-      const prof = await ensureUserProfile(user);
-      setCurrentUser(prof);
-      setAuthStatus('authenticated');
-      showToast(`¡Sesión iniciada (${prof.name})!`, 'success');
+      await authBridge.startHostedLogin('/auth/callback');
       return { success: true, verificationRequired: false };
     } catch (err: any) {
-      console.error('Email login error:', err);
-      let errorMsg = 'Error al iniciar sesión.';
-      if (
-        err.code === 'auth/invalid-credential' ||
-        err.code === 'auth/wrong-password' ||
-        err.code === 'auth/user-not-found'
-      ) {
-        errorMsg = 'Correo electrónico o contraseña incorrectos.';
-      } else if (err.code === 'auth/too-many-requests') {
-        errorMsg = 'Demasiados intentos fallidos. Por favor espera unos minutos o restablece tu contraseña.';
-      } else if (err.code === 'auth/invalid-email') {
-        errorMsg = 'El formato del correo electrónico es inválido.';
-      } else if (err.message) {
-        errorMsg = err.message;
-      }
-      return { success: false, error: errorMsg };
+      return {
+        success: false,
+        error:
+          err?.message ||
+          'El inicio de sesión se realiza mediante Zoho Catalyst Hosted Login (navegación top-level).',
+      };
     }
   };
 
   const registerWithEmail = async (
-    email: string,
-    password: string,
-    fullName: string,
-    role: 'Atleta Pro' | 'Coach' | 'Nutricionista' = 'Atleta Pro'
+    _email: string,
+    _password: string,
+    _fullName: string,
+    _role: 'Atleta Pro' | 'Coach' | 'Nutricionista' = 'Atleta Pro'
   ): Promise<{ success: boolean; error?: string }> => {
-    try {
-      const result = await createUserWithEmailAndPassword(auth, email.trim(), password);
-      const user = result.user;
-
-      // Update Firebase display name
-      await updateProfile(user, { displayName: fullName.trim() });
-
-      // Dispatch security verification email to satisfy Cloud Firestore rules
-      await sendEmailVerification(user);
-
-      setIsDemoMode(false);
-      localStorage.setItem('vigor_is_demo', 'false');
-      setUnverifiedEmail(user.email || email.trim());
-      setAuthStatus('email_verification_required');
-
-      showToast(`Cuenta registrada. Hemos enviado un enlace de confirmación a ${user.email}.`, 'info');
-      return { success: true };
-    } catch (err: any) {
-      console.error('Email registration error:', err);
-      let errorMsg = 'Error al registrar usuario.';
-      if (err.code === 'auth/email-already-in-use') {
-        errorMsg = 'Ya existe una cuenta registrada con este correo electrónico.';
-      } else if (err.code === 'auth/weak-password') {
-        errorMsg = 'La contraseña debe tener al menos 6 caracteres.';
-      } else if (err.code === 'auth/invalid-email') {
-        errorMsg = 'El correo electrónico no es válido.';
-      } else if (err.message) {
-        errorMsg = err.message;
-      }
-      return { success: false, error: errorMsg };
-    }
+    return {
+      success: false,
+      error:
+        'El registro público está deshabilitado. Accede mediante Zoho Catalyst Hosted Login o con una invitación de administrador.',
+    };
   };
 
-  const resetPassword = async (email: string): Promise<{ success: boolean; error?: string }> => {
-    try {
-      await sendPasswordResetEmail(auth, email.trim());
-      showToast('Enlace de restablecimiento enviado a tu correo.', 'info');
-      return { success: true };
-    } catch (err: any) {
-      console.error('Password reset error:', err);
-      let errorMsg = 'Error al enviar enlace de restablecimiento.';
-      if (err.code === 'auth/user-not-found') {
-        errorMsg = 'No existe una cuenta registrada con este correo electrónico.';
-      } else if (err.code === 'auth/invalid-email') {
-        errorMsg = 'El formato del correo electrónico no es válido.';
-      } else if (err.message) {
-        errorMsg = err.message;
-      }
-      return { success: false, error: errorMsg };
-    }
+  const resetPassword = async (_email: string): Promise<{ success: boolean; error?: string }> => {
+    return {
+      success: false,
+      error:
+        'La recuperación de contraseña se gestiona directamente en el portal seguro de Zoho Catalyst Hosted Login.',
+    };
   };
 
   const checkEmailVerification = async (): Promise<{ verified: boolean; error?: string }> => {
-    const user = auth.currentUser;
-    if (!user) {
-      return { verified: false, error: 'No hay sesión de usuario activa.' };
-    }
     try {
-      await user.reload();
-      const refreshedUser = auth.currentUser;
-
-      if (!refreshedUser || !refreshedUser.emailVerified) {
-        // Mantener acceso privado bloqueado
-        return {
-          verified: false,
-          error: 'Aún no hemos detectado la confirmación. Por favor haz clic en el enlace enviado a tu correo y vuelve a presionar este botón.',
-        };
+      let sessionResult;
+      try {
+        sessionResult = await authBridge.establishVigorSession({ mode: 'exchange' });
+      } catch (err) {
+        if (err instanceof CleanSlateRepositoryError && err.code === 'USER_PROFILE_NOT_REGISTERED') {
+          sessionResult = await authBridge.establishVigorSession({ mode: 'bootstrap' });
+        } else {
+          throw err;
+        }
       }
-
-      // Forzar la renovación del ID token para que los claims de Firebase incluyan email_verified: true
-      const tokenResult = await refreshedUser.getIdTokenResult(true);
-
-      if (tokenResult.claims.email_verified !== true) {
-        // No inicializar perfil ni habilitar Firestore si el token renovado aún no contiene el claim
-        return {
-          verified: false,
-          error: 'El token de seguridad aún no refleja la confirmación del correo en los servidores de Firebase. Espera unos segundos y vuelve a comprobar.',
-        };
+      const uid = String(sessionResult.actor?.uid || '');
+      if (!uid) {
+        return { verified: false, error: 'No se pudo identificar la cuenta verificada.' };
       }
-
-      // Con el token renovado, request.auth.token.email_verified == true en Firestore RPCs está garantizado
-      setFbUser({ ...refreshedUser } as FirebaseUser);
-      const prof = await ensureUserProfile(refreshedUser);
-      setCurrentUser(prof);
-      setUnverifiedEmail(null);
-      setAuthStatus('authenticated');
-      setAuthError(null);
-      showToast('¡Correo verificado con éxito! Bienvenido a tu espacio en Cloud Firestore.', 'success');
+      await hydrateRemoteWorkspace(uid, sessionResult.actor);
+      showToast('¡Correo verificado con éxito! Sesión activa en Zoho Catalyst.', 'success');
       return { verified: true };
     } catch (err: any) {
-      console.error('Error during checkEmailVerification token renewal:', err);
-      return { verified: false, error: err.message || 'Error al comprobar verificación de correo y renovar credenciales.' };
+      return {
+        verified: false,
+        error: err?.message || 'Aún no hemos detectado la confirmación del correo en Zoho Catalyst.',
+      };
     }
   };
 
   const sendVerificationEmail = async (): Promise<{ success: boolean; error?: string }> => {
-    if (!auth.currentUser) {
-      return { success: false, error: 'No hay usuario autenticado para enviar verificación.' };
-    }
-    try {
-      await sendEmailVerification(auth.currentUser);
-      showToast('Correo de verificación reenviado. Revisa tu buzón de entrada o spam.', 'info');
-      return { success: true };
-    } catch (err: any) {
-      return { success: false, error: err.message || 'Error al reenviar correo de verificación.' };
-    }
+    return {
+      success: false,
+      error:
+        'El correo de confirmación se envía automáticamente desde Zoho Catalyst Authentication al activar tu cuenta.',
+    };
   };
 
   const startDemoMode = (
@@ -1723,9 +1601,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     name: string = 'Camilo R. (Demo)',
     email: string = 'camilo@vigor.co'
   ) => {
-    // Terminate any active Firebase session immediately to avoid remote write crosstalk
-    fbSignOut(auth).catch(() => {});
-    setFbUser(null);
+    if (sessionUid && !isDemoMode) {
+      authRepo.logout().catch(() => {});
+    }
+    setSessionUid(null);
     setIsDemoMode(true);
     localStorage.setItem('vigor_is_demo', 'true');
     const demoId = name.toLowerCase().includes('sof') ? 'demo_sofia' : 'demo_camilo';
@@ -1733,7 +1612,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       id: demoId,
       name,
       email,
-      avatarUrl: defaultUser.avatarUrl,
+      avatarUrl: DEFAULT_AVATAR_URL,
       role,
       location: 'Bogotá (UTC-5)',
       joinedDate: 'Octubre 2024',
@@ -1742,22 +1621,20 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       goal: 'ganancia_muscular',
     };
     setCurrentUser(demoProfile);
+    setCurrentUserRole('athlete');
 
-    // Isolated demo groceries and meal logs
     const savedGroceries = localStorage.getItem(`vigor_groceries_${demoId}`);
     setGroceries(savedGroceries ? JSON.parse(savedGroceries) : templateGroceries);
 
     const savedMealLogs = localStorage.getItem(`vigor_meal_logs_${demoId}`);
     setMealLogs(savedMealLogs ? JSON.parse(savedMealLogs) : templateMealLogs);
 
-    // Isolated preferences per demo profile
     const savedNotif = localStorage.getItem(`vigor_notif_prefs_${demoId}`);
     setNotificationPreferences(savedNotif ? JSON.parse(savedNotif) : initialNotificationPreferences);
 
     const savedMeal = localStorage.getItem(`vigor_meal_partition_${demoId}`);
     setMealPartition(savedMeal ? JSON.parse(savedMeal) : defaultMealPartition);
 
-    // Isolated demo workout routines per demo profile
     const savedRoutines = localStorage.getItem(`vigor_workout_routines_${demoId}`);
     if (savedRoutines) {
       try {
@@ -1772,10 +1649,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
     const savedActive = localStorage.getItem(`vigor_active_routine_${demoId}`);
     localStorage.setItem(`vigor_active_routine_${demoId}`, savedActive || '');
-    setActiveRoutineId(savedActive || null);
+    setActiveRoutineIdState(savedActive || null);
     setRoutineSyncStatus('synced');
 
-    // Isolated demo executed workouts (Increment 6C/6F)
     const savedExecuted = localStorage.getItem(`vigor_executed_workouts_${demoId}`);
     if (savedExecuted) {
       try {
@@ -1792,7 +1668,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setHasBiometricsConfigured(true);
     setSelectedDate('2024-10-24');
 
-    // Mark as authenticated in demo mode
     localStorage.setItem('vigor_demo_user', JSON.stringify(demoProfile));
     setAuthStatus('authenticated');
     setAuthError(null);
@@ -1814,20 +1689,15 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setIsLoggingOut(true);
 
     try {
-      // 1. Remote Firebase sign-out if active
-      if (auth.currentUser) {
-        await fbSignOut(auth);
+      if (sessionUid && !isDemoMode) {
+        try {
+          await authBridge.logoutAll('/auth/login');
+        } catch {
+          await authRepo.logout().catch(() => {});
+        }
       }
-    } catch (err: any) {
-      console.error('Error during fbSignOut:', err);
-      setIsLoggingOut(false);
-      showToast(`Error al cerrar sesión: ${err.message || 'Error de red'}`, 'warning');
-      return { success: false, error: err.message || 'Error al cerrar sesión' };
-    }
 
-    try {
-      // 2. Clear authentication and session flags
-      setFbUser(null);
+      setSessionUid(null);
       setCurrentUser(null);
       setCurrentUserRole('athlete');
       setUnverifiedEmail(null);
@@ -1835,27 +1705,24 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       setAuthStatus('unauthenticated');
       setAuthError(null);
 
-      // 3. Clear transient session storage keys
       localStorage.removeItem('vigor_is_demo');
       localStorage.removeItem('vigor_auth_user');
       localStorage.removeItem('vigor_demo_user');
       localStorage.removeItem('vigor_active_live_session');
 
-      // 4. Wipe in-memory private caches to prevent data leakage
       setGroceries([]);
       setMealLogs([]);
       setWorkoutHistory([]);
       setWorkoutRoutines([]);
       setExecutedWorkoutsHistory([]);
       setActiveLiveWorkout(null);
-      setActiveRoutineId(null);
+      setActiveRoutineIdState(null);
       setRoutineSyncStatus('idle');
       setRecipes([]);
       setMealPlans({});
       setNotifications([]);
       setHasBiometricsConfigured(false);
 
-      // 5. Navigate to login and sync hash
       setRedirectPath(null);
       setCurrentPath('login');
       if (typeof window !== 'undefined') {
@@ -1864,6 +1731,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
       showToast('Sesión cerrada correctamente', 'info');
       return { success: true };
+    } catch (err: any) {
+      console.error('Error during logout:', err);
+      showToast(`Error al cerrar sesión: ${err?.message || 'Error de red'}`, 'warning');
+      return { success: false, error: err?.message || 'Error al cerrar sesión' };
     } finally {
       setIsLoggingOut(false);
     }
@@ -1874,11 +1745,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const markNotificationAsRead = async (id: string) => {
     setNotifications(prev => prev.map(n => (n.id === id ? { ...n, read: true } : n)));
-    if (fbUser?.uid && !isDemoMode) {
+    if (sessionUid && !isDemoMode) {
       try {
-        await updateDoc(doc(db, 'users', fbUser.uid, 'notifications', id), { read: true });
+        await athleteRepo.markNotificationRead(sessionUid, id, true);
       } catch (err) {
-        handleFirestoreError(err, OperationType.UPDATE, `users/${fbUser.uid}/notifications/${id}`);
+        console.warn('Error marcando notificación como leída:', err);
       }
     }
   };
@@ -1886,21 +1757,23 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const markAllNotificationsAsRead = async () => {
     setNotifications(prev => prev.map(n => ({ ...n, read: true })));
     showToast('Todas las notificaciones marcadas como leídas');
-    if (fbUser?.uid && !isDemoMode) {
-      notifications.forEach(n => {
-        updateDoc(doc(db, 'users', fbUser.uid, 'notifications', n.id), { read: true }).catch(() => {});
-      });
+    if (sessionUid && !isDemoMode) {
+      try {
+        await athleteRepo.markAllNotificationsRead(sessionUid);
+      } catch (err) {
+        console.warn('Error marcando todas las notificaciones como leídas:', err);
+      }
     }
   };
 
   const deleteNotification = async (id: string) => {
     setNotifications(prev => prev.filter(n => n.id !== id));
     showToast('Notificación descartada');
-    if (fbUser?.uid && !isDemoMode) {
+    if (sessionUid && !isDemoMode) {
       try {
-        await deleteDoc(doc(db, 'users', fbUser.uid, 'notifications', id));
+        await athleteRepo.deleteNotification(sessionUid, id);
       } catch (err) {
-        handleFirestoreError(err, OperationType.DELETE, `users/${fbUser.uid}/notifications/${id}`);
+        console.warn('Error eliminando notificación:', err);
       }
     }
   };
@@ -1915,18 +1788,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         : 'vigor_notif_prefs_guest';
       localStorage.setItem(scopeKey, JSON.stringify(next));
 
-      if (fbUser?.uid && !isDemoMode) {
-        setDoc(
-          doc(db, 'users', fbUser.uid, 'preferences', 'settings'),
-          {
-            notificationPreferences: next,
-            userId: fbUser.uid,
-            updatedAt: new Date().toISOString(),
-          },
-          { merge: true }
-        ).catch(err => {
-          handleFirestoreError(err, OperationType.WRITE, `users/${fbUser.uid}/preferences/settings`);
-        });
+      if (sessionUid && !isDemoMode) {
+        athleteRepo
+          .savePreferences(sessionUid, toCleanPreferences(athletePreferences, next, mealPartition))
+          .catch(err => console.warn('Error guardando preferencias de notificación:', err));
       }
       return next;
     });
@@ -1963,9 +1828,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const sendPushAlert = async (title: string, message: string, category: AppNotification['category']) => {
-    const id = `notif-${Date.now()}`;
+    const tempId = `notif-${Date.now()}`;
     const newNotif: AppNotification = {
-      id,
+      id: tempId,
       title,
       message,
       timestamp: 'Ahora mismo',
@@ -1975,19 +1840,22 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     };
     setNotifications(prev => [newNotif, ...prev]);
 
-    if (fbUser?.uid && !isDemoMode) {
+    if (sessionUid && !isDemoMode) {
       try {
-        await setDoc(doc(db, 'users', fbUser.uid, 'notifications', id), {
-          ...newNotif,
-          userId: fbUser.uid,
-          createdAt: new Date().toISOString(),
+        const saved = await athleteRepo.createNotification(sessionUid, {
+          title,
+          message,
+          category,
+          severity: 'info',
+          actionView: toCleanActionView(newNotif.actionPath),
         });
+        const mapped = fromCleanNotification(saved);
+        setNotifications(prev => prev.map(n => (n.id === tempId ? mapped : n)));
       } catch (err) {
-        console.error('Failed to save notification to Firestore:', err);
+        console.warn('Error guardando notificación remota:', err);
       }
     }
 
-    // Browser Notification API for local alert
     if (
       notificationPreferences.pushEnabled &&
       typeof window !== 'undefined' &&
@@ -2005,7 +1873,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     showToast(title, 'info');
   };
 
-  // Biometrics calculation logic & Firestore Persist
+  // Biometrics calculation logic & Catalyst Persist
   const updateBiometrics = async (updates: Partial<BiometricConfig>) => {
     const merged = { ...biometrics, ...updates };
     const bmr = Math.round(10 * merged.weightKg + 6.25 * merged.heightCm - 5 * merged.age + 5);
@@ -2026,21 +1894,14 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     };
 
     setBiometrics(calculated);
+    setHasBiometricsConfigured(true);
     showToast('Parámetros recalculados');
 
-    if (fbUser?.uid && !isDemoMode) {
+    if (sessionUid && !isDemoMode) {
       try {
-        await setDoc(
-          doc(db, 'users', fbUser.uid, 'biometrics', 'current'),
-          {
-            ...calculated,
-            userId: fbUser.uid,
-            updatedAt: new Date().toISOString(),
-          },
-          { merge: true }
-        );
+        await athleteRepo.saveBiometrics(sessionUid, toCleanBiometrics(calculated));
       } catch (err) {
-        handleFirestoreError(err, OperationType.WRITE, `users/${fbUser.uid}/biometrics/current`);
+        console.warn('Error guardando biometría:', err);
       }
     }
   };
@@ -2048,15 +1909,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const resetBiometricsToExcel = async () => {
     setBiometrics(defaultBiometrics);
     showToast('Parámetros restablecidos al libro maestro');
-    if (fbUser?.uid && !isDemoMode) {
+    if (sessionUid && !isDemoMode) {
       try {
-        await setDoc(doc(db, 'users', fbUser.uid, 'biometrics', 'current'), {
-          ...defaultBiometrics,
-          userId: fbUser.uid,
-          updatedAt: new Date().toISOString(),
-        });
+        await athleteRepo.saveBiometrics(sessionUid, toCleanBiometrics(defaultBiometrics));
       } catch (err) {
-        handleFirestoreError(err, OperationType.WRITE, `users/${fbUser.uid}/biometrics/current`);
+        console.warn('Error restableciendo biometría:', err);
       }
     }
   };
@@ -2081,15 +1938,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setBiometrics(reverted);
     showToast('¡Metas nutricionales revertidas a la configuración anterior con éxito!', 'success');
 
-    if (fbUser?.uid && !isDemoMode) {
+    if (sessionUid && !isDemoMode) {
       try {
-        await setDoc(doc(db, 'users', fbUser.uid, 'biometrics', 'current'), {
-          ...reverted,
-          userId: fbUser.uid,
-          updatedAt: new Date().toISOString(),
-        });
+        await athleteRepo.saveBiometrics(sessionUid, toCleanBiometrics(reverted));
       } catch (err) {
-        handleFirestoreError(err, OperationType.WRITE, `users/${fbUser.uid}/biometrics/current`);
+        console.warn('Error revirtiendo biometría:', err);
       }
     }
     return true;
@@ -2105,52 +1958,35 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         : 'vigor_meal_partition_guest';
       localStorage.setItem(scopeKey, JSON.stringify(next));
 
-      if (fbUser?.uid && !isDemoMode) {
-        setDoc(
-          doc(db, 'users', fbUser.uid, 'preferences', 'settings'),
-          {
-            mealPartition: next,
-            userId: fbUser.uid,
-            updatedAt: new Date().toISOString(),
-          },
-          { merge: true }
-        ).catch(err => {
-          handleFirestoreError(err, OperationType.WRITE, `users/${fbUser.uid}/preferences/settings`);
-        });
+      if (sessionUid && !isDemoMode) {
+        athleteRepo
+          .savePreferences(sessionUid, toCleanPreferences(athletePreferences, notificationPreferences, next))
+          .catch(err => console.warn('Error guardando distribución de momentos:', err));
       }
       return next;
     });
     showToast('Distribución de momentos actualizada');
   };
 
-  // Athlete Profile & Onboarding Operations (Increment 7A)
+  // Athlete Profile & Onboarding Operations
   const updateAthleteProfile = async (updates: Partial<UserProfile>): Promise<{ success: boolean; error?: string }> => {
-    const uid = fbUser?.uid || currentUser?.id;
+    const uid = sessionUid || currentUser?.id;
     if (!uid || !currentUser) return { success: false, error: 'No hay usuario autenticado.' };
 
     const merged: UserProfile = { ...currentUser, ...updates };
     setCurrentUser(merged);
 
-    if (fbUser && !isDemoMode) {
+    if (sessionUid && !isDemoMode) {
       try {
-        const userRef = doc(db, 'users', uid);
-        await setDoc(
-          userRef,
-          {
-            name: merged.name,
-            location: merged.location,
-            avatarUrl: merged.avatarUrl,
-            role: merged.role,
-            goal: merged.goal || athletePreferences.trainingGoal,
-            updatedAt: new Date().toISOString(),
-          },
-          { merge: true }
-        );
-        showToast('Perfil actualizado en Cloud Firestore', 'success');
+        const patch = buildProfileSelfPatch(updates);
+        if (Object.keys(patch).length > 0) {
+          const updatedModel = await athleteRepo.updateOwnProfile(uid, patch);
+          setCurrentUser(fromCleanProfile(updatedModel));
+        }
+        showToast('Perfil actualizado en Zoho Catalyst', 'success');
         return { success: true };
       } catch (err: any) {
-        handleFirestoreError(err, OperationType.UPDATE, `users/${uid}`);
-        return { success: false, error: err.message };
+        return { success: false, error: err?.message || 'Error al actualizar perfil.' };
       }
     } else {
       localStorage.setItem('vigor_demo_user', JSON.stringify(merged));
@@ -2159,33 +1995,32 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
-  const updateAthletePreferences = async (updates: Partial<AthletePreferences>): Promise<{ success: boolean; error?: string }> => {
-    const uid = fbUser?.uid || currentUser?.id;
+  const updateAthletePreferences = async (
+    updates: Partial<AthletePreferences>
+  ): Promise<{ success: boolean; error?: string }> => {
+    const uid = sessionUid || currentUser?.id;
     if (!uid) return { success: false, error: 'No hay usuario autenticado.' };
 
-    const merged: AthletePreferences = { ...athletePreferences, ...updates, updatedAt: new Date().toISOString() };
+    const merged: AthletePreferences = {
+      ...athletePreferences,
+      ...updates,
+      updatedAt: new Date().toISOString(),
+    };
     setAthletePreferences(merged);
 
     const scopeKey = isDemoMode ? `vigor_athlete_prefs_${uid}` : `vigor_athlete_prefs_uid_${uid}`;
     localStorage.setItem(scopeKey, JSON.stringify(merged));
 
-    if (fbUser && !isDemoMode) {
+    if (sessionUid && !isDemoMode) {
       try {
-        const prefRef = doc(db, 'users', uid, 'preferences', 'settings');
-        await setDoc(
-          prefRef,
-          {
-            athletePreferences: merged,
-            userId: uid,
-            updatedAt: new Date().toISOString(),
-          },
-          { merge: true }
+        await athleteRepo.savePreferences(
+          uid,
+          toCleanPreferences(merged, notificationPreferences, mealPartition)
         );
-        showToast('Preferencias guardadas en Cloud Firestore', 'success');
+        showToast('Preferencias guardadas en Zoho Catalyst', 'success');
         return { success: true };
       } catch (err: any) {
-        handleFirestoreError(err, OperationType.WRITE, `users/${uid}/preferences/settings`);
-        return { success: false, error: err.message };
+        return { success: false, error: err?.message || 'Error guardando preferencias.' };
       }
     } else {
       showToast('Preferencias guardadas en modo demo', 'success');
@@ -2201,22 +2036,28 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       biometrics?: Partial<BiometricConfig>;
     }
   ) => {
-    const uid = fbUser?.uid || currentUser?.id;
+    const uid = sessionUid || currentUser?.id;
     if (!uid) return;
 
+    let nextPrefs = athletePreferences;
     if (partialData?.preferences) {
-      setAthletePreferences(prev => ({
-        ...prev,
+      nextPrefs = {
+        ...athletePreferences,
         ...partialData.preferences,
         onboardingStep: step,
-      }));
+      };
+      setAthletePreferences(nextPrefs);
     }
     if (partialData?.profile && currentUser) {
-      setCurrentUser(prev => prev ? {
-        ...prev,
-        ...partialData.profile,
-        onboardingStep: step,
-      } : null);
+      setCurrentUser(prev =>
+        prev
+          ? {
+              ...prev,
+              ...partialData.profile,
+              onboardingStep: step,
+            }
+          : null
+      );
     }
     if (partialData?.biometrics) {
       setBiometrics(prev => ({
@@ -2225,22 +2066,18 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       }));
     }
 
-    if (fbUser && !isDemoMode) {
+    if (sessionUid && !isDemoMode) {
       try {
-        const userRef = doc(db, 'users', uid);
-        await updateDoc(userRef, {
+        const profilePatch = buildProfileSelfPatch({
+          ...(partialData?.profile || {}),
           onboardingStep: step,
-          updatedAt: new Date().toISOString(),
         });
-        const prefRef = doc(db, 'users', uid, 'preferences', 'settings');
-        await setDoc(
-          prefRef,
-          {
-            'athletePreferences.onboardingStep': step,
-            userId: uid,
-            updatedAt: new Date().toISOString(),
-          },
-          { merge: true }
+        if (Object.keys(profilePatch).length > 0) {
+          await athleteRepo.updateOwnProfile(uid, profilePatch);
+        }
+        await athleteRepo.savePreferences(
+          uid,
+          toCleanPreferences(nextPrefs, notificationPreferences, mealPartition)
         );
       } catch (e) {
         console.warn('Partial onboarding step save notice:', e);
@@ -2254,12 +2091,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     preferences: Partial<AthletePreferences>;
   }): Promise<{ success: boolean; error?: string }> => {
     try {
-      const uid = fbUser?.uid || currentUser?.id;
+      const uid = sessionUid || currentUser?.id;
       if (!uid) {
         return { success: false, error: 'No hay usuario autenticado' };
       }
 
-      // 1. Recalculate biometrics
       const mergedBio = { ...biometrics, ...data.biometrics };
       const bmr = Math.round(10 * mergedBio.weightKg + 6.25 * mergedBio.heightCm - 5 * mergedBio.age + 5);
       const tdee = Math.round(bmr * mergedBio.palFactor);
@@ -2278,7 +2114,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         targetCarbsG,
       };
 
-      // 2. Prepare merged preferences
       const updatedAthletePrefs: AthletePreferences = {
         ...athletePreferences,
         ...data.preferences,
@@ -2287,8 +2122,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         updatedAt: new Date().toISOString(),
       };
 
-      // 3. Prepare merged profile
-      const updatedProfile: UserProfile = {
+      let updatedProfile: UserProfile = {
         ...(currentUser || defaultUser),
         ...data.profile,
         id: uid,
@@ -2296,56 +2130,20 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         onboardingStep: 6,
       };
 
-      if (fbUser && !isDemoMode) {
-        // Multi-document atomic writes in Cloud Firestore
-        const batch = writeBatch(db);
-
-        // A. Update users/{uid}
-        const userRef = doc(db, 'users', uid);
-        batch.set(
-          userRef,
-          {
-            name: updatedProfile.name,
-            email: updatedProfile.email,
-            role: updatedProfile.role,
-            avatarUrl: updatedProfile.avatarUrl,
-            location: updatedProfile.location,
-            onboardingCompleted: true,
-            onboardingStep: 6,
-            goal: data.profile.goal || updatedAthletePrefs.trainingGoal,
-            updatedAt: new Date().toISOString(),
-          },
-          { merge: true }
-        );
-
-        // B. Update biometrics/current
-        const bioRef = doc(db, 'users', uid, 'biometrics', 'current');
-        batch.set(
-          bioRef,
-          {
-            ...updatedBio,
-            userId: uid,
-            updatedAt: new Date().toISOString(),
-          },
-          { merge: true }
-        );
-
-        // C. Update preferences/settings
-        const prefRef = doc(db, 'users', uid, 'preferences', 'settings');
-        batch.set(
-          prefRef,
-          {
-            athletePreferences: updatedAthletePrefs,
-            userId: uid,
-            updatedAt: new Date().toISOString(),
-          },
-          { merge: true }
-        );
-
-        await batch.commit();
+      if (sessionUid && !isDemoMode) {
+        const result = await athleteRepo.completeOnboarding(uid, {
+          displayName: (updatedProfile.name || 'Atleta Vigor').trim(),
+          goal: (data.profile.goal || updatedAthletePrefs.trainingGoal || 'ganancia_muscular') as UserAccountModel['goal'],
+          biometrics: toCleanBiometrics(updatedBio),
+          preferences: toCleanPreferences(updatedAthletePrefs, notificationPreferences, mealPartition),
+        });
+        updatedProfile = {
+          ...fromCleanProfile(result.profile),
+          onboardingCompleted: true,
+          onboardingStep: 6,
+        };
       }
 
-      // Update in-memory state
       setBiometrics(updatedBio);
       setAthletePreferences(updatedAthletePrefs);
       setCurrentUser(updatedProfile);
@@ -2364,11 +2162,14 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       return { success: true };
     } catch (err: any) {
       console.error('Error completing onboarding:', err);
-      return { success: false, error: err.message || 'Error al persistir la configuración en Cloud Firestore' };
+      return {
+        success: false,
+        error: err?.message || 'Error al persistir la configuración en Zoho Catalyst',
+      };
     }
   };
 
-  // Groceries CRUD with Firestore
+  // Groceries CRUD
   const toggleGroceryStatus = async (id: string) => {
     const item = groceries.find(g => g.id === id);
     if (!item) return;
@@ -2376,13 +2177,13 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     setGroceries(prev => prev.map(g => (g.id === id ? { ...g, status: nextStatus } : g)));
 
-    if (fbUser?.uid && !isDemoMode) {
+    if (sessionUid && !isDemoMode) {
       try {
-        await updateDoc(doc(db, 'users', fbUser.uid, 'groceries', id), {
-          status: nextStatus,
+        await athleteRepo.toggleGroceryStatus(sessionUid, id, {
+          status: nextStatus === 'completed' ? 'bought' : 'pending',
         });
       } catch (err) {
-        handleFirestoreError(err, OperationType.UPDATE, `users/${fbUser.uid}/groceries/${id}`);
+        console.warn('Error actualizando estado de compra:', err);
       }
     }
   };
@@ -2393,19 +2194,20 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       ...itemData,
       id,
       status: 'pending',
+      origin: itemData.origin ?? 'manual',
     };
     setGroceries(prev => [newItem, ...prev]);
     showToast(`"${newItem.name}" añadido a la lista`);
 
-    if (fbUser?.uid && !isDemoMode) {
+    if (sessionUid && !isDemoMode) {
       try {
-        await setDoc(doc(db, 'users', fbUser.uid, 'groceries', id), {
-          ...newItem,
-          userId: fbUser.uid,
-          createdAt: new Date().toISOString(),
-        });
+        const saved = await athleteRepo.addManualGrocery(sessionUid, toCleanGrocery(newItem));
+        if (saved.id && saved.id !== id) {
+          const mapped = fromCleanGrocery(saved);
+          setGroceries(prev => prev.map(g => (g.id === id ? mapped : g)));
+        }
       } catch (err) {
-        handleFirestoreError(err, OperationType.CREATE, `users/${fbUser.uid}/groceries/${id}`);
+        console.warn('Error añadiendo insumo remoto:', err);
       }
     }
   };
@@ -2434,20 +2236,18 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     );
     showToast('Insumo personalizado y guardado');
 
-    if (fbUser?.uid && !isDemoMode) {
+    if (sessionUid && !isDemoMode) {
       try {
-        const updatePayload: Record<string, any> = {
+        await athleteRepo.toggleGroceryStatus(sessionUid, id, {
           name,
           quantity,
           unit,
           isCustomized: true,
-        };
-        if (department) updatePayload.department = department;
-        if (notes !== undefined) updatePayload.notes = notes;
-
-        await updateDoc(doc(db, 'users', fbUser.uid, 'groceries', id), updatePayload);
+          ...(department ? { department } : {}),
+          ...(notes !== undefined ? { notes } : {}),
+        });
       } catch (err) {
-        handleFirestoreError(err, OperationType.UPDATE, `users/${fbUser.uid}/groceries/${id}`);
+        console.warn('Error editando insumo remoto:', err);
       }
     }
   };
@@ -2462,14 +2262,14 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     );
     showToast(`Cantidad de "${item.name}" restablecida al cálculo del menú (${revertedQuantity} ${item.unit})`);
 
-    if (fbUser?.uid && !isDemoMode) {
+    if (sessionUid && !isDemoMode) {
       try {
-        await updateDoc(doc(db, 'users', fbUser.uid, 'groceries', id), {
+        await athleteRepo.toggleGroceryStatus(sessionUid, id, {
           quantity: revertedQuantity,
           isCustomized: false,
         });
       } catch (err) {
-        handleFirestoreError(err, OperationType.UPDATE, `users/${fbUser.uid}/groceries/${id}`);
+        console.warn('Error restableciendo insumo remoto:', err);
       }
     }
   };
@@ -2478,24 +2278,25 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setGroceries(prev => prev.filter(item => item.id !== id));
     showToast('Insumo eliminado de la lista');
 
-    if (fbUser?.uid && !isDemoMode) {
+    if (sessionUid && !isDemoMode) {
       try {
-        await deleteDoc(doc(db, 'users', fbUser.uid, 'groceries', id));
+        await athleteRepo.deleteGrocery(sessionUid, id);
       } catch (err) {
-        handleFirestoreError(err, OperationType.DELETE, `users/${fbUser.uid}/groceries/${id}`);
+        console.warn('Error eliminando insumo remoto:', err);
       }
     }
   };
 
   const clearCompletedGroceries = async () => {
-    const toDelete = groceries.filter(item => item.status === 'completed');
     setGroceries(prev => prev.filter(item => item.status !== 'completed'));
     showToast('Insumos completados eliminados');
 
-    if (fbUser?.uid && !isDemoMode) {
-      toDelete.forEach(item => {
-        deleteDoc(doc(db, 'users', fbUser.uid, 'groceries', item.id)).catch(() => {});
-      });
+    if (sessionUid && !isDemoMode) {
+      try {
+        await athleteRepo.clearCompletedGroceries(sessionUid);
+      } catch (err) {
+        console.warn('Error limpiando compras completadas:', err);
+      }
     }
   };
 
@@ -2503,12 +2304,12 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     await syncMealPlanToGroceries(currentMealPlan);
   };
 
-  // Meal Logs CRUD with Firestore
+  // Meal Logs CRUD
   const addMealLog = async (itemData: Omit<MealLogItem, 'id'>) => {
-    const id = `log-${Date.now()}`;
+    const tempId = `log-${Date.now()}`;
     const newLog: MealLogItem = {
       ...itemData,
-      id,
+      id: tempId,
     };
     setMealLogs(prev => [newLog, ...prev]);
     showToast('¡Comida registrada exitosamente!');
@@ -2519,15 +2320,15 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       'nutricion'
     );
 
-    if (fbUser?.uid && !isDemoMode) {
+    if (sessionUid && !isDemoMode) {
       try {
-        await setDoc(doc(db, 'users', fbUser.uid, 'mealLogs', id), {
-          ...newLog,
-          userId: fbUser.uid,
-          createdAt: new Date().toISOString(),
-        });
+        const saved = await athleteRepo.logMeal(sessionUid, toCleanMealLog(newLog));
+        if (saved.id && saved.id !== tempId) {
+          const mapped = fromCleanMealLog(saved);
+          setMealLogs(prev => prev.map(m => (m.id === tempId ? mapped : m)));
+        }
       } catch (err) {
-        handleFirestoreError(err, OperationType.CREATE, `users/${fbUser.uid}/mealLogs/${id}`);
+        console.warn('Error guardando comida en Catalyst:', err);
       }
     }
   };
@@ -2536,11 +2337,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setMealLogs(prev => prev.filter(item => item.id !== id));
     showToast('Registro de comida eliminado');
 
-    if (fbUser?.uid && !isDemoMode) {
+    if (sessionUid && !isDemoMode) {
       try {
-        await deleteDoc(doc(db, 'users', fbUser.uid, 'mealLogs', id));
+        await athleteRepo.deleteMeal(sessionUid, id);
       } catch (err) {
-        handleFirestoreError(err, OperationType.DELETE, `users/${fbUser.uid}/mealLogs/${id}`);
+        console.warn('Error eliminando comida en Catalyst:', err);
       }
     }
   };
@@ -2550,10 +2351,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     if (!item) return;
     const now = new Date();
     const dateTime = now.toISOString().slice(0, 16);
-    const newId = `log-${Date.now()}`;
+    const tempId = `log-${Date.now()}`;
     const duplicated: MealLogItem = {
       ...item,
-      id: newId,
+      id: tempId,
       dateTime,
       title: `${item.title} (Copia)`,
       source: 'Manual',
@@ -2561,15 +2362,15 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setMealLogs(prev => [duplicated, ...prev]);
     showToast('Comida duplicada al día actual');
 
-    if (fbUser?.uid && !isDemoMode) {
+    if (sessionUid && !isDemoMode) {
       try {
-        await setDoc(doc(db, 'users', fbUser.uid, 'mealLogs', newId), {
-          ...duplicated,
-          userId: fbUser.uid,
-          createdAt: new Date().toISOString(),
-        });
+        const saved = await athleteRepo.logMeal(sessionUid, toCleanMealLog(duplicated));
+        if (saved.id && saved.id !== tempId) {
+          const mapped = fromCleanMealLog(saved);
+          setMealLogs(prev => prev.map(m => (m.id === tempId ? mapped : m)));
+        }
       } catch (err) {
-        handleFirestoreError(err, OperationType.CREATE, `users/${fbUser.uid}/mealLogs/${newId}`);
+        console.warn('Error duplicando comida en Catalyst:', err);
       }
     }
   };
@@ -2599,7 +2400,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const todaySummary = selectedDaySummary;
   const selectedDateFormatted = formatSpanishDate(selectedDate);
 
-  // Recipe Library & Weekly Meal Plans (Increment 4)
+  // Recipe Library & Weekly Meal Plans
   const currentMealPlan = useMemo<WeeklyMealPlan>(() => {
     if (mealPlans[activeWeekStart]) {
       return mealPlans[activeWeekStart];
@@ -2627,14 +2428,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setRecipes(prev => [newRecipe, ...prev]);
     showToast(`Receta "${newRecipe.name}" guardada con éxito`, 'success');
 
-    if (fbUser?.uid && !isDemoMode) {
+    if (sessionUid && !isDemoMode) {
       try {
-        await setDoc(doc(db, 'users', fbUser.uid, 'recipes', id), {
-          ...newRecipe,
-          userId: fbUser.uid,
-        });
+        await athleteRepo.saveRecipe(sessionUid, toCleanRecipe(newRecipe));
       } catch (err) {
-        handleFirestoreError(err, OperationType.CREATE, `users/${fbUser.uid}/recipes/${id}`);
+        console.warn('Error guardando receta en Catalyst:', err);
       }
     } else {
       localStorage.setItem('vigor_recipes_demo', JSON.stringify([newRecipe, ...recipes]));
@@ -2646,10 +2444,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const updateRecipe = async (id: string, updates: Partial<Recipe>): Promise<void> => {
     const nowIso = new Date().toISOString();
     const fullUpdates = { ...updates, updatedAt: nowIso };
+    const targetExisting = recipes.find(r => r.id === id);
 
     setRecipes(prev => prev.map(r => (r.id === id ? { ...r, ...fullUpdates } : r)));
 
-    // Propagar las modificaciones de la receta a los slots planificados en los menús semanales
     setMealPlans(prevPlans => {
       const updated = { ...prevPlans };
       let anyPlanChanged = false;
@@ -2708,11 +2506,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     showToast('Receta actualizada con éxito', 'success');
 
-    if (fbUser?.uid && !isDemoMode) {
+    if (sessionUid && !isDemoMode && targetExisting) {
       try {
-        await updateDoc(doc(db, 'users', fbUser.uid, 'recipes', id), fullUpdates);
+        await athleteRepo.saveRecipe(sessionUid, toCleanRecipe({ ...targetExisting, ...fullUpdates }));
       } catch (err) {
-        handleFirestoreError(err, OperationType.UPDATE, `users/${fbUser.uid}/recipes/${id}`);
+        console.warn('Error actualizando receta en Catalyst:', err);
       }
     } else {
       const updatedList = recipes.map(r => (r.id === id ? { ...r, ...fullUpdates } : r));
@@ -2724,11 +2522,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setRecipes(prev => prev.filter(r => r.id !== id));
     showToast('Receta eliminada de la biblioteca');
 
-    if (fbUser?.uid && !isDemoMode) {
+    if (sessionUid && !isDemoMode) {
       try {
-        await deleteDoc(doc(db, 'users', fbUser.uid, 'recipes', id));
+        await athleteRepo.deleteRecipe(sessionUid, id);
       } catch (err) {
-        handleFirestoreError(err, OperationType.DELETE, `users/${fbUser.uid}/recipes/${id}`);
+        console.warn('Error eliminando receta en Catalyst:', err);
       }
     } else {
       const filtered = recipes.filter(r => r.id !== id);
@@ -2805,14 +2603,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }));
     showToast(`"${recipe.name}" asignada a ${moment}`, 'success');
 
-    if (fbUser?.uid && !isDemoMode) {
+    if (sessionUid && !isDemoMode) {
       try {
-        await setDoc(doc(db, 'users', fbUser.uid, 'mealPlans', planId), {
-          ...updatedPlan,
-          userId: fbUser.uid,
-        });
+        await athleteRepo.saveMealPlan(sessionUid, toCleanMealPlan(updatedPlan));
       } catch (err) {
-        handleFirestoreError(err, OperationType.CREATE, `users/${fbUser.uid}/mealPlans/${planId}`);
+        console.warn('Error guardando plan semanal en Catalyst:', err);
       }
     }
   };
@@ -2854,14 +2649,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }));
     showToast(`Horario ${moment} desasignado`);
 
-    if (fbUser?.uid && !isDemoMode) {
+    if (sessionUid && !isDemoMode) {
       try {
-        await setDoc(doc(db, 'users', fbUser.uid, 'mealPlans', planId), {
-          ...updatedPlan,
-          userId: fbUser.uid,
-        });
+        await athleteRepo.saveMealPlan(sessionUid, toCleanMealPlan(updatedPlan));
       } catch (err) {
-        handleFirestoreError(err, OperationType.UPDATE, `users/${fbUser.uid}/mealPlans/${planId}`);
+        console.warn('Error actualizando plan semanal en Catalyst:', err);
       }
     }
   };
@@ -2873,7 +2665,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       return;
     }
 
-    // Prevención de duplicados accidentales: verificar si ya fue registrada para esta fecha y momento
     const isAlreadyLogged = mealLogs.some(
       m => getLocalDateString(m.dateTime) === date && m.moment === moment && m.title === recipe.name
     );
@@ -2928,42 +2719,20 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     setGroceries(updatedGroceries);
 
-    if (fbUser?.uid && !isDemoMode) {
+    if (sessionUid && !isDemoMode) {
       try {
-        // Escritura y eliminación atómica mediante writeBatch para eliminar el riesgo de resultados parciales
-        const batch = writeBatch(db);
-
-        // 1. Guardar/actualizar cada insumo en Firestore respetando isValidGrocery
-        for (const item of updatedGroceries) {
-          const docRef = doc(db, 'users', fbUser.uid, 'groceries', item.id);
-          const cleanItem = Object.fromEntries(
-            Object.entries({
-              ...item,
-              userId: fbUser.uid,
-              updatedAt: new Date().toISOString(),
-            }).filter(([_, v]) => v !== undefined)
-          );
-          batch.set(docRef, cleanItem, { merge: true });
-        }
-
-        // 2. Eliminar de Firestore los insumos planificados pendientes que fueron retirados
-        const activeIds = new Set(updatedGroceries.map(g => g.id));
-        for (const oldItem of groceries) {
-          if (!activeIds.has(oldItem.id)) {
-            const oldRef = doc(db, 'users', fbUser.uid, 'groceries', oldItem.id);
-            batch.delete(oldRef);
-          }
-        }
-
-        await batch.commit();
+        await athleteRepo.syncGroceries(
+          sessionUid,
+          updatedGroceries.map(toCleanGrocery),
+          { replaceExisting: true }
+        );
       } catch (err) {
-        handleFirestoreError(err, OperationType.WRITE, `users/${fbUser.uid}/groceries`);
+        console.warn('Error sincronizando compras en Catalyst:', err);
       }
     } else if (currentUser?.id) {
       localStorage.setItem(`vigor_groceries_${currentUser.id}`, JSON.stringify(updatedGroceries));
     }
 
-    // Notificaciones comprensibles según resultado
     if (syncSummary.addedCount === 0 && syncSummary.updatedCount === 0 && syncSummary.retiredCount === 0) {
       showToast(`Lista de compras al día con el menú (${syncSummary.totalItems} insumos verificados)`, 'info');
     } else {
@@ -3006,10 +2775,12 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   // Workout Gym Mode commit
   const commitActiveSet = async (weight: number, reps: number, rir: number) => {
     const e1rm = Math.round(weight * (1 + reps / 30) * 10) / 10;
+    let recordedSetNumber = 1;
     setActiveWorkout(prev => {
       const nextSets = [...prev.sets];
       const activeIdx = nextSets.findIndex(s => !s.completed);
       if (activeIdx !== -1) {
+        recordedSetNumber = nextSets[activeIdx].setNumber;
         nextSets[activeIdx] = {
           ...nextSets[activeIdx],
           weightKg: weight,
@@ -3028,7 +2799,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const sessionId = `set-${Date.now()}`;
     const newRecord: WorkoutSessionRecord = {
       id: sessionId,
-      userId: fbUser?.uid || 'demo_user',
+      userId: sessionUid || 'demo_user',
       exerciseId: activeWorkout.id,
       exerciseName: activeWorkout.name,
       date: new Date().toISOString(),
@@ -3039,6 +2810,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       completed: true,
       createdAt: new Date().toISOString(),
       executedWorkoutId: activeLiveWorkout?.id,
+      setNumber: recordedSetNumber,
+      setType: 'effective',
     };
 
     setWorkoutHistory(prev => [newRecord, ...prev]);
@@ -3051,35 +2824,42 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       );
     }
 
-    if (fbUser?.uid && !isDemoMode) {
-      if (activeLiveWorkout?.id) {
-        try {
-          await setDoc(doc(db, 'users', fbUser.uid, 'workoutSessions', sessionId), newRecord);
-        } catch (err) {
-          console.error('Failed to log set in Firestore:', err);
-        }
-      } else {
-        // En cumplimiento de la política de cero series huérfanas, las series remotas requieren sesión activa
-        console.warn('Serie registrada localmente. Para sincronizar con Firestore, inicia un entrenamiento en vivo.');
+    if (sessionUid && !isDemoMode && activeLiveWorkout?.id) {
+      try {
+        await athleteRepo.logWorkoutSet(sessionUid, {
+          id: sessionId,
+          executedWorkoutId: activeLiveWorkout.id,
+          exerciseId: activeWorkout.id,
+          exerciseName: activeWorkout.name,
+          muscleGroup: 'espalda',
+          setNumber: recordedSetNumber,
+          type: 'effective',
+          weightKg: weight,
+          reps,
+          rir,
+          completed: true,
+        });
+      } catch (err) {
+        enqueueOfflineSet(newRecord, false);
+        setPendingOfflineSetsCount(getOfflinePendingSets(sessionUid, false).length);
+        console.warn('Serie encolada localmente tras fallo de red:', err);
       }
     }
   };
 
   const addCardioSession = async (session: Omit<CardioSession, 'id'>) => {
-    const id = `cardio-${Date.now()}`;
-    const newSession: CardioSession = { ...session, id };
+    const tempId = `cardio-${Date.now()}`;
+    const newSession: CardioSession = { ...session, id: tempId };
     setCardioSessions(prev => [newSession, ...prev]);
     showToast(`Sesión de cardio "${session.title}" guardada con éxito`);
 
-    if (fbUser?.uid && !isDemoMode) {
+    if (sessionUid && !isDemoMode) {
       try {
-        await setDoc(doc(db, 'users', fbUser.uid, 'cardioSessions', id), {
-          ...newSession,
-          userId: fbUser.uid,
-          createdAt: new Date().toISOString(),
-        });
+        const saved = await athleteRepo.addCardioSession(sessionUid, toCleanCardioSession(session));
+        const mapped = fromCleanCardioSession(saved);
+        setCardioSessions(prev => prev.map(c => (c.id === tempId ? mapped : c)));
       } catch (err) {
-        handleFirestoreError(err, OperationType.CREATE, `users/${fbUser.uid}/cardioSessions/${id}`);
+        console.warn('Error guardando sesión de cardio en Catalyst:', err);
       }
     }
   };
@@ -3097,15 +2877,15 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setIsRestTimerRunning(prev => !prev);
   };
 
-  // Workout Routines Operations (Increment 6B)
+  // Workout Routines Operations
   const createRoutineFromTemplate = async (templateId: string, customName?: string): Promise<string> => {
-    const uid = fbUser?.uid || currentUser?.id || 'demo_camilo';
+    const uid = sessionUid || currentUser?.id || 'demo_camilo';
     const newRoutine = instantiateRoutineFromTemplate(templateId, uid, customName);
 
     setWorkoutRoutines(prev => [newRoutine, ...prev.filter(r => r.id !== newRoutine.id)]);
-    setActiveRoutineId(newRoutine.id);
+    setActiveRoutineIdState(newRoutine.id);
 
-    if (isDemoMode || !fbUser?.uid) {
+    if (isDemoMode || !sessionUid) {
       const demoKey = `vigor_workout_routines_${uid}`;
       const updated = [newRoutine, ...workoutRoutines.filter(r => r.id !== newRoutine.id)];
       localStorage.setItem(demoKey, JSON.stringify(updated));
@@ -3117,17 +2897,12 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     setRoutineSyncStatus('saving');
     try {
-      await setDoc(doc(db, 'users', fbUser.uid, 'workoutRoutines', newRoutine.id), {
-        ...newRoutine,
-        userId: fbUser.uid,
-        updatedAt: new Date().toISOString(),
-      });
+      await athleteRepo.saveWorkoutRoutine(sessionUid, toCleanWorkoutRoutine(newRoutine));
       setRoutineSyncStatus('synced');
       showToast(`Rutina "${newRoutine.name}" guardada en la nube`, 'success');
       return newRoutine.id;
     } catch (err) {
       setRoutineSyncStatus('error');
-      handleFirestoreError(err, OperationType.CREATE, `users/${fbUser.uid}/workoutRoutines/${newRoutine.id}`);
       throw err;
     }
   };
@@ -3135,7 +2910,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const createCustomRoutine = async (
     routineData: Omit<WorkoutRoutine, 'id' | 'userId' | 'createdAt' | 'updatedAt'>
   ): Promise<string> => {
-    const uid = fbUser?.uid || currentUser?.id || 'demo_camilo';
+    const uid = sessionUid || currentUser?.id || 'demo_camilo';
     const now = new Date().toISOString();
     const newId = `routine_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const newRoutine: WorkoutRoutine = {
@@ -3147,9 +2922,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     };
 
     setWorkoutRoutines(prev => [newRoutine, ...prev]);
-    setActiveRoutineId(newRoutine.id);
+    setActiveRoutineIdState(newRoutine.id);
 
-    if (isDemoMode || !fbUser?.uid) {
+    if (isDemoMode || !sessionUid) {
       const demoKey = `vigor_workout_routines_${uid}`;
       const updated = [newRoutine, ...workoutRoutines];
       localStorage.setItem(demoKey, JSON.stringify(updated));
@@ -3161,49 +2936,43 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     setRoutineSyncStatus('saving');
     try {
-      await setDoc(doc(db, 'users', fbUser.uid, 'workoutRoutines', newId), {
-        ...newRoutine,
-        userId: fbUser.uid,
-        updatedAt: now,
-      });
+      await athleteRepo.saveWorkoutRoutine(sessionUid, toCleanWorkoutRoutine(newRoutine));
       setRoutineSyncStatus('synced');
       showToast(`Rutina "${newRoutine.name}" guardada en la nube`, 'success');
       return newRoutine.id;
     } catch (err) {
       setRoutineSyncStatus('error');
-      handleFirestoreError(err, OperationType.CREATE, `users/${fbUser.uid}/workoutRoutines/${newId}`);
       throw err;
     }
   };
 
   const updateWorkoutRoutine = async (id: string, updates: Partial<WorkoutRoutine>): Promise<void> => {
     const now = new Date().toISOString();
+    let updatedTarget: WorkoutRoutine | null = null;
     const updatedList = workoutRoutines.map(r => {
       if (r.id === id) {
-        return { ...r, ...updates, updatedAt: now };
+        updatedTarget = { ...r, ...updates, updatedAt: now };
+        return updatedTarget;
       }
       return r;
     });
     setWorkoutRoutines(updatedList);
 
-    const uid = fbUser?.uid || currentUser?.id || 'demo_camilo';
-    if (isDemoMode || !fbUser?.uid) {
+    const uid = sessionUid || currentUser?.id || 'demo_camilo';
+    if (isDemoMode || !sessionUid) {
       const demoKey = `vigor_workout_routines_${uid}`;
       localStorage.setItem(demoKey, JSON.stringify(updatedList));
       setRoutineSyncStatus('synced');
       return;
     }
 
+    if (!updatedTarget) return;
     setRoutineSyncStatus('saving');
     try {
-      await updateDoc(doc(db, 'users', fbUser.uid, 'workoutRoutines', id), {
-        ...updates,
-        updatedAt: now,
-      });
+      await athleteRepo.saveWorkoutRoutine(sessionUid, toCleanWorkoutRoutine(updatedTarget));
       setRoutineSyncStatus('synced');
     } catch (err) {
       setRoutineSyncStatus('error');
-      handleFirestoreError(err, OperationType.UPDATE, `users/${fbUser.uid}/workoutRoutines/${id}`);
       throw err;
     }
   };
@@ -3212,12 +2981,12 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const target = workoutRoutines.find(r => r.id === id);
     const filtered = workoutRoutines.filter(r => r.id !== id);
     setWorkoutRoutines(filtered);
-    if (activeRoutineId === id) {
-      setActiveRoutineId(filtered[0]?.id || null);
+    if (activeRoutineIdState === id) {
+      setActiveRoutineIdState(filtered[0]?.id || null);
     }
 
-    const uid = fbUser?.uid || currentUser?.id || 'demo_camilo';
-    if (isDemoMode || !fbUser?.uid) {
+    const uid = sessionUid || currentUser?.id || 'demo_camilo';
+    if (isDemoMode || !sessionUid) {
       const demoKey = `vigor_workout_routines_${uid}`;
       localStorage.setItem(demoKey, JSON.stringify(filtered));
       showToast(`Rutina "${target?.name || ''}" eliminada`, 'info');
@@ -3226,12 +2995,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     setRoutineSyncStatus('saving');
     try {
-      await deleteDoc(doc(db, 'users', fbUser.uid, 'workoutRoutines', id));
+      await athleteRepo.deleteWorkoutRoutine(sessionUid, id);
       setRoutineSyncStatus('synced');
       showToast(`Rutina "${target?.name || ''}" eliminada de la nube`, 'info');
     } catch (err) {
       setRoutineSyncStatus('error');
-      handleFirestoreError(err, OperationType.DELETE, `users/${fbUser.uid}/workoutRoutines/${id}`);
       throw err;
     }
   };
@@ -3359,7 +3127,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const saveMesocycleRoutine = async (program: MesocycleRoutine, activateNow: boolean = true): Promise<string> => {
-    const uid = fbUser?.uid || currentUser?.id || 'demo_camilo';
+    const uid = sessionUid || currentUser?.id || 'demo_camilo';
     const now = new Date().toISOString();
     const routineId = program.id || `meso_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
 
@@ -3373,15 +3141,15 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     };
 
     const updatedList = activateNow
-      ? [finalizedProgram, ...workoutRoutines.map(r => ({ ...r, isDefault: false }))]
-      : [finalizedProgram, ...workoutRoutines];
+      ? [finalizedProgram, ...workoutRoutines.filter(r => r.id !== finalizedProgram.id).map(r => ({ ...r, isDefault: false }))]
+      : [finalizedProgram, ...workoutRoutines.filter(r => r.id !== finalizedProgram.id)];
 
     setWorkoutRoutines(updatedList);
     if (activateNow) {
-      setActiveRoutineId(finalizedProgram.id);
+      setActiveRoutineIdState(finalizedProgram.id);
     }
 
-    if (isDemoMode || !fbUser?.uid) {
+    if (isDemoMode || !sessionUid) {
       const demoKey = `vigor_workout_routines_${uid}`;
       localStorage.setItem(demoKey, JSON.stringify(updatedList));
       if (activateNow) {
@@ -3394,29 +3162,15 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     setRoutineSyncStatus('saving');
     try {
-      await setDoc(doc(db, 'users', fbUser.uid, 'workoutRoutines', finalizedProgram.id), {
-        ...finalizedProgram,
-        userId: fbUser.uid,
-        updatedAt: now,
-      });
-
+      await athleteRepo.saveWorkoutRoutine(sessionUid, toCleanWorkoutRoutine(finalizedProgram));
       if (activateNow) {
-        for (const other of workoutRoutines) {
-          if (other.isDefault && other.id !== finalizedProgram.id) {
-            updateDoc(doc(db, 'users', fbUser.uid, 'workoutRoutines', other.id), {
-              isDefault: false,
-              updatedAt: now,
-            }).catch(() => {});
-          }
-        }
+        await athleteRepo.setDefaultRoutine(sessionUid, finalizedProgram.id).catch(() => {});
       }
-
       setRoutineSyncStatus('synced');
-      showToast(`Mesociclo "${finalizedProgram.name}" persistido en Cloud Firestore`, 'success');
+      showToast(`Mesociclo "${finalizedProgram.name}" persistido en Zoho Catalyst`, 'success');
       return finalizedProgram.id;
     } catch (err) {
       setRoutineSyncStatus('error');
-      handleFirestoreError(err, OperationType.CREATE, `users/${fbUser.uid}/workoutRoutines/${finalizedProgram.id}`);
       throw err;
     }
   };
@@ -3442,8 +3196,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const updatedList = workoutRoutines.map(r => (r.id === routineId ? updatedRoutine : r));
     setWorkoutRoutines(updatedList);
 
-    const uid = fbUser?.uid || currentUser?.id || 'demo_camilo';
-    if (isDemoMode || !fbUser?.uid) {
+    const uid = sessionUid || currentUser?.id || 'demo_camilo';
+    if (isDemoMode || !sessionUid) {
       const demoKey = `vigor_workout_routines_${uid}`;
       localStorage.setItem(demoKey, JSON.stringify(updatedList));
       showToast(`Semana cambiada a: ${targetWeekObj.name}`, 'info');
@@ -3451,21 +3205,17 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
 
     try {
-      await updateDoc(doc(db, 'users', fbUser.uid, 'workoutRoutines', routineId), {
-        days: targetWeekObj.days,
-        'mesocycleConfig.currentWeek': targetWeek,
-        updatedAt: now,
-      });
+      await athleteRepo.saveWorkoutRoutine(sessionUid, toCleanWorkoutRoutine(updatedRoutine));
       showToast(`Semana actualizada a: ${targetWeekObj.name}`, 'success');
     } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `users/${fbUser.uid}/workoutRoutines/${routineId}`);
+      console.warn('Error actualizando semana de mesociclo:', err);
     }
   };
 
-  // Live Workout Execution Engine (Increment 6C)
+  // Live Workout Execution Engine
   const startLiveWorkout = async (routine: WorkoutRoutine, day: RoutineDay): Promise<string> => {
-    const uid = fbUser?.uid || currentUser?.id || 'demo_camilo';
-    const workoutId = `ewk_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const uid = sessionUid || currentUser?.id || 'demo_camilo';
+    let workoutId = `ewk_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const nowIso = new Date().toISOString();
 
     const exercisesSnapshot: LiveExerciseSession[] = day.exercises.map(cfg => {
@@ -3506,6 +3256,25 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       };
     });
 
+    if (sessionUid && !isDemoMode) {
+      try {
+        const created = await athleteRepo.startExecutedWorkout(sessionUid, {
+          id: workoutId,
+          routineId: routine.id,
+          routineName: routine.name,
+          routineDayId: day.id,
+          routineDayName: day.shortName || day.name,
+          exercisesSnapshot: toCleanExercisesSnapshot(exercisesSnapshot),
+          startedAt: nowIso,
+        });
+        if (created?.id) {
+          workoutId = created.id;
+        }
+      } catch (err) {
+        console.warn('Error iniciando sesión en Catalyst:', err);
+      }
+    }
+
     const newWorkout: ExecutedWorkout = {
       id: workoutId,
       userId: uid,
@@ -3527,37 +3296,14 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setHasRecoveredLiveSession(false);
     localStorage.setItem('vigor_active_live_session', JSON.stringify(newWorkout));
 
-    if (fbUser?.uid && !isDemoMode) {
-      try {
-        await setDoc(doc(db, 'users', fbUser.uid, 'executedWorkouts', workoutId), {
-          id: workoutId,
-          userId: fbUser.uid,
-          routineId: routine.id,
-          routineName: routine.name,
-          routineDayId: day.id,
-          routineDayName: day.shortName || day.name,
-          status: 'in_progress',
-          startedAt: nowIso,
-          durationSeconds: 0,
-          totalTonnageKg: 0,
-          totalCompletedSets: 0,
-          totalReps: 0,
-          averageRir: 0,
-          exercisesSnapshot,
-        });
-      } catch (err: any) {
-        handleFirestoreError(err, OperationType.CREATE, `users/${fbUser.uid}/executedWorkouts/${workoutId}`);
-      }
-    }
-
     showToast(`¡Sesión en vivo "${day.shortName || day.name}" iniciada!`, 'success');
     navigate('registro-de-entrenamiento');
     return workoutId;
   };
 
   const startQuickLiveWorkout = async (name: string = 'Entrenamiento Libre'): Promise<string> => {
-    const uid = fbUser?.uid || currentUser?.id || 'demo_camilo';
-    const workoutId = `ewk_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const uid = sessionUid || currentUser?.id || 'demo_camilo';
+    let workoutId = `ewk_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const nowIso = new Date().toISOString();
 
     const defaultExIds = ['ex_press_banca_plano_barra', 'ex_remo_barra_pendlay', 'ex_press_militar_ohp'];
@@ -3618,6 +3364,23 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       };
     });
 
+    if (sessionUid && !isDemoMode) {
+      try {
+        const created = await athleteRepo.startExecutedWorkout(sessionUid, {
+          id: workoutId,
+          routineName: name,
+          routineDayName: 'Sesión Rápida',
+          exercisesSnapshot: toCleanExercisesSnapshot(exercisesSnapshot),
+          startedAt: nowIso,
+        });
+        if (created?.id) {
+          workoutId = created.id;
+        }
+      } catch (err) {
+        console.warn('Error iniciando sesión rápida en Catalyst:', err);
+      }
+    }
+
     const newWorkout: ExecutedWorkout = {
       id: workoutId,
       userId: uid,
@@ -3637,27 +3400,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setHasRecoveredLiveSession(false);
     localStorage.setItem('vigor_active_live_session', JSON.stringify(newWorkout));
 
-    if (fbUser?.uid && !isDemoMode) {
-      try {
-        await setDoc(doc(db, 'users', fbUser.uid, 'executedWorkouts', workoutId), {
-          id: workoutId,
-          userId: fbUser.uid,
-          routineName: name,
-          routineDayName: 'Sesión Rápida',
-          status: 'in_progress',
-          startedAt: nowIso,
-          durationSeconds: 0,
-          totalTonnageKg: 0,
-          totalCompletedSets: 0,
-          totalReps: 0,
-          averageRir: 0,
-          exercisesSnapshot,
-        });
-      } catch (err: any) {
-        handleFirestoreError(err, OperationType.CREATE, `users/${fbUser.uid}/executedWorkouts/${workoutId}`);
-      }
-    }
-
     showToast(`¡${name} iniciado en vivo!`, 'success');
     navigate('registro-de-entrenamiento');
     return workoutId;
@@ -3674,7 +3416,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const targetEx = activeLiveWorkout.exercisesSnapshot[exerciseIndex];
     if (!targetEx) return;
 
-    let targetSetIndex = targetEx.sets.findIndex(s => !s.completed);
+    const targetSetIndex = targetEx.sets.findIndex(s => !s.completed);
     let isNewSet = false;
     let targetSet: LiveWorkoutSet;
 
@@ -3740,7 +3482,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const setId = `set_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
     const sessionRecord: WorkoutSessionRecord = {
       id: setId,
-      userId: fbUser?.uid || currentUser?.id || 'demo_camilo',
+      userId: sessionUid || currentUser?.id || 'demo_camilo',
       exerciseId: targetEx.exerciseId,
       exerciseName: targetEx.exerciseName,
       date: completedAt,
@@ -3757,27 +3499,26 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     setWorkoutHistory(prev => [sessionRecord, ...prev]);
 
-    if (fbUser?.uid && !isDemoMode) {
+    if (sessionUid && !isDemoMode) {
       try {
-        await setDoc(doc(db, 'users', fbUser.uid, 'workoutSessions', setId), sessionRecord);
-      } catch (err: any) {
-        handleFirestoreError(err, OperationType.CREATE, `users/${fbUser.uid}/workoutSessions/${setId}`);
+        await athleteRepo.logWorkoutSet(sessionUid, {
+          id: setId,
+          executedWorkoutId: activeLiveWorkout.id,
+          exerciseId: targetEx.exerciseId,
+          exerciseName: targetEx.exerciseName,
+          muscleGroup: toCleanMuscleGroup(targetEx.muscleGroup),
+          setNumber: updatedSet.setNumber,
+          type: setType,
+          weightKg,
+          reps,
+          rir,
+          completed: true,
+        });
+      } catch (err) {
+        enqueueOfflineSet(sessionRecord, false);
+        setPendingOfflineSetsCount(getOfflinePendingSets(sessionUid, false).length);
+        console.warn('Serie encolada localmente tras fallo de sincronización:', err);
       }
-
-      try {
-        await setDoc(
-          doc(db, 'users', fbUser.uid, 'executedWorkouts', activeLiveWorkout.id),
-          {
-            totalTonnageKg,
-            totalCompletedSets,
-            totalReps,
-            averageRir,
-            durationSeconds: activeLiveWorkout.durationSeconds,
-            exercisesSnapshot: updatedExercises,
-          },
-          { merge: true }
-        );
-      } catch {}
     } else {
       const demoUid = currentUser?.id || 'demo_camilo';
       const existingSets = localStorage.getItem(`vigor_workout_sessions_${demoUid}`);
@@ -3842,7 +3583,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   ): Promise<{ success: boolean; error?: string }> => {
     if (!activeLiveWorkout) return { success: false, error: 'No active session' };
     const nowIso = new Date().toISOString();
-    const duration = finalDurationSeconds !== undefined ? finalDurationSeconds : activeLiveWorkout.durationSeconds;
+    const duration = Math.max(
+      0,
+      Math.min(86400, finalDurationSeconds !== undefined ? finalDurationSeconds : activeLiveWorkout.durationSeconds)
+    );
 
     const allCompletedSets = activeLiveWorkout.exercisesSnapshot.flatMap(ex => ex.sets.filter(s => s.completed));
     const totalTonnageKg = calculateSessionTonnage(allCompletedSets);
@@ -3863,11 +3607,15 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       notes: notes ?? '',
     };
 
-    if (fbUser?.uid && !isDemoMode) {
+    if (sessionUid && !isDemoMode) {
       try {
-        await setDoc(doc(db, 'users', fbUser.uid, 'executedWorkouts', completedWorkout.id), completedWorkout);
+        await athleteRepo.completeExecutedWorkout(sessionUid, completedWorkout.id, 'completed', {
+          durationSeconds: duration,
+          sessionRpe: Math.max(1, Math.min(10, sessionRpe ?? 8.5)),
+          notes: (notes ?? '').slice(0, 2000),
+          startedAt: activeLiveWorkout.startedAt,
+        });
       } catch (err: any) {
-        handleFirestoreError(err, OperationType.WRITE, `users/${fbUser.uid}/executedWorkouts/${completedWorkout.id}`);
         showToast('Error al registrar la finalización en la nube. La sesión se mantiene en curso para reintentar.', 'warning');
         return { success: false, error: err?.message || 'Error al persistir cabecera' };
       }
@@ -3878,13 +3626,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       localStorage.setItem(`vigor_executed_workouts_${demoUid}`, JSON.stringify([completedWorkout, ...list]));
     }
 
-    // Only update local memory and clear active session after confirmed write
     setExecutedWorkoutsHistory(prev => [completedWorkout, ...prev]);
     localStorage.removeItem('vigor_active_live_session');
     setActiveLiveWorkout(null);
     setHasRecoveredLiveSession(false);
 
-    // Mesocycle progress tracking (Increment 7B)
     if (completedWorkout.routineId) {
       const parentMeso = workoutRoutines.find(r => r.id === completedWorkout.routineId) as MesocycleRoutine | undefined;
       if (parentMeso?.isMesocycle && parentMeso.mesocycleConfig) {
@@ -3894,14 +3640,12 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           const updatedMeso = updateMesocycleWeekProgress(parentMeso, curWeek, dayId, completedWorkout.id);
           setWorkoutRoutines(prev => prev.map(r => (r.id === updatedMeso.id ? updatedMeso : r)));
 
-          if (fbUser?.uid && !isDemoMode) {
-            updateDoc(doc(db, 'users', fbUser.uid, 'workoutRoutines', updatedMeso.id), {
-              days: updatedMeso.days,
-              mesocycleConfig: updatedMeso.mesocycleConfig,
-              updatedAt: new Date().toISOString(),
-            }).catch(e => console.warn('Aviso de actualización de progreso del mesociclo:', e));
+          if (sessionUid && !isDemoMode) {
+            athleteRepo
+              .saveWorkoutRoutine(sessionUid, toCleanWorkoutRoutine(updatedMeso))
+              .catch(e => console.warn('Aviso de actualización de progreso del mesociclo:', e));
           } else {
-            const uid = fbUser?.uid || currentUser?.id || 'demo_camilo';
+            const uid = sessionUid || currentUser?.id || 'demo_camilo';
             const demoKey = `vigor_workout_routines_${uid}`;
             const updatedAll = workoutRoutines.map(r => (r.id === updatedMeso.id ? updatedMeso : r));
             localStorage.setItem(demoKey, JSON.stringify(updatedAll));
@@ -3928,17 +3672,16 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       completedAt: nowIso,
     };
 
-    // Registrar en historial para preservar trazabilidad
     setExecutedWorkoutsHistory(prev => [abandonedWorkout, ...prev]);
 
-    if (fbUser?.uid && !isDemoMode) {
+    if (sessionUid && !isDemoMode) {
       try {
-        await updateDoc(doc(db, 'users', fbUser.uid, 'executedWorkouts', workoutId), {
-          status: 'abandoned',
-          completedAt: nowIso,
+        await athleteRepo.completeExecutedWorkout(sessionUid, workoutId, 'abandoned', {
+          durationSeconds: Math.max(0, Math.min(86400, activeLiveWorkout.durationSeconds || 0)),
+          startedAt: activeLiveWorkout.startedAt,
         });
-      } catch (err: any) {
-        handleFirestoreError(err, OperationType.WRITE, `users/${fbUser.uid}/executedWorkouts/${workoutId}`);
+      } catch (err) {
+        console.warn('Error registrando sesión abandonada en Catalyst:', err);
       }
     } else {
       const demoUid = currentUser?.id || 'demo_camilo';
@@ -3972,18 +3715,30 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const syncPendingOfflineSets = async (): Promise<void> => {
-    const activeUid = fbUser?.uid;
+    const activeUid = sessionUid;
     if (!activeUid || isDemoMode) return;
     try {
-      const summary = await syncOfflineSetsForUser(activeUid, async (pendingSet) => {
-        const setDocRef = doc(db, 'users', activeUid, 'workoutSessions', pendingSet.id);
-        const { queuedAt, attempts, lastError, ...cleanSet } = pendingSet;
-        await setDoc(setDocRef, cleanSet);
+      const summary = await syncOfflineSetsForUser(activeUid, async pendingSet => {
+        if (!pendingSet.executedWorkoutId) return;
+        const exItem = getExerciseById(pendingSet.exerciseId);
+        await athleteRepo.logWorkoutSet(activeUid, {
+          id: pendingSet.id,
+          executedWorkoutId: pendingSet.executedWorkoutId,
+          exerciseId: pendingSet.exerciseId,
+          exerciseName: pendingSet.exerciseName,
+          muscleGroup: toCleanMuscleGroup(exItem?.muscleGroup),
+          setNumber: pendingSet.setNumber ?? 1,
+          type: (pendingSet.setType as WorkoutSetType) || 'effective',
+          weightKg: pendingSet.weightKg,
+          reps: pendingSet.reps,
+          rir: pendingSet.rir,
+          completed: true,
+        });
       });
-      const remaining = getOfflinePendingSets(activeUid);
+      const remaining = getOfflinePendingSets(activeUid, false);
       setPendingOfflineSetsCount(remaining.length);
       if (summary.syncedCount > 0) {
-        showToast(`Se sincronizaron ${summary.syncedCount} series pendientes en Cloud Firestore`, 'success');
+        showToast(`Se sincronizaron ${summary.syncedCount} series pendientes en Zoho Catalyst`, 'success');
       }
     } catch (err: any) {
       console.error('Error syncing offline sets:', err);
@@ -3991,13 +3746,13 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   useEffect(() => {
-    if (fbUser?.uid && !isDemoMode) {
-      const pending = getOfflinePendingSets(fbUser.uid);
+    if (sessionUid && !isDemoMode) {
+      const pending = getOfflinePendingSets(sessionUid, false);
       setPendingOfflineSetsCount(pending.length);
     } else {
       setPendingOfflineSetsCount(0);
     }
-  }, [fbUser?.uid, isDemoMode]);
+  }, [sessionUid, isDemoMode]);
 
   return (
     <AppContext.Provider
@@ -4005,7 +3760,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         currentPath,
         navigate,
 
-        // Auth & RBAC (Increment 7D)
         currentUser,
         currentUserRole,
         refreshUserClaims,
@@ -4029,10 +3783,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         openAuthModal: () => setIsAuthModalOpen(true),
         closeAuthModal: () => setIsAuthModalOpen(false),
 
-        // Template Loader
         loadDemoTemplates,
 
-        // Notifications
         notifications,
         unreadNotificationCount,
         markNotificationAsRead,
@@ -4049,14 +3801,12 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         openPreferencesModal: () => setIsPreferencesModalOpen(true),
         closePreferencesModal: () => setIsPreferencesModalOpen(false),
 
-        // Athlete Preferences & Onboarding (Increment 7A)
         athletePreferences,
         updateAthleteProfile,
         updateAthletePreferences,
         saveOnboardingStep,
         completeOnboarding,
 
-        // Biometrics
         biometrics,
         updateBiometrics,
         resetBiometricsToExcel,
@@ -4064,7 +3814,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         mealPartition,
         updateMealPartition,
 
-        // Groceries
         groceries,
         toggleGroceryStatus,
         addGrocery,
@@ -4074,7 +3823,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         clearCompletedGroceries,
         regenerateFromMenu,
 
-        // Meal Logs & Date Context
         mealLogs,
         addMealLog,
         deleteMealLog,
@@ -4086,7 +3834,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         todaySummary,
         hasBiometricsConfigured,
 
-        // Modals
         isMealDrawerOpen,
         mealDrawerMoment,
         openMealDrawer: (moment?: MealMoment | unknown) => {
@@ -4104,16 +3851,13 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         openWorkoutModal: () => setIsWorkoutModalOpen(true),
         closeWorkoutModal: () => setIsWorkoutModalOpen(false),
 
-        // Mobile
         isMobileSidebarOpen,
         toggleMobileSidebar: () => setIsMobileSidebarOpen(prev => !prev),
         closeMobileSidebar: () => setIsMobileSidebarOpen(false),
 
-        // Toast
         toast,
         showToast,
 
-        // Workout Legacy & Compatibility
         activeWorkout,
         commitActiveSet,
         workoutHistory,
@@ -4125,10 +3869,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         cardioSessions,
         addCardioSession,
 
-        // Workout Routines (Increment 6B)
         workoutRoutines,
         activeRoutine,
-        activeRoutineId,
+        activeRoutineId: activeRoutineIdState,
         routineSyncStatus,
         setActiveRoutineId,
         createRoutineFromTemplate,
@@ -4142,7 +3885,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         saveMesocycleRoutine,
         advanceMesocycleWeek,
 
-        // Live Workout Execution Engine (Increment 6C)
         activeLiveWorkout,
         executedWorkoutsHistory,
         hasRecoveredLiveSession,
@@ -4158,7 +3900,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         pendingOfflineSetsCount,
         syncPendingOfflineSets,
 
-        // Recipe Library & Weekly Plans (Increment 4)
         recipes,
         addRecipe,
         updateRecipe,
@@ -4172,7 +3913,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         logPlannedMeal,
         syncMealPlanToGroceries,
 
-        // Recipe & Assign Modals
         isRecipeModalOpen,
         recipeModalData,
         openRecipeModal,

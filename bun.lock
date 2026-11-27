@@ -8,8 +8,9 @@
         "@google/genai": "^2.4.0",
         "@tailwindcss/vite": "^4.3.3",
         "@vitejs/plugin-react": "^6.1.1",
+        "@zcatalyst/auth": "^1.0.0",
         "dotenv": "^17.2.3",
-        "express": "^4.21.2",
+        "express": "^4.22.3",
         "firebase": "^13.0.0",
         "firebase-admin": "^14.5.0",
         "firebase-functions": "^7.4.0",
@@ -21,7 +22,7 @@
       },
       "devDependencies": {
         "@firebase/rules-unit-testing": "^6.0.0",
-        "@types/express": "^4.17.21",
+        "@types/express": "^4.17.25",
         "@types/node": "^22.14.0",
         "@types/react": "^19.3.0",
         "@types/react-dom": "^19.3.0",
@@ -373,6 +374,16 @@
     "@typescript/typescript-win32-x64": ["@typescript/typescript-win32-x64@7.0.2", "", { "os": "win32", "cpu": "x64" }, "sha512-0BQ3HkAHHlKLSp1qRvf3SUhGpGsDuhB/jgFw75guyqbxJqEaS0Cw/VFO8i2nHglJUzQCRtMMR/IBAKE3ETMC4g=="],
 
     "@vitejs/plugin-react": ["@vitejs/plugin-react@6.1.2", "", { "dependencies": { "@rolldown/pluginutils": "^1.0.1" }, "peerDependencies": { "@rolldown/plugin-babel": "^0.1.7 || ^0.2.0", "babel-plugin-react-compiler": "^1.0.0", "oxc-transform-react": "^0.152.0", "vite": "^8.0.0" }, "optionalPeers": ["@rolldown/plugin-babel", "babel-plugin-react-compiler", "oxc-transform-react"] }, "sha512-fhJNGUdscQa4HkI0xFxwonWyhnVReCPDbXI7FH7jmzpnVCrFQI7PRrhWecO263610vOrs9tr2Y4xcf8uAdFxbw=="],
+
+    "@zcatalyst/auth": ["@zcatalyst/auth@1.0.0", "", { "dependencies": { "@zcatalyst/auth-admin": "^1.0.0", "@zcatalyst/auth-client": "^1.0.0", "@zcatalyst/transport": "^1.0.0", "@zcatalyst/utils": "^1.0.0" } }, "sha512-Qih+vp6e4VpLwHqWiuPQikqT2qFqqqlReW+XE2fkdLkS8X2oJ9C4bS5dAbkMUWM2JCZpwSoMVjxfFoBSXF9hCw=="],
+
+    "@zcatalyst/auth-admin": ["@zcatalyst/auth-admin@1.1.0", "", { "dependencies": { "@zcatalyst/utils": "^1.0.0" } }, "sha512-zPYBwcyTzI8huaGk0bbNA+igI07gIzoUYg5afpzjFkrpsa9N0L1nsbnWdhONUQN6rhwimJjwGWTF3NZlncKPFw=="],
+
+    "@zcatalyst/auth-client": ["@zcatalyst/auth-client@1.0.0", "", { "dependencies": { "@zcatalyst/utils": "^1.0.0" } }, "sha512-+jLbHUMFuk4kch5Pw8s0y8c3U/c0B2kcOEWAK/m5BnMx8GMdu+L+3q51oJrNSzJ4MB11qyDbnHx3avcJXmV6kA=="],
+
+    "@zcatalyst/transport": ["@zcatalyst/transport@1.1.0", "", { "dependencies": { "@zcatalyst/auth-admin": "^1.1.0", "@zcatalyst/auth-client": "^1.0.0", "@zcatalyst/utils": "^1.1.0" } }, "sha512-mjmX+3AzhI9WyaYYtxykf4NQza9aiqPM6R6yZMuEqN2H8D6BWmGwac8Y21CKyVjdaSY4DHfHCPJpLufaAeVCoA=="],
+
+    "@zcatalyst/utils": ["@zcatalyst/utils@1.1.0", "", {}, "sha512-rbYZ05urOfjRWqkzFIFbw55Xo97/DqwLjjdmZxT3JYdjMbZ8lsI+8wWyrnygzVIgKvMnPJBEU5KkTxNNT8BbDw=="],
 
     "abort-controller": ["abort-controller@3.0.0", "", { "dependencies": { "event-target-shim": "^5.0.0" } }, "sha512-h8lQ8tacZYnR3vNQTgibj+tODHI5/+l06Au2Pcriv/Gmet0eaj4TwWH41sO9wnHDiQsEj19q0drzdWdeAHtweg=="],
 
